@@ -13656,6 +13656,14 @@ bool GuestAddressSpace::write_device_register(
         if ((previous & kDspAidStatus) != 0u &&
             (completed & kDspAidStatus) == 0u) {
             ai_dma_interrupt_pending_since_ticks_ = 0;
+            if (ai_dma_completion_deferred_) {
+                // Republish the overdue completion (service_ai_dma deferred it
+                // while this acknowledge was outstanding) so the next AI
+                // service after the handler latches the game's new buffer.
+                ai_dma_completion_deferred_ = false;
+                ai_dma_notified_deadline_ticks_ = 0u;
+                notify_ai_dma_deadline_changed();
+            }
         }
         const bool halt_released =
             (previous & kDspHalt) != 0 && (completed & kDspHalt) == 0;
@@ -14710,6 +14718,18 @@ void GuestAddressSpace::service_ai_dma(
 
         if (ai_dma_next_completion_ticks_ == 0u ||
             now_ticks < ai_dma_next_completion_ticks_) {
+            break;
+        }
+        if (ai_dma_interrupt_status() && ai_dma_interrupt_masked_in()) {
+            // The guest has not taken the previous completion, so the shadow
+            // still names the buffer it already played. Latching now would
+            // queue that same PCM again: a stale 17.5 ms block repeated once
+            // per elapsed period (audible stutter when EE stays off across a
+            // host stall). The completion waits, late, until the handler's
+            // AID acknowledge re-arms it (write_dsp_control) and the game's
+            // next buffer is in the shadow.
+            ai_dma_completion_deferred_ = true;
+            ++ai_dma_deferred_completions_;
             break;
         }
         const std::uint64_t completion_ticks = ai_dma_next_completion_ticks_;
@@ -27905,6 +27925,7 @@ void GuestAddressSpace::write_ai_dma_len(std::uint16_t value) {
             std::cout << "[ai] DMA stopped\n";
         }
         ai_dma_playing_ = false;
+        ai_dma_completion_deferred_ = false;
         ai_dma_active_address_ = 0;
         ai_dma_active_blocks_ = 0;
         ai_dma_active_sample_rate_ = 0;

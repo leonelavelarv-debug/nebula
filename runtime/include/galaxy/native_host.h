@@ -919,6 +919,9 @@ public:
     std::uint64_t ai_dma_resync_missed_buffers() const {
         return ai_dma_resync_missed_buffers_;
     }
+    std::uint64_t ai_dma_deferred_completions() const {
+        return ai_dma_deferred_completions_;
+    }
     AudioSinkStats audio_sink_stats() const;
     // Records deferred correlation data after an accepted timeline rebase.
     // Simulation thread only; does not service any device.
@@ -1904,6 +1907,9 @@ private:
     // the condition and count it, or delete the pair and its assertions.
     std::uint64_t ai_dma_resync_events_{};
     std::uint64_t ai_dma_resync_missed_buffers_{};
+    // Completions held while the previous AID edge was unacknowledged.
+    std::uint64_t ai_dma_deferred_completions_{};
+    bool ai_dma_completion_deferred_{};
     std::uint64_t ai_dma_notified_deadline_ticks_{};
     AiDmaDeadlineCallback ai_dma_deadline_callback_{};
     void* ai_dma_deadline_callback_user_{};

@@ -18626,7 +18626,11 @@ void dump_ai_dma_deadline_audit(
            << " late-events=" << state.ai_dma_late_events
            << " late-over-buffer=" << state.ai_dma_late_over_buffer_events
            << " late-total-ticks=" << state.ai_dma_late_total_ticks
-           << " missed-buffer-estimate=" << state.ai_dma_missed_buffer_estimate;
+           << " missed-buffer-estimate=" << state.ai_dma_missed_buffer_estimate
+           << " deferred-completions="
+           << (state.address_space != nullptr
+                   ? state.address_space->ai_dma_deferred_completions()
+                   : 0u);
     if (state.address_space != nullptr) {
         output << " playing=" << (state.address_space->ai_dma_playing() ? 1 : 0)
                << " interrupt-pending="
