@@ -2608,6 +2608,10 @@ struct RuntimeState {
     std::uint64_t ai_dma_host_pause_owed_ticks{};
     std::uint64_t ai_dma_host_pause_repaid_ticks{};
     std::uint64_t ai_dma_host_pause_repayments{};
+    // Mixer frames completed at the last AI latch, and late completions held
+    // until the next frame was mixed (hold_late_ai_completion).
+    std::uint64_t ai_pace_frames_at_latch{};
+    std::uint64_t ai_pace_holds{};
     std::uint64_t next_ai_dma_probe_checkpoint{};
     std::uint64_t ai_dma_late_events{};
     std::uint64_t ai_dma_late_over_buffer_events{};
@@ -17606,14 +17610,31 @@ bool dispatch_ai_dma_interrupts(
             std::cerr << "[ai-late-checkpoint-snapshot] end=1\n";
         }
     }
-    // MSR[EE] is the only host-visible architectural delivery gate used while
-    // advancing the device. Handler installation, PI priority/masks, and source
-    // selection belong to the translated external dispatcher.
-    state.address_space->service_ai_dma(
-        now_ticks,
-        interrupts_enabled
-            ? galaxy::host::AiDmaServiceMode::Interruptible
-            : galaxy::host::AiDmaServiceMode::ExternalInterruptsMasked);
+    // A late completion waits for the game's audio thread to mix the frame the
+    // previous callback asked for (ai_dma_timing::hold_late_ai_completion).
+    const bool frame_mixed_since_last_latch = !state.jaudio_host_mixer ||
+        state.jaudio_mixer.stats().completed_frames != state.ai_pace_frames_at_latch;
+    const bool pace_hold = service_is_due &&
+        galaxy::host::ai_dma_timing::hold_late_ai_completion(
+            now_ticks, device_completion_ticks, duration_ticks,
+            frame_mixed_since_last_latch);
+    if (pace_hold) {
+        ++state.ai_pace_holds;
+    } else {
+        // MSR[EE] is the only host-visible architectural delivery gate used
+        // while advancing the device. Handler installation, PI priority/masks,
+        // and source selection belong to the translated external dispatcher.
+        const std::uint64_t submits_before =
+            state.address_space->ai_audio_submit_count();
+        state.address_space->service_ai_dma(
+            now_ticks,
+            interrupts_enabled
+                ? galaxy::host::AiDmaServiceMode::Interruptible
+                : galaxy::host::AiDmaServiceMode::ExternalInterruptsMasked);
+        if (state.address_space->ai_audio_submit_count() != submits_before) {
+            state.ai_pace_frames_at_latch = state.jaudio_mixer.stats().completed_frames;
+        }
+    }
     if (pending_generation != 0u || deadline_publication || service_is_due) {
         state.record_ai_dma_service(
             "post-service", context, /*sample_thread_cpu_time=*/true);
@@ -17624,7 +17645,10 @@ bool dispatch_ai_dma_interrupts(
             now_ticks,
             state.address_space->ai_dma_interrupt_pending_since_ticks());
     }
-    state.next_ai_dma_probe_checkpoint = ai_dma_next_probe_checkpoint(state);
+    // A held completion was consumed from the broker; poll again soon.
+    state.next_ai_dma_probe_checkpoint = pace_hold
+        ? state.checkpoint_count + 256u
+        : ai_dma_next_probe_checkpoint(state);
     const std::uint32_t resume_address =
         resume_pc != 0u
             ? resume_pc
@@ -18630,7 +18654,8 @@ void dump_ai_dma_deadline_audit(
            << " deferred-completions="
            << (state.address_space != nullptr
                    ? state.address_space->ai_dma_deferred_completions()
-                   : 0u);
+                   : 0u)
+           << " pace-holds=" << state.ai_pace_holds;
     if (state.address_space != nullptr) {
         output << " playing=" << (state.address_space->ai_dma_playing() ? 1 : 0)
                << " interrupt-pending="

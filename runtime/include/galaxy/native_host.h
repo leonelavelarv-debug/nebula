@@ -1909,6 +1909,7 @@ private:
     std::uint64_t ai_dma_resync_missed_buffers_{};
     // Completions held while the previous AID edge was unacknowledged.
     std::uint64_t ai_dma_deferred_completions_{};
+    std::uint64_t ai_dma_hold_owed_ticks_{};
     bool ai_dma_completion_deferred_{};
     std::uint64_t ai_dma_notified_deadline_ticks_{};
     AiDmaDeadlineCallback ai_dma_deadline_callback_{};

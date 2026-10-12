@@ -13657,12 +13657,20 @@ bool GuestAddressSpace::write_device_register(
             (completed & kDspAidStatus) == 0u) {
             ai_dma_interrupt_pending_since_ticks_ = 0;
             if (ai_dma_completion_deferred_) {
-                // Republish the overdue completion (service_ai_dma deferred it
-                // while this acknowledge was outstanding) so the next AI
-                // service after the handler latches the game's new buffer.
+                // service_ai_dma held the completion while this acknowledge
+                // was outstanding. Give the postponement back (capped like a
+                // host pause) so the next service after the handler latches
+                // the game's new buffer and the late ones follow as a burst.
                 ai_dma_completion_deferred_ = false;
-                ai_dma_notified_deadline_ticks_ = 0u;
-                notify_ai_dma_deadline_changed();
+                const std::uint64_t shift =
+                    ai_dma_timing::host_pause_ai_catch_up_ticks(
+                        ai_dma_hold_owed_ticks_, ai_dma_next_completion_ticks_,
+                        ai_dma_last_duration_ticks_);
+                ai_dma_hold_owed_ticks_ = 0u;
+                if (shift != 0u && ai_dma_playing_) {
+                    ai_dma_next_completion_ticks_ -= shift;
+                    notify_ai_dma_deadline_changed();
+                }
             }
         }
         const bool halt_released =
@@ -14725,11 +14733,20 @@ void GuestAddressSpace::service_ai_dma(
             // still names the buffer it already played. Latching now would
             // queue that same PCM again: a stale 17.5 ms block repeated once
             // per elapsed period (audible stutter when EE stays off across a
-            // host stall). The completion waits, late, until the handler's
-            // AID acknowledge re-arms it (write_dsp_control) and the game's
-            // next buffer is in the shadow.
+            // host stall). The completion is re-armed a quarter period ahead
+            // (so the runtime keeps polling and delivers the pending level as
+            // soon as EE allows) and the postponement is owed; the handler's
+            // AID acknowledge (DSPCR write) pulls it back by that much, and
+            // the game's buffers then follow one per callback.
+            const std::uint64_t recheck_ticks = now_ticks +
+                std::max<std::uint64_t>(ai_dma_last_duration_ticks_ / 4u, 1u);
+            ai_dma_hold_owed_ticks_ += recheck_ticks - ai_dma_next_completion_ticks_;
+            ai_dma_next_completion_ticks_ = recheck_ticks;
+            if (!ai_dma_completion_deferred_) {
+                ++ai_dma_deferred_completions_;
+            }
             ai_dma_completion_deferred_ = true;
-            ++ai_dma_deferred_completions_;
+            notify_ai_dma_deadline_changed();
             break;
         }
         const std::uint64_t completion_ticks = ai_dma_next_completion_ticks_;
@@ -27926,6 +27943,7 @@ void GuestAddressSpace::write_ai_dma_len(std::uint16_t value) {
         }
         ai_dma_playing_ = false;
         ai_dma_completion_deferred_ = false;
+        ai_dma_hold_owed_ticks_ = 0u;
         ai_dma_active_address_ = 0;
         ai_dma_active_blocks_ = 0;
         ai_dma_active_sample_rate_ = 0;
@@ -28081,6 +28099,29 @@ void GuestAddressSpace::submit_ai_dma_audio(
     }
 
     const std::span<const std::byte> pcm_source(source, byte_count);
+    if (read_env_flag("GALAXY_AUDIO_REPEAT_TRACE")) {
+        // Diagnostic: a buffer byte-identical to the previous submit.
+        static std::vector<std::byte> s_previous;
+        static std::uint32_t s_previous_address = 0u;
+        static unsigned s_logged = 0u;
+        const bool same = s_previous.size() == pcm_source.size() &&
+            std::memcmp(s_previous.data(), pcm_source.data(), pcm_source.size()) == 0;
+        bool nonzero = false;
+        for (const std::byte value : pcm_source) {
+            if (value != std::byte{0}) { nonzero = true; break; }
+        }
+        if (same && nonzero && s_logged < 60u) {
+            ++s_logged;
+            std::cerr << "[audio-repeat] address=0x" << std::hex << address
+                      << " previous=0x" << s_previous_address << std::dec
+                      << " start-ticks=" << ai_dma_active_start_ticks_
+                      << " next-completion=" << ai_dma_next_completion_ticks_
+                      << " status=" << (ai_dma_interrupt_status() ? 1 : 0)
+                      << " submit=" << ai_audio_submit_count_ << '\n';
+        }
+        s_previous.assign(pcm_source.begin(), pcm_source.end());
+        s_previous_address = address;
+    }
     const bool trace_pcm = read_env_flag("GALAXY_TRACE_AUDIO_PCM");
     const bool analyze_pcm = galaxy::audio::should_analyze_ai_pcm(
         ai_pcm_identity_tracking_enabled_, trace_pcm,

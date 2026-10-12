@@ -617,6 +617,23 @@ bool host_pause_ai_catch_up_bounds() {
     passed &= expect(
         kHostPauseAiCatchUpPeriods + 1u < 8u,
         "cap plus one late period stays inside the masked catch-up bound");
+
+    using galaxy::host::ai_dma_timing::hold_late_ai_completion;
+    constexpr std::uint64_t kDue = 50'000'000u;
+    passed &= expect(
+        hold_late_ai_completion(kDue + 10u, kDue, kPeriod, false),
+        "a due completion waits for the frame the last callback requested");
+    passed &= expect(
+        !hold_late_ai_completion(kDue + 10u, kDue, kPeriod, true),
+        "a mixed frame releases the completion");
+    passed &= expect(
+        !hold_late_ai_completion(kDue + 2u * kPeriod, kDue, kPeriod, false),
+        "the hold ends two periods past the deadline even without a frame");
+    passed &= expect(
+        !hold_late_ai_completion(kDue - 1u, kDue, kPeriod, false) &&
+            !hold_late_ai_completion(kDue, 0u, kPeriod, false) &&
+            !hold_late_ai_completion(kDue, kDue, 0u, false),
+        "nothing due, no completion, or no period holds nothing");
     return passed;
 }
 

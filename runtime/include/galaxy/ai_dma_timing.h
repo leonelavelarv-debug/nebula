@@ -155,6 +155,24 @@ inline constexpr std::uint64_t kHostPauseAiCatchUpPeriods = 6u;
     return shift < next_completion_ticks ? shift : next_completion_ticks - 1u;
 }
 
+// JASDriver::readDspBuffer plays the previous DSP buffer again when the audio
+// thread has not mixed a new frame since the last AI callback. Late AI
+// completions delivered back to back (catch-up after a stall) outrun that
+// thread, so one block plays several times in a row. A late completion is held
+// until the host mixer has finished a frame since the previous latch, for at
+// most kAiPaceMaxHoldPeriods past its deadline (the game may stop mixing).
+inline constexpr std::uint64_t kAiPaceMaxHoldPeriods = 2u;
+
+[[nodiscard]] constexpr bool hold_late_ai_completion(
+    std::uint64_t now_ticks,
+    std::uint64_t completion_ticks,
+    std::uint64_t duration_ticks,
+    bool frame_mixed_since_last_latch) noexcept {
+    return !frame_mixed_since_last_latch && completion_ticks != 0u &&
+        duration_ticks != 0u && now_ticks >= completion_ticks &&
+        now_ticks - completion_ticks < duration_ticks * kAiPaceMaxHoldPeriods;
+}
+
 // A host-suspension rebase may restore AI only when the device, RuntimeState,
 // and broker publication all describe the same still-owned arm. A publication
 // can be absent from the latch solely when the simulation thread has already

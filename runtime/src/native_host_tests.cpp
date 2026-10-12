@@ -18725,24 +18725,25 @@ int main(int argc, char** argv) {
     passed &= expect(
         memory.ai_audio_submit_count() == masked_submit_after_start &&
             masked_serviced.ai_dma_active_address == kAiBuffer &&
-            masked_serviced.ai_dma_next_completion_ticks == fake_ticks &&
+            masked_serviced.ai_dma_next_completion_ticks ==
+                fake_ticks + memory.ai_dma_last_duration_ticks() / 4u &&
             memory.ai_dma_interrupt_pending() &&
             memory.ai_dma_deferred_completions() != 0u,
         "EE-masked AI MMIO raises the initial IRQ and holds the completion behind its level");
     passed &= expect(
-        ai_deadline_probe.deadlines.size() == masked_callback_base + 2u &&
+        ai_deadline_probe.deadlines.size() == masked_callback_base + 3u &&
             ai_deadline_probe.deadlines.back() ==
                 masked_serviced.ai_dma_next_completion_ticks,
-        "masked service publishes the held completion deadline without losing a wake");
+        "a held completion stays published a quarter period ahead");
     // The handler's acknowledge republishes the overdue completion; the next
     // observation latches the buffer the game wrote meanwhile.
     galaxy::guest_store_u16(
         guest_memory, 0xCC005030, 0x0020, nullptr, 0x80004000);
     acknowledge_ai_level();
     passed &= expect(
-        ai_deadline_probe.deadlines.size() == masked_callback_base + 3u &&
+        ai_deadline_probe.deadlines.size() == masked_callback_base + 4u &&
             ai_deadline_probe.deadlines.back() == fake_ticks,
-        "acknowledging the AID level republishes the held completion");
+        "acknowledging the AID level gives the postponement back");
     (void)galaxy::guest_load_u16(
         guest_memory, 0xCC00503A, nullptr, 0x80004000);
     const auto masked_released = memory.dsp_debug_snapshot();

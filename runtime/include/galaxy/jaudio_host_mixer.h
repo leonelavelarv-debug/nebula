@@ -43,6 +43,8 @@ struct JAudioGuestMemory {
 struct JAudioHostMixerStats {
     std::uint64_t setups{};
     std::uint64_t frames{};
+    // Frames whose last subframe was mixed (the DSP buffer the game reads).
+    std::uint64_t completed_frames{};
     std::uint64_t subframes{};
     std::uint64_t channel_renders{};
     std::uint64_t adpcm_blocks{};

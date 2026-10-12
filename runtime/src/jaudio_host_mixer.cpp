@@ -214,6 +214,7 @@ bool JAudioHostMixer::release_halt(std::uint32_t message,
     ++next_subframe_;
     if (next_subframe_ >= subframes_) {
         frame_active_ = false;
+        ++stats_.completed_frames;
     }
     return true;
 }
