@@ -47,7 +47,7 @@ it is the original game code, translated instruction by instruction by the recom
 - Aspect ratios from 4:3 to 32:9 and internal resolution up to 16x.
 - Anti-aliasing (SMAA, FXAA), AMD FidelityFX FSR 1 upscaling, anisotropic filtering and
   optional per-pixel lighting.
-- In-game settings menu (F1, View + Menu on Xbox, Minus + Plus on Switch).
+- In-game settings menu (F1, View + Menu on Xbox and Steam, Share + Options on PlayStation, Minus + Plus on Switch).
 - Saves stored in `%LOCALAPPDATA%\Nebula\saves`.
 
 ## Requirements

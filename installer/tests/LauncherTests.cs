@@ -83,6 +83,7 @@ namespace Nebula.Launcher
                 Check(!string.IsNullOrEmpty(dataRoot) && NebulaPaths.DataRoot == dataRoot, "NEBULA_DATA_ROOT replaces the user data root");
                 string outDir = args[0];
                 WindowSizeCases();
+                ControllerTests.Run(outDir);
                 Application.EnableVisualStyles();
 
                 var first = new LaunchSession();
@@ -109,6 +110,7 @@ namespace Nebula.Launcher
                     Check(form.Text == "Nebula settings", "later title: " + form.Text);
                     Render(form, form.Controls.OfType<TabControl>().Single(), outDir, "later");
                 }
+                ControllerTests.Form(later, outDir);
 
                 // TryLaunch starts <App>\NebulaRuntime.exe, here a stub that records its arguments.
                 string marker = Path.Combine(later.App, "stub-launch.txt");
