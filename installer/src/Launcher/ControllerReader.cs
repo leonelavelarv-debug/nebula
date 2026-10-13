@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
@@ -27,11 +28,19 @@ namespace Nebula.Launcher
         private readonly float[] axes = new float[6];
         private volatile bool stopping;
         private long active = -1;
+        private int[] xinputSlots = new int[0];
 
         public ControllerReader(IEnumerable<ControllerInfo> controllers)
         {
             foreach (var controller in controllers)
                 if (controller.Path != null) TryOpen(controller);
+            SetXInput(controllers);
+        }
+
+        /// <summary>The XInput pads to watch; empty slots are slow to poll.</summary>
+        public void SetXInput(IEnumerable<ControllerInfo> controllers)
+        {
+            xinputSlots = controllers.Where(c => c.Scheme == ControlsSettings.Xbox).Select(c => c.Slot).ToArray();
         }
 
         private static long KeyOf(DeviceKey key) { return ((long)key.Scheme << 8) | (uint)key.Slot; }
@@ -49,7 +58,7 @@ namespace Nebula.Launcher
         /// <summary>Notes XInput pads that are being used.</summary>
         public void PollXInput()
         {
-            for (int slot = 0; slot < 4; slot++)
+            foreach (int slot in xinputSlots)
             {
                 var sample = ReadXInput(slot);
                 if (sample.Connected && sample.HasInput) Interlocked.Exchange(ref active, KeyOf(new DeviceKey(ControlsSettings.Xbox, slot)));

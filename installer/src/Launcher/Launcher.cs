@@ -745,6 +745,7 @@ namespace Nebula.Launcher
             devicesDue = false;
             if (reader != null && HidPaths(attached) != readerPaths) DisposeReader();
             if (watching) EnsureReader();
+            if (reader != null) reader.SetXInput(attached);
             ShowDevices();
         }
 
