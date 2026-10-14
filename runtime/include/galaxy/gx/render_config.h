@@ -14,6 +14,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <utility>
 #include <vector>
 
@@ -125,6 +126,15 @@ struct RenderConfig {
     unsigned rt_shadow_quality   = 0;   // 0=off, 1=low, 2=medium, 3=high
     bool     rt_ao_enabled       = false;
     bool     rt_reflections      = false;
+
+    // Texture packs (texture_pack.h): replacements from texture_pack_directory(). preload loads
+    // the whole pack at start instead of each texture at its first use; dump writes every newly
+    // decoded texture once, as a PNG under its pack name, to texture_dump_directory(). The
+    // replacements on the GPU stay within texture_pack_budget_mb (unused ones are evicted first).
+    bool     texture_packs       = true;
+    bool     texture_pack_preload = false;
+    bool     texture_dump        = false;
+    unsigned texture_pack_budget_mb = 2048;
 
     // Back-buffer dimensions (may differ from EFB; the present blit scales).
     // In windowed mode this is the client size, limited to the monitor's
@@ -310,5 +320,10 @@ bool save_render_config_to_file();
 // the GPU preference the runtime started with (low: integrated first).
 void record_render_adapter(const wchar_t* description, unsigned vendor_id, unsigned device_id,
                            bool low_power_preference, bool ray_tracing) noexcept;
+
+// Folders beside config.ini: TexturePacks (packs, a <GameID> folder inside) and TextureDumps.
+// GALAXY_TEXTURE_PACK_DIR and GALAXY_TEXTURE_DUMP_DIR replace them. Empty when unknown.
+[[nodiscard]] std::filesystem::path texture_pack_directory();
+[[nodiscard]] std::filesystem::path texture_dump_directory();
 
 } // namespace galaxy::gx

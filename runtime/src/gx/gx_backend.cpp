@@ -58,11 +58,16 @@ namespace galaxy::gx {
 std::uint32_t pack_sampler_key(
     const TexMode& mode,
     bool generated_mips,
-    std::uint8_t mip_levels) noexcept {
+    std::uint8_t mip_levels,
+    std::uint8_t lod_shift_x16) noexcept {
     std::uint32_t min_filter =
         static_cast<std::uint32_t>(mode.min_filter) & 0x7u;
+    std::uint32_t min_lod =
+        static_cast<std::uint32_t>(mode.min_lod_x16) & 0xFFu;
     std::uint32_t max_lod =
         static_cast<std::uint32_t>(mode.max_lod_x16) & 0xFFu;
+    const bool guest_mips = (min_filter & 0x3u) != 0u;
+    bool full_chain = false;
     if (generated_mips && mip_levels > 1u &&
         min_filter == static_cast<std::uint32_t>(TexMinFilter::Linear) &&
         mode.mag_filter == TexMagFilter::Linear) {
@@ -71,6 +76,20 @@ std::uint32_t pack_sampler_key(
         max_lod = std::min<std::uint32_t>(
             0xFFu,
             static_cast<std::uint32_t>(mip_levels - 1u) * 16u);
+        full_chain = true;
+    }
+    if (lod_shift_x16 != 0u) {
+        if (guest_mips) {
+            min_lod = std::min<std::uint32_t>(0xFFu, min_lod + lod_shift_x16);
+            max_lod = std::min<std::uint32_t>(0xFFu, max_lod + lod_shift_x16);
+        } else if (!full_chain) {
+            min_filter = static_cast<std::uint32_t>(
+                min_filter >= static_cast<std::uint32_t>(TexMinFilter::Linear)
+                    ? TexMinFilter::LinearMipLinear
+                    : TexMinFilter::NearMipNear);
+            min_lod = 0u;
+            max_lod = lod_shift_x16;
+        }
     }
     return
           (static_cast<std::uint32_t>(mode.wrap_s) & 0x3u)
@@ -79,7 +98,7 @@ std::uint32_t pack_sampler_key(
         | (min_filter << 5)
         | ((static_cast<std::uint32_t>(
                static_cast<std::uint8_t>(mode.lod_bias_x32)) & 0xFFu) << 8)
-        | ((static_cast<std::uint32_t>(mode.min_lod_x16) & 0xFFu) << 16)
+        | (min_lod << 16)
         | (max_lod << 24);
 }
 
@@ -10213,6 +10232,25 @@ void GxBackend::render_frame_on_thread(FrameChunk& chunk) {
         }
         // New decoded textures upload through this frame's command list.
         texture_cache_.set_upload_list(renderer_.command_list());
+        {
+            const RenderConfig render = get_render_config();
+            static const std::filesystem::path packs = texture_pack_directory();
+            static const std::filesystem::path dumps = texture_dump_directory();
+            TexturePackSettings settings{};
+            settings.enabled = render.texture_packs;
+            settings.preload = render.texture_pack_preload;
+            settings.dump = render.texture_dump;
+            settings.packs = packs;
+            settings.dumps = dumps;
+            settings.budget_bytes = static_cast<std::uint64_t>(render.texture_pack_budget_mb) << 20u;
+            if (!texture_pack_settings_applied_ || !(settings == texture_pack_settings_)) {
+                texture_cache_.configure_texture_packs(settings);
+                texture_pack_settings_ = std::move(settings);
+                texture_pack_settings_applied_ = true;
+            }
+        }
+        // Finished replacements upload here and take the place of their originals.
+        texture_cache_.apply_texture_packs();
     }
     // Workers may be filling this frame's texture staging from the chunk's
     // memory snapshot; no exit from this function may leave them running.
@@ -11778,7 +11816,8 @@ std::array<std::uint32_t, kMaxTextureMaps> GxBackend::capture_sampler_keys(
         }
         const TextureHandle& handle = handles[map];
         keys[map] = pack_sampler_key(
-            state_.tex_mode(map), handle.generated_mips, handle.mip_levels);
+            state_.tex_mode(map), handle.generated_mips, handle.mip_levels,
+            handle.lod_shift_x16);
     }
     // Unused slots still get valid zero-key descriptors, but cannot fragment
     // the table cache. map_mask includes both direct and indirect sampling.

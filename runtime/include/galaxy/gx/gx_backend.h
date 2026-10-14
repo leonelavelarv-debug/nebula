@@ -177,10 +177,14 @@ private:
     mutable std::array<VtxPayloadStrideMemo, 8> vtx_payload_stride_memo_{};
 };
 
+// lod_shift_x16: a texture-pack replacement 2^(shift / 16) times the guest size. Its LOD range moves
+// by the shift, and a guest sampler without mips may use the replacement's levels down to the guest
+// size (the guest sampled its base level there).
 [[nodiscard]] std::uint32_t pack_sampler_key(
     const TexMode& mode,
     bool generated_mips,
-    std::uint8_t mip_levels) noexcept;
+    std::uint8_t mip_levels,
+    std::uint8_t lod_shift_x16 = 0u) noexcept;
 
 // FNV-1a step over one 64-bit value. It consumes a whole word per step instead of one byte.
 // The byte-wise form ran 8 xor-multiply rounds per 8-byte value, and the binding table hashes
@@ -1771,6 +1775,9 @@ private:
         TextureHandleKeyHash>
         texture_handle_cache_;
     std::uint64_t seen_texture_retirement_revision_ = 0;
+    // Texture-pack settings last applied (render config, polled at frame begin).
+    TexturePackSettings texture_pack_settings_{};
+    bool texture_pack_settings_applied_ = false;
     std::unordered_map<
         TextureHandleKey,
         TextureHandle,
