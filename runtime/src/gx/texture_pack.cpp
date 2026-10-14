@@ -674,22 +674,27 @@ std::shared_ptr<TexturePacks::Index> TexturePacks::build_index(const std::filesy
         return index;
     }
     // Game folders: <root>/<GameID>, its 3-letter region-free prefix, or the same one or two levels
-    // down (a pack unpacked into its own folder).
+    // down (a pack unpacked into its own folder); or the root itself when it is one.
     const std::string id = ascii_lower(kGameId);
     const std::string region_free = id.substr(0, 3);
     std::vector<std::filesystem::path> games;
-    for (auto it = std::filesystem::recursive_directory_iterator(
-             root, std::filesystem::directory_options::skip_permission_denied, error);
-         !error && it != std::filesystem::recursive_directory_iterator(); it.increment(error)) {
-        if (it.depth() > 2) {
-            it.disable_recursion_pending();
-            continue;
-        }
-        if (!it->is_directory(error)) continue;
-        const std::string name = ascii_lower(it->path().filename());
-        if (name == id || name == region_free) {
-            games.push_back(it->path());
-            it.disable_recursion_pending();
+    const std::string root_name = ascii_lower(root.filename());
+    if (root_name == id || root_name == region_free) {
+        games.push_back(root);
+    } else {
+        for (auto it = std::filesystem::recursive_directory_iterator(
+                 root, std::filesystem::directory_options::skip_permission_denied, error);
+             !error && it != std::filesystem::recursive_directory_iterator(); it.increment(error)) {
+            if (it.depth() > 2) {
+                it.disable_recursion_pending();
+                continue;
+            }
+            if (!it->is_directory(error)) continue;
+            const std::string name = ascii_lower(it->path().filename());
+            if (name == id || name == region_free) {
+                games.push_back(it->path());
+                it.disable_recursion_pending();
+            }
         }
     }
     std::sort(games.begin(), games.end());
