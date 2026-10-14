@@ -1209,22 +1209,26 @@ void SceneRayTracer::report() {
                   per(static_cast<double>(window_.glow_triangles), window_.captures));
     std::cerr << line;
     if (pass_timestamps_) {
-        // Per scene: geometry and the passes after the trace; per pass: one call's average.
+        // Per scene: geometry and every pass after the trace (sub-frames' replays included); per pass:
+        // one call's average and calls per scene. Reflections report in [rt-reflect].
         const auto& ms = window_.pass_ms;
         const auto& n = window_.passes;
+        double passes_ms = 0.0;
+        for (const double value : ms) passes_ms += value;
         const double scene_ms = per(window_.build_ms, window_.timed) + per(window_.light_ms, window_.timed) +
-                                per(ms[kPassGeometry] + ms[kPassComposite] + ms[kPassGlowBase] + ms[kPassCapture],
-                                    window_.scenes);
+                                per(passes_ms, window_.scenes);
+        const auto calls = [&](Pass pass) { return per(static_cast<double>(n[pass]), window_.scenes); };
+        const auto call_ms = [&](Pass pass) { return per(ms[pass], n[pass]); };
         std::snprintf(line, sizeof(line),
                       "[rt-pass] scenes=%llu geometry-ms=%.3f geometry-flushes=%.2f composite-ms=%.3f "
-                      "composites=%.2f glow-base-ms=%.3f capture-ms=%.3f captures=%.2f dropped=%llu "
-                      "gpu-ms-per-scene=%.3f\n",
+                      "composites=%.2f glow-base-ms=%.3f capture-ms=%.3f captures=%.2f post-copy-ms=%.3f "
+                      "post-bright-ms=%.3f post-focus-ms=%.3f post-shafts-ms=%.3f post-blur-ms=%.3f "
+                      "post-finish-ms=%.3f posts=%.2f bloom-ms=%.3f blooms=%.2f dropped=%llu gpu-ms-per-scene=%.3f\n",
                       static_cast<unsigned long long>(window_.scenes), per(ms[kPassGeometry], window_.scenes),
-                      per(static_cast<double>(n[kPassGeometry]), window_.scenes),
-                      per(ms[kPassComposite], n[kPassComposite]),
-                      per(static_cast<double>(n[kPassComposite]), window_.scenes),
-                      per(ms[kPassGlowBase], n[kPassGlowBase]), per(ms[kPassCapture], n[kPassCapture]),
-                      per(static_cast<double>(n[kPassCapture]), window_.scenes),
+                      calls(kPassGeometry), call_ms(kPassComposite), calls(kPassComposite), call_ms(kPassGlowBase),
+                      call_ms(kPassCapture), calls(kPassCapture), call_ms(kPassPostCopy), call_ms(kPassPostBright),
+                      call_ms(kPassPostFocus), call_ms(kPassPostShafts), call_ms(kPassPostBlur),
+                      call_ms(kPassPostFinish), calls(kPassPostFinish), call_ms(kPassBloom), calls(kPassBloom),
                       static_cast<unsigned long long>(window_.passes_dropped), scene_ms);
         std::cerr << line;
     }
@@ -2682,29 +2686,34 @@ void SceneRayTracer::post_prepare(ID3D12GraphicsCommandList* list, D3D12_GPU_DES
     }
     const D3D12_RESOURCE_BARRIER all_uav = uav_barrier(nullptr);
     const auto run = [&](ID3D12PipelineState* pso, ID3D12Resource* in, ID3D12Resource* out, std::uint32_t axis,
-                         UINT gx, UINT gy) {
+                         UINT gx, UINT gy, Pass pass) {
         c.axis = axis;
         list->SetComputeRoot32BitConstants(0u, sizeof(c) / 4u, &c, 0u);
         list->SetComputeRootShaderResourceView(2u, in->GetGPUVirtualAddress());
         list->SetComputeRootUnorderedAccessView(3u, out->GetGPUVirtualAddress());
         list->SetPipelineState(pso);
+        const int timed = begin_pass(list);
         list->Dispatch(gx, gy, 1u);
+        if (timed >= 0) {
+            list->ResourceBarrier(1u, &all_uav);
+        }
+        end_pass(list, timed, pass);
     };
     list->SetComputeRootSignature(post_root_.Get());
     list->SetComputeRootDescriptorTable(1u, color_depth_table);
     list->SetComputeRootUnorderedAccessView(4u, state->GetGPUVirtualAddress());
     // The picture before the finish, its bright part, the focus and core radius.
-    run(post_copy_pso_.Get(), state, scene, 0u, (width + 7u) / 8u, (height + 7u) / 8u);
-    run(post_bright_pso_.Get(), state, bright, 0u, (qw + 7u) / 8u, (qh + 7u) / 8u);
-    run(post_focus_pso_.Get(), state, tmp, 0u, 1u, 1u);
+    run(post_copy_pso_.Get(), state, scene, 0u, (width + 7u) / 8u, (height + 7u) / 8u, kPassPostCopy);
+    run(post_bright_pso_.Get(), state, bright, 0u, (qw + 7u) / 8u, (qh + 7u) / 8u, kPassPostBright);
+    run(post_focus_pso_.Get(), state, tmp, 0u, 1u, 1u, kPassPostFocus);
     list->ResourceBarrier(1u, &all_uav);
     // Shafts from the bright part; its blur across, then down.
     to_state(list, bright, post_states_[1], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    run(post_shafts_pso_.Get(), bright, shafts, 0u, (qw + 7u) / 8u, (qh + 7u) / 8u);
-    run(post_blur_pso_.Get(), bright, tmp, 0u, (qw + 7u) / 8u, (qh + 7u) / 8u);
+    run(post_shafts_pso_.Get(), bright, shafts, 0u, (qw + 7u) / 8u, (qh + 7u) / 8u, kPassPostShafts);
+    run(post_blur_pso_.Get(), bright, tmp, 0u, (qw + 7u) / 8u, (qh + 7u) / 8u, kPassPostBlur);
     list->ResourceBarrier(1u, &all_uav);
     to_state(list, tmp, post_states_[2], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    run(post_blur_pso_.Get(), tmp, bloom, 1u, (qw + 7u) / 8u, (qh + 7u) / 8u);
+    run(post_blur_pso_.Get(), tmp, bloom, 1u, (qw + 7u) / 8u, (qh + 7u) / 8u, kPassPostBlur);
     list->ResourceBarrier(1u, &all_uav);
     for (unsigned i = 0; i < post_buffers_.size(); ++i) {
         to_state(list, post_buffers_[i].Get(), post_states_[i], kLightRead);
@@ -2733,7 +2742,9 @@ void SceneRayTracer::post_finish(ID3D12GraphicsCommandList* list, D3D12_CPU_DESC
     list->SetGraphicsRootShaderResourceView(4u, post_buffers_[4]->GetGPUVirtualAddress());
     list->SetGraphicsRootShaderResourceView(5u, post_buffers_[5]->GetGPUVirtualAddress());
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    const int timed = begin_pass(list);
     list->DrawInstanced(3u, 1u, 0u, 0u);
+    end_pass(list, timed, kPassPostFinish);
 }
 
 void SceneRayTracer::write_light_texture(ID3D12GraphicsCommandList* list, int slot) {
@@ -2822,7 +2833,9 @@ void SceneRayTracer::bloom(ID3D12GraphicsCommandList* list, D3D12_CPU_DESCRIPTOR
     list->SetGraphicsRoot32BitConstants(0u, sizeof(c) / 4u, &c, 0u);
     list->SetGraphicsRootShaderResourceView(1u, bloom_[index]->GetGPUVirtualAddress());
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    const int timed = begin_pass(list);
     list->DrawInstanced(3u, 1u, 0u, 0u);
+    end_pass(list, timed, kPassBloom);
 }
 
 void SceneRayTracer::composite(ID3D12GraphicsCommandList* list, D3D12_CPU_DESCRIPTOR_HANDLE target,
