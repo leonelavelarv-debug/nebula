@@ -288,6 +288,14 @@ private:
         std::uint32_t draws = 0;
         std::uint32_t triangles = 0;
     };
+    // GALAXY_RT_PASS_TIMING=1: GPU time of the passes outside trace_scene's timestamps ([rt-pass]).
+    enum Pass : std::uint32_t { kPassGeometry, kPassComposite, kPassGlowBase, kPassCapture, kPassCount };
+    struct PassEntry {
+        std::uint64_t frame = 0;
+        std::uint32_t pass = 0;
+        bool pending = false;
+    };
+    static constexpr unsigned kPassEntries = 512u;
 
     // `preserved`: triangles earlier chunks of the open scene wrote, kept when the buffers grow.
     bool ensure_capacity(ID3D12GraphicsCommandList* list, std::uint32_t triangles, std::uint32_t preserved);
@@ -318,6 +326,10 @@ private:
     bool create_buffer(std::uint64_t bytes, D3D12_HEAP_TYPE heap, D3D12_RESOURCE_STATES state,
                        D3D12_RESOURCE_FLAGS flags, Microsoft::WRL::ComPtr<ID3D12Resource>& out, const wchar_t* name);
     void retire(Microsoft::WRL::ComPtr<ID3D12Resource>& resource);
+    // The pass's ring entry (-1: not timed); end_pass resolves both timestamps on the same list.
+    int begin_pass(ID3D12GraphicsCommandList* list);
+    void end_pass(ID3D12GraphicsCommandList* list, int entry, Pass pass);
+    void collect_passes(std::uint64_t frame_index);
     void report();
 
     Microsoft::WRL::ComPtr<ID3D12Device5> device_;
@@ -335,6 +347,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> stats_zero_;
     Microsoft::WRL::ComPtr<ID3D12Resource> readback_;
     Microsoft::WRL::ComPtr<ID3D12QueryHeap> timestamps_;
+    Microsoft::WRL::ComPtr<ID3D12QueryHeap> pass_timestamps_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> pass_readback_;
+    std::array<PassEntry, kPassEntries> pass_entries_{};
+    unsigned next_pass_entry_ = 0;
     std::vector<Retired> retired_;
     // GALAXY_RT_DUMP=<scene serial>: that scene's per-pixel validation is written as PPM
     // images to GALAXY_RT_DUMP_DIR (class, raster depth, traced depth).
@@ -662,6 +678,9 @@ private:
         std::uint64_t skipped = 0;
         std::uint64_t glow_draws = 0;
         std::uint64_t glow_triangles = 0;
+        std::array<double, kPassCount> pass_ms{};
+        std::array<std::uint64_t, kPassCount> passes{};
+        std::uint64_t passes_dropped = 0;
     } window_{};
 };
 
