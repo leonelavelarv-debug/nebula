@@ -617,6 +617,9 @@ unsigned pending_settings_changes() {
     changes += d.per_pixel_lighting != live.per_pixel_lighting;
     changes += d.hud_output_resolution != live.hud_output_resolution;
     changes += d.ray_tracing_enabled != live.ray_tracing_enabled;
+    changes += d.texture_packs != live.texture_packs ||
+        (d.texture_packs && d.texture_pack_preload != live.texture_pack_preload);
+    changes += d.texture_dump != live.texture_dump;
     changes += controls_changes();
     return changes;
 }
@@ -762,9 +765,12 @@ void reset_controls_draft() {
 }
 
 // The graphics page has its FSR 3 QUALITY row (row 3) only in runtimes built
-// with FSR 3; maps a shown row to its graphics row.
+// with FSR 3 and its RAY TRACING row (row 9) only where ray tracing is offered;
+// maps a shown row to its graphics row.
 unsigned graphics_row(unsigned row) {
-    return !temporal_quality_row_shown() && row >= 3u ? row + 1u : row;
+    if (!temporal_quality_row_shown() && row >= 3u) ++row;
+    if (!s_ray_tracing_offered.load(std::memory_order_relaxed) && row >= 9u) ++row;
+    return row;
 }
 
 unsigned native_settings_row_count(unsigned tab) {
@@ -772,7 +778,7 @@ unsigned native_settings_row_count(unsigned tab) {
     case 0: return frame_generation_offered() ? 9u : 8u;
     case 1:
         return (temporal_quality_row_shown() ? 9u : 8u) +
-               (s_ray_tracing_offered.load(std::memory_order_relaxed) ? 1u : 0u);
+               (s_ray_tracing_offered.load(std::memory_order_relaxed) ? 1u : 0u) + 2u;
     case 2: return controls_row_count();
     case 3: return 7u;
     case 4: return 1u;
@@ -880,6 +886,9 @@ void apply_native_settings_draft() {
     applied.per_pixel_lighting = next.per_pixel_lighting;
     applied.hud_output_resolution = next.hud_output_resolution;
     applied.ray_tracing_enabled = next.ray_tracing_enabled;
+    applied.texture_packs = next.texture_packs;
+    applied.texture_pack_preload = next.texture_pack_preload;
+    applied.texture_dump = next.texture_dump;
     const bool display_changed = display_settings_differ(live, applied);
     const unsigned changes = pending_settings_changes();
     if (applied.internal_follow_window) {
@@ -1134,6 +1143,13 @@ void adjust_native_setting_unlogged(int delta) {
         case 7: draft.per_pixel_lighting = !draft.per_pixel_lighting; break;
         case 8: draft.hud_output_resolution = !draft.hud_output_resolution; break;
         case 9: draft.ray_tracing_enabled = !draft.ray_tracing_enabled; break;
+        case 10: {  // texture packs: off, on (each texture at its first use), preload
+            const unsigned packs = step(!draft.texture_packs ? 0u : draft.texture_pack_preload ? 2u : 1u, 3u);
+            draft.texture_packs = packs != 0u;
+            draft.texture_pack_preload = packs == 2u;
+            break;
+        }
+        case 11: draft.texture_dump = !draft.texture_dump; break;
         default: return;
         }
         return;
@@ -12847,6 +12863,11 @@ std::string native_settings_row_text(
                    (render.hud_output_resolution ? "DISPLAY RES" : "INTERNAL RES");
         case 9:
             return std::string("RAY TRACING: ") + (render.ray_tracing_enabled ? "ON" : "OFF");
+        case 10:
+            return std::string("TEXTURE PACKS: ") +
+                   (!render.texture_packs ? "OFF" : render.texture_pack_preload ? "PRELOAD" : "ON");
+        case 11:
+            return std::string("DUMP TEXTURES: ") + (render.texture_dump ? "ON" : "OFF");
         default:
             return {};
         }

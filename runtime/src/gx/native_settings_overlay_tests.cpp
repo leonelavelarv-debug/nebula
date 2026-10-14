@@ -234,9 +234,9 @@ int main() {
     passed &= expect(reopen(), "reopening takes the new live settings");
     passed &= expect(key(VK_TAB), "Tab enters the graphics page");
     snapshot = galaxy::gx::native_settings_overlay_snapshot();
-    passed &= expect(snapshot.tab == 1u && snapshot.row_count == 9u,
+    passed &= expect(snapshot.tab == 1u && snapshot.row_count == 11u,
                      "graphics page has AA, AA quality, upscaler, upscaler quality, "
-                     "sharpening, textures, mipmaps, lighting and 2D layer");
+                     "sharpening, textures, mipmaps, lighting, 2D layer, texture packs and dump");
     passed &= expect(key(VK_LEFT), "left lowers the anti-aliasing mode");
     passed &= expect(key(VK_DOWN) && key(VK_RIGHT), "AA quality row is adjustable");
     passed &= expect(key(VK_RIGHT), "quality stops at its last value");
@@ -247,9 +247,11 @@ int main() {
     passed &= expect(key(VK_DOWN) && key(VK_RIGHT), "mipmap row toggles");
     passed &= expect(key(VK_DOWN) && key(VK_RIGHT), "lighting row toggles");
     passed &= expect(key(VK_DOWN) && key(VK_RIGHT), "2D layer row toggles");
+    passed &= expect(key(VK_DOWN) && key(VK_RIGHT), "texture packs row steps ON to PRELOAD");
+    passed &= expect(key(VK_DOWN) && key(VK_RIGHT), "texture dump row toggles");
     passed &= expect(
         galaxy::gx::get_render_config().aa_mode == 2u &&
-            galaxy::gx::native_settings_overlay_snapshot().pending_changes == 9u,
+            galaxy::gx::native_settings_overlay_snapshot().pending_changes == 11u,
         "every graphics change waits in the draft");
     passed &= expect(key(VK_RETURN), "Enter applies the graphics changes");
     const galaxy::gx::RenderConfig applied = galaxy::gx::get_render_config();
@@ -263,6 +265,8 @@ int main() {
     passed &= expect(!applied.enhanced_mipmaps, "mipmaps switch to the original ones");
     passed &= expect(!applied.per_pixel_lighting, "lighting switches to per vertex");
     passed &= expect(!applied.hud_output_resolution, "2D layer switches to the internal resolution");
+    passed &= expect(applied.texture_packs && applied.texture_pack_preload, "texture packs preload");
+    passed &= expect(applied.texture_dump, "texture dump switches on");
     passed &= expect(galaxy::gx::native_settings_overlay_snapshot().pending_changes == 0u,
                      "nothing is pending after apply");
 
