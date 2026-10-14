@@ -466,6 +466,7 @@ private:
     std::unordered_map<std::uint32_t, std::vector<Key>> pack_waiters_;
     std::vector<std::uint32_t> pack_ready_;
     std::uint64_t pack_hashed_ = 0;
+    std::uint64_t pack_hash_ns_ = 0;
     std::uint64_t pack_bound_ = 0;
     std::uint64_t pack_swapped_ = 0;
     std::uint64_t pack_stats_frame_ = 0;

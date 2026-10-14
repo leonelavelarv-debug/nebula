@@ -2110,10 +2110,10 @@ void TextureCache::apply_texture_packs() {
         }
         pack_waiters_.erase(waiting);
     }
-    if (++pack_stats_frame_ % 600u == 0u && packs_.enabled()) {
+    if (++pack_stats_frame_ % 600u == 0u && (packs_.enabled() || packs_.dumping())) {
         const TexturePacks::Stats stats = packs_.stats();
         std::cerr << "[texture-pack] names=" << stats.names << " hashed=" << pack_hashed_
-                  << " bound=" << pack_bound_ << " swapped=" << pack_swapped_ << " loads=" << stats.loads
+                  << " hash-ms=" << static_cast<double>(pack_hash_ns_) / 1.0e6 << " bound=" << pack_bound_ << " swapped=" << pack_swapped_ << " loads=" << stats.loads
                   << " failures=" << stats.load_failures << " uploads=" << stats.uploads
                   << " upload-mb=" << (stats.upload_bytes >> 20u) << " resident=" << stats.resident
                   << " resident-mb=" << (stats.resident_bytes >> 20u) << " evictions=" << stats.evictions
@@ -2382,6 +2382,7 @@ TextureHandle TextureCache::get(
     const bool pack_lookup = packs_.may_match(w, h, image.format);
     const bool pack_dump = packs_.dumping();
     if (pack_lookup || pack_dump) {
+        const auto hash_start = std::chrono::steady_clock::now();
         pack_name.width = image.width;
         pack_name.height = image.height;
         pack_name.format = static_cast<std::uint8_t>(image.format);
@@ -2391,6 +2392,9 @@ TextureHandle TextureCache::get(
             pack_name.tlut = texture_pack_tlut_hash(image.format, src, w, h, tlut_bank_ + tlut_byte_offset);
         }
         ++pack_hashed_;
+        pack_hash_ns_ += static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - hash_start)
+                .count());
         if (pack_lookup) {
             pack_slot = packs_.find(w, h, image.format, pack_name.hash, pack_name.tlut);
             if (const TextureReplacement* replacement = packs_.resident(pack_slot)) {
