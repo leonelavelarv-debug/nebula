@@ -10407,6 +10407,15 @@ void GxBackend::render_frame_on_thread(FrameChunk& chunk) {
         // New decoded textures upload through this frame's command list.
         texture_cache_.set_upload_list(renderer_.command_list());
         {
+            // Tests: GALAXY_TEXTURE_PACK_TOGGLE_FRAMES=N flips the setting every N frames, as the overlay does.
+            static const std::uint64_t toggle_frames = read_env_u64("GALAXY_TEXTURE_PACK_TOGGLE_FRAMES", 0u);
+            if (toggle_frames != 0u && frame_index_ != 0u && frame_index_ % toggle_frames == 0u) {
+                RenderConfig flipped = get_render_config();
+                flipped.texture_packs = !flipped.texture_packs;
+                set_render_config(flipped);
+                std::fprintf(stderr, "[texture-pack] toggle frame=%llu packs=%u\n",
+                             static_cast<unsigned long long>(frame_index_), flipped.texture_packs ? 1u : 0u);
+            }
             const RenderConfig render = get_render_config();
             static const std::filesystem::path packs = texture_pack_directory();
             static const std::filesystem::path dumps = texture_dump_directory();
