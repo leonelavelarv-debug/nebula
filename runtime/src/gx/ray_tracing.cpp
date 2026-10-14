@@ -120,11 +120,16 @@ struct RtCaptureConstants {
     float strength;
     float split;
     float surface_gain;
-    std::uint32_t pad[2];
+    float sky_distance;
+    float exposure_day;
     float projection[4];
     float to_world[3][4];
+    float exposure_night;
+    float daylight;
+    std::uint32_t exposure;
+    std::uint32_t pad;
 };
-static_assert(sizeof(RtCaptureConstants) == 144u);
+static_assert(sizeof(RtCaptureConstants) == 160u);
 
 // Mirrors cbuffer RtComposite in rt_lighting.hlsl (root constants).
 struct RtCompositeConstants {
@@ -192,9 +197,9 @@ enum EmitParameter : UINT {
 // A result slot's state: read by the composite (pixel) and the picture capture (compute).
 constexpr D3D12_RESOURCE_STATES kLightRead =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-// Sky r g b n, scene r g b n (cleared per capture), then the sky's luminance over time and
-// whether it is known (kept).
-constexpr UINT64 kPictureSumsBytes = 48u;
+// Sky r g b n, scene r g b n (cleared per capture); the sky's luminance over time, known (kept);
+// the lighting's luminance sum (x 256) and count (cleared); the exposure, known (kept).
+constexpr UINT64 kPictureSumsBytes = 64u;
 constexpr UINT64 kPictureSumsCleared = 32u;
 
 constexpr unsigned kReprojectEntries = 256u;
@@ -553,7 +558,12 @@ bool SceneRayTracer::initialize(ID3D12Device* device, std::uint64_t timestamp_fr
     night_ = std::clamp(env_float("GALAXY_RT_NIGHT", 0.4f), 0.0f, 1.0f);
     daylight_ = std::clamp(env_float("GALAXY_RT_DAYLIGHT", 0.35f), 0.01f, 1.0f);
     glow_boost_ = std::clamp(env_float("GALAXY_RT_GLOW_BOOST", 0.4f), 0.0f, 1.0f);
-    glow_exposure_ = std::clamp(env_float("GALAXY_RT_GLOW_EXPOSURE", 1.6f), 1.0f, 4.0f);
+    glow_exposure_ = std::clamp(env_float("GALAXY_RT_GLOW_EXPOSURE", 2.2f), 1.0f, 6.0f);
+    glow_spill_ = std::clamp(env_float("GALAXY_RT_GLOW_SPILL", 0.7f), 0.0f, 2.0f);
+    sky_distance_ = std::clamp(env_float("GALAXY_RT_SKY_DISTANCE", 60000.0f), 1000.0f, 1.0e7f);
+    exposure_ = env_float("GALAXY_RT_EXPOSURE", 1.0f) != 0.0f;
+    exposure_day_ = std::clamp(env_float("GALAXY_RT_EXPOSURE_DAY", 0.97f), 0.3f, 1.5f);
+    exposure_night_ = std::clamp(env_float("GALAXY_RT_EXPOSURE_NIGHT", 0.8f), 0.3f, 1.5f);
     surface_emission_ = std::clamp(env_float("GALAXY_RT_SURFACE_EMISSION", 3.0f), 0.0f, 256.0f);
     {
         char value[96]{};
@@ -569,6 +579,9 @@ bool SceneRayTracer::initialize(ID3D12Device* device, std::uint64_t timestamp_fr
         std::cerr << "[rt] lighting unavailable\n";
         lighting_enabled_ = false;
     }
+    if (lighting_enabled_) {
+        static_cast<void>(reflections_.initialize(device_.Get(), timestamp_frequency, color_format));
+    }
     ready_ = true;
     std::cerr << "[rt] ready tier=1.1 validate=" << (validate ? 1 : 0) << " lighting=" << (lighting_enabled_ ? 1 : 0)
               << " rays=" << rays_ << " range=" << range_ << " strength=" << strength_
@@ -580,6 +593,7 @@ bool SceneRayTracer::initialize(ID3D12Device* device, std::uint64_t timestamp_fr
 }
 
 void SceneRayTracer::shutdown() noexcept {
+    reflections_.shutdown();
     ready_ = false;
     scene_open_ = false;
     draws_.clear();
@@ -819,6 +833,7 @@ void SceneRayTracer::begin_frame(std::uint64_t frame_index) {
     if (!ready_) {
         return;
     }
+    reflections_.begin_frame(frame_index);
     std::erase_if(retired_, [&](const Retired& entry) { return entry.frame + kResultDelay <= frame_index; });
     for (unsigned slot = 0; slot < kResultSlots; ++slot) {
         ResultSlot& result = slots_[slot];
@@ -914,7 +929,12 @@ void SceneRayTracer::write_dump() {
             file.write(reinterpret_cast<const char*>(row.data()), static_cast<std::streamsize>(row.size()));
         }
     }
-    // Pixels per class for every draw (by the traced triangle), then the draws in table order.
+    // Pixels per class for every draw (by the traced triangle), then the draws in table order. The
+    // surface image colours each pixel by its triangle's surface class (rt_surfaces.h): diffuse grey,
+    // glossy cyan, metal orange, unlit magenta, water blue.
+    static constexpr std::uint8_t kSurfaceColors[6][3] = {
+        {70, 70, 70}, {0, 220, 255}, {255, 170, 0}, {255, 0, 255}, {0, 80, 255}, {255, 255, 255}};
+    std::vector<std::uint8_t> surface_image(static_cast<std::size_t>(pixels) * 3u, 0u);
     std::vector<std::array<std::uint32_t, 8>> per_draw(dump_draws_.size());
     for (std::uint64_t i = 0; i < pixels; ++i) {
         const float* texel = texels + i * 4u;
@@ -928,7 +948,15 @@ void SceneRayTracer::write_dump() {
         const std::size_t index = static_cast<std::size_t>(std::distance(dump_draws_.begin(), it)) - 1u;
         if (index < per_draw.size()) {
             ++per_draw[index][std::min(static_cast<unsigned>(texel[0]), 7u)];
+            const unsigned surface = std::min((dump_draws_[index].flags & kRtDrawClassMask) >> kRtDrawClassShift, 5u);
+            std::memcpy(surface_image.data() + i * 3u, kSurfaceColors[surface], 3u);
         }
+    }
+    {
+        std::ofstream file(directory + "\\rt_surface_" + std::to_string(dump_scene_) + ".ppm", std::ios::binary);
+        file << "P6\n" << dump_width_ << ' ' << dump_height_ << "\n255\n";
+        file.write(reinterpret_cast<const char*>(surface_image.data()),
+                   static_cast<std::streamsize>(surface_image.size()));
     }
     std::ofstream report(directory + "\\rt_draws_" + std::to_string(dump_scene_) + ".txt");
     report << "camera";
@@ -939,7 +967,8 @@ void SceneRayTracer::write_dump() {
     }
     report << "\ndraw first triangles flags vertices proj(A B C D E F) depth(min max) cull phase | "
               "bg bg-hit match0.1 match1 nearer farther miss outside | channel ambient material "
-              "light(index px py pz dx dy dz color) x2\n";
+              "light(index px py pz dx dy dz color) x2 | surface(class features) ind/texgens/stages "
+              "env-stage/combiner chan0 chan1\n";
     for (std::size_t d = 0; d < dump_draws_.size(); ++d) {
         const RtDraw& draw = dump_draws_[d];
         report << d << ' ' << draw.first_triangle << ' ' << draw.triangle_count << ' ' << draw.flags << ' '
@@ -962,6 +991,10 @@ void SceneRayTracer::write_dump() {
                 std::snprintf(words, sizeof(words), " %08x", info.light_color[l]);
                 report << words;
             }
+            std::snprintf(words, sizeof(words), " | %u %02x %06x %08x %08x %08x",
+                          (info.surface & kRtDrawClassMask) >> kRtDrawClassShift, info.shading[0] >> 24u,
+                          info.shading[0] & 0xFFFFFFu, info.shading[1], info.shading[2], info.shading[3]);
+            report << words;
         }
         report << '\n';
     }
@@ -1597,12 +1630,14 @@ void SceneRayTracer::trace_lighting(ID3D12GraphicsCommandList* list, Allocate al
     c.ambient[0] = night_;
     c.ambient[1] = daylight_;
     c.ambient[2] = glow_boost_;
+    c.ambient[3] = sky_distance_;
     std::memcpy(upload.cpu, &c, sizeof(c));
 
     const unsigned current = light_parity_;
     const unsigned previous = current ^ 1u;
     const unsigned slot = next_light_slot_;
     next_light_slot_ = (next_light_slot_ + 1u) % kLightSlots;
+    reflections_.invalidate(slot);
     constexpr D3D12_RESOURCE_STATES kUav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     constexpr D3D12_RESOURCE_STATES kRead = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     to_state(list, light_z_[current].Get(), light_z_state_[current], kUav);
@@ -1757,6 +1792,11 @@ void SceneRayTracer::capture_picture(ID3D12GraphicsCommandList* list, const RtSo
     std::array<float, 12> to_world{};
     const bool surfaces = emit && surface_emission_ > 0.0f && affine_inverse(camera_, to_world);
     c.surface_gain = surface_emission_;
+    c.sky_distance = sky_distance_;
+    c.exposure_day = exposure_day_;
+    c.exposure_night = exposure_night_;
+    c.daylight = daylight_;
+    c.exposure = exposure_ ? 1u : 0u;
     std::copy(view_.projection.begin(), view_.projection.end(), c.projection);
     std::memcpy(c.to_world, to_world.data(), sizeof(c.to_world));
     const int timed = begin_pass(list);
@@ -1768,6 +1808,7 @@ void SceneRayTracer::capture_picture(ID3D12GraphicsCommandList* list, const RtSo
     to_state(list, picture_.Get(), picture_state_, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     to_state(list, picture_sums_.Get(), picture_sums_state_, D3D12_RESOURCE_STATE_COPY_DEST);
     list->CopyBufferRegion(picture_sums_.Get(), 0u, stats_zero_.Get(), 0u, kPictureSumsCleared);
+    list->CopyBufferRegion(picture_sums_.Get(), 40u, stats_zero_.Get(), 0u, 8u);
     to_state(list, picture_sums_.Get(), picture_sums_state_, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     list->SetComputeRootSignature(capture_root_.Get());
     list->SetPipelineState(capture_pso_.Get());
@@ -1953,6 +1994,50 @@ void SceneRayTracer::composite(ID3D12GraphicsCommandList* list, D3D12_CPU_DESCRI
     list->DrawInstanced(3u, 1u, 0u, 0u);
     end_pass(list, timed, kPassComposite);
     ++window_.composites;
+    if (!show_lighting_) {
+        reflections_.composite(list, target, depth_srv, width, height, index,
+                               reproject ? reproject_->GetGPUVirtualAddress() : 0u, c.split);
+    }
+}
+
+void SceneRayTracer::trace_reflections(ID3D12GraphicsCommandList* list, Allocate allocate, void* allocate_context,
+                                       D3D12_GPU_DESCRIPTOR_HANDLE color_depth_table, std::uint32_t width,
+                                       std::uint32_t height) {
+    if (!reflections_active() || light_slot_ < 0 || list == nullptr || allocate == nullptr || !tlas_ ||
+        !positions_ || !surfaces_ || !light_primary_) {
+        return;
+    }
+    const auto slot = static_cast<unsigned>(light_slot_);
+    const LightSlot& light = light_slots_[slot];
+    if (light.width != width || light.height != height || !light_final_[slot]) {
+        return;
+    }
+    const RtUpload upload = allocate(allocate_context, RtReflections::kConstantsBytes, 256u);
+    if (upload.cpu == nullptr) {
+        return;
+    }
+    // trace_lighting left the geometry readable and its per-sample primary hits (always UAV) written.
+    to_state(list, positions_.Get(), positions_state_, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    to_state(list, surfaces_.Get(), surfaces_state_, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    RtReflectScene scene{};
+    scene.projection = light.view.projection;
+    scene.depth = {light.view.z_scale, light.view.z_offset, light.view.min_depth, light.view.max_depth};
+    scene.viewport = light.view.viewport;
+    scene.near_plane = light.near_plane;
+    scene.camera = light.camera;
+    scene.camera_known = light.camera_known;
+    scene.width = width;
+    scene.height = height;
+    scene.sample_width = light.sample_width;
+    scene.sample_height = light.sample_height;
+    scene.factor = light.factor;
+    scene.tlas = tlas_->GetGPUVirtualAddress();
+    scene.positions = positions_->GetGPUVirtualAddress();
+    scene.surfaces = surfaces_->GetGPUVirtualAddress();
+    scene.primary = light_primary_->GetGPUVirtualAddress();
+    scene.light = light_final_[slot]->GetGPUVirtualAddress();
+    scene.sums = picture_valid_ ? picture_sums_->GetGPUVirtualAddress() : 0u;
+    reflections_.trace(list, scene, slot, upload.cpu, upload.gpu, color_depth_table);
 }
 
 void SceneRayTracer::write_reprojection(ID3D12GraphicsCommandList* list, const std::array<float, 12>& camera_t) {
