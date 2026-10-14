@@ -414,6 +414,17 @@ void test_packs_on_warp() {
     expect(packs.stats().dumped == 1u && read_png(file, w, h, back) && w == 4u && h == 4u && back == pixels,
            "dumped PNG holds the texture once");
 
+    // The game folder itself as the pack folder (the dump toggle's look-up-again is consumed first).
+    expect(gpu.pump(packs, ready) && !gpu.pump(packs, ready), "toggling the dump asks for one look-up");
+    settings.packs = root / "My Pack" / TexturePacks::kGameId;
+    packs.configure(settings);
+    bool reindexed = false;
+    for (int i = 0; i < 400 && !reindexed; ++i) {
+        reindexed = gpu.pump(packs, ready);
+        if (!reindexed) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    expect(reindexed && packs.stats().names == 2u, "a game folder given directly is indexed");
+
     // Off: the index goes and lookups stop.
     settings.enabled = false;
     packs.configure(settings);
