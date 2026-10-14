@@ -5,6 +5,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -106,6 +107,28 @@ namespace Nebula.Launcher
             older.Save();
             Check(File.ReadAllText(path).Contains("audio_wiimote_speaker_gain=0.75") && AudioSettings.Load().Percent[6] == 75,
                   "Wiimote sounds are saved with the other volumes");
+            File.Delete(path);
+        }
+
+        static void TexturePackCases()
+        {
+            string path = GraphicsSettings.ConfigPath;
+            if (File.Exists(path)) File.Delete(path);
+            var fresh = GraphicsSettings.Load();
+            Check(fresh.TexturePacks == 1 && !fresh.TextureDump, "texture packs start on, dumping off");
+            Check(GraphicsSettings.TexturePackFolder == Path.Combine(NebulaPaths.DataRoot, "TexturePacks"),
+                  "the pack folder is TexturePacks beside config.ini");
+            File.WriteAllText(path, "texture_packs=1\ntexture_pack_preload=1\ntexture_dump=1\n");
+            var preload = GraphicsSettings.Load();
+            Check(preload.TexturePacks == 2 && preload.TextureDump, "texture_pack_preload=1 reads as Preload at start");
+            File.WriteAllText(path, "texture_packs=0\ntexture_pack_preload=1\n");
+            Check(GraphicsSettings.Load().TexturePacks == 0, "texture_packs=0 reads as Off whatever the preload key says");
+            preload.TexturePacks = 0;
+            preload.TextureDump = false;
+            preload.Save();
+            string saved = File.ReadAllText(path);
+            Check(saved.Contains("texture_packs=0") && saved.Contains("texture_pack_preload=0") && saved.Contains("texture_dump=0"),
+                  "Off and no dumping are saved as the runtime's keys");
             File.Delete(path);
         }
 
@@ -346,6 +369,7 @@ namespace Nebula.Launcher
                 WindowSizeCases();
                 AudioCases();
                 GeneralCases();
+                TexturePackCases();
                 SaveArchiveCases(outDir);
                 Application.EnableVisualStyles();
 
@@ -372,6 +396,16 @@ namespace Nebula.Launcher
                 {
                     Check(form.Text == "Nebula settings", "later title: " + form.Text);
                     Render(form, form.Controls.OfType<TabControl>().Single(), outDir, "later");
+                    var packs = All(form).OfType<ComboBox>().Single(c => c.Items.Contains("Preload at start"));
+                    var dump = All(form).OfType<CheckBox>().Single(c => c.Text == "Dump textures (for pack makers)");
+                    Check(packs.SelectedIndex == 1 && !dump.Checked, "Advanced: Texture packs shows On, dumping off");
+                    packs.SelectedIndex = 2;
+                    dump.Checked = true;
+                    var commit = typeof(SettingsForm).GetMethod("Commit", BindingFlags.NonPublic | BindingFlags.Instance);
+                    Check((bool)commit.Invoke(form, null), "the settings commit");
+                    string config = File.ReadAllText(GraphicsSettings.ConfigPath);
+                    Check(config.Contains("texture_packs=1") && config.Contains("texture_pack_preload=1") &&
+                          config.Contains("texture_dump=1"), "Preload at start and dumping reach config.ini");
                 }
 
                 // TryLaunch starts <App>\NebulaRuntime.exe, here a stub that records its arguments.

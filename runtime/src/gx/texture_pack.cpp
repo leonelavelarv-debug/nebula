@@ -785,6 +785,10 @@ const TextureReplacement* TexturePacks::resident(std::uint32_t slot) const noexc
     return slot < slots_.size() && slots_[slot].state == SlotState::Resident ? &slots_[slot].replacement : nullptr;
 }
 
+std::filesystem::path TexturePacks::file(std::uint32_t slot) const {
+    return index_ && slot < index_->records.size() ? index_->records[slot].file : std::filesystem::path{};
+}
+
 void TexturePacks::add_user(std::uint32_t slot) {
     if (slot >= slots_.size()) return;
     Slot& s = slots_[slot];
@@ -985,6 +989,8 @@ bool TexturePacks::pump(ID3D12GraphicsCommandList* list, std::vector<std::uint32
             changed = true;
             clear_slots();
             slots_.resize(index_->records.size());
+            preload_start_ns_ = static_cast<std::uint64_t>(
+                std::chrono::steady_clock::now().time_since_epoch() / std::chrono::nanoseconds(1));
             std::cerr << "[texture-pack] index files=" << index_->files << " names=" << index_->records.size()
                       << " ms=" << index_->ms << " folder=" << display(settings_.packs) << '\n';
         }
@@ -1066,6 +1072,15 @@ bool TexturePacks::pump(ID3D12GraphicsCommandList* list, std::vector<std::uint32
         uploaded += bytes;
         ready.push_back(i);
     }
+    if (settings_.preload && preload_start_ns_ != 0u && outstanding_ == 0u &&
+        (preload_cursor_ >= slots_.size() ||
+         (settings_.budget_bytes != 0u && resident_bytes_ >= settings_.budget_bytes))) {
+        const auto now = static_cast<std::uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch() / std::chrono::nanoseconds(1));
+        std::cerr << "[texture-pack] preloaded resident=" << resident_count_ << " mb=" << (resident_bytes_ >> 20u)
+                  << " ms=" << (now - preload_start_ns_) / 1000000u << '\n';
+        preload_start_ns_ = 0;
+    }
     return changed;
 }
 
@@ -1081,10 +1096,17 @@ void TexturePacks::dump(const TexturePackName& name, std::uint32_t width, std::u
         std::filesystem::create_directories(folder, error);
         const std::filesystem::path path = folder / (stem + ".png");
         if (std::filesystem::exists(path, error)) return;
-        if (encode_png(thread_wic(), path, width, height, pixels)) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            ++dumped_count_;
+        // Written beside and renamed: a reader never sees a partial file.
+        const std::filesystem::path partial = folder / (stem + ".png.part");
+        if (encode_png(thread_wic(), partial, width, height, pixels)) {
+            std::filesystem::rename(partial, path, error);
+            if (!error) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                ++dumped_count_;
+                return;
+            }
         }
+        std::filesystem::remove(partial, error);
     });
 }
 

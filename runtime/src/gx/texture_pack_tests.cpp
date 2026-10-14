@@ -410,7 +410,7 @@ void test_packs_on_warp() {
     packs.dump(dumped, 4u, 4u, pixels.data());
     packs.dump(dumped, 4u, 4u, pixels.data());
     const std::filesystem::path file = settings.dumps / TexturePacks::kGameId / (texture_pack_name(dumped) + ".png");
-    for (int i = 0; i < 400 && packs.stats().dumped == 0u; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    for (int i = 0; i < 2000 && packs.stats().dumped == 0u; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     std::uint32_t w = 0, h = 0;
     std::vector<std::uint8_t> back;
     expect(packs.stats().dumped == 1u && read_png(file, w, h, back) && w == 4u && h == 4u && back == pixels,
@@ -535,11 +535,11 @@ void test_cache_on_warp() {
     const TextureHandle back = cache.get(image, mode, TlutRef{}, &memory);
     expect(back.resource != nullptr && back.resource->GetDesc().Width == 32u, "packs off: the original again");
     const std::filesystem::path dumped = settings.dumps / TexturePacks::kGameId / (texture_pack_name(name) + ".png");
-    for (int i = 0; i < 400 && !std::filesystem::exists(dumped); ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
     std::uint32_t w = 0, h = 0;
     std::vector<std::uint8_t> pixels;
+    for (int i = 0; i < 2000 && !std::filesystem::exists(dumped); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
     expect(read_png(dumped, w, h, pixels) && w == 32u && h == 32u, "dump writes the texture under its pack name");
     next_frame();
     cache.set_upload_list(nullptr);

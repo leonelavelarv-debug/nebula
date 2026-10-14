@@ -167,6 +167,17 @@ bool trace_texture_uploads_enabled() {
     return enabled;
 }
 
+// GALAXY_TEXTURE_PACK_TRACE=1: each replacement bound or swapped in, with its guest address and file.
+bool trace_texture_packs_enabled() {
+    static const bool enabled = [] {
+        char value[16]{};
+        std::size_t length = 0;
+        return getenv_s(&length, value, sizeof(value), "GALAXY_TEXTURE_PACK_TRACE") == 0 &&
+               length > 1 && value[0] != '0';
+    }();
+    return enabled;
+}
+
 std::uint64_t read_env_u64(const char* name, std::uint64_t fallback) {
     char value[32]{};
     std::size_t length = 0;
@@ -2107,6 +2118,10 @@ void TextureCache::apply_texture_packs() {
             it->second = std::move(next);
             decoded_lru_track(key);
             ++pack_swapped_;
+            if (trace_texture_packs_enabled()) {
+                std::cerr << "[texture-pack] swap addr=" << std::hex << key.guest_addr << std::dec << ' '
+                          << packs_.file(slot).filename().string() << '\n';
+            }
         }
         pack_waiters_.erase(waiting);
     }
@@ -2406,6 +2421,10 @@ TextureHandle TextureCache::get(
                 entries_.emplace(key, std::move(entry));
                 decoded_lru_track(key);
                 ++pack_bound_;
+                if (trace_texture_packs_enabled()) {
+                    std::cerr << "[texture-pack] bind addr=" << std::hex << image.guest_addr << std::dec << ' '
+                              << packs_.file(pack_slot).filename().string() << '\n';
+                }
                 return handle;
             }
         }

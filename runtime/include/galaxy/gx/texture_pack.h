@@ -136,6 +136,8 @@ public:
                                      std::uint64_t hash, std::uint64_t tlut) const;
     // Null until the slot's texture is on the GPU.
     [[nodiscard]] const TextureReplacement* resident(std::uint32_t slot) const noexcept;
+    // The file a slot loads from (traces).
+    [[nodiscard]] std::filesystem::path file(std::uint32_t slot) const;
     // A cache entry binds (or waits for) the slot: loads it if needed and keeps it resident.
     void add_user(std::uint32_t slot);
     void remove_user(std::uint32_t slot) noexcept;
@@ -221,6 +223,7 @@ private:
     std::deque<std::uint32_t> ready_queue_;
     std::uint32_t outstanding_ = 0;     // slots loading or waiting for their upload
     std::uint32_t preload_cursor_ = 0;
+    std::uint64_t preload_start_ns_ = 0;  // steady clock at the index swap; 0 once the preload is reported
     bool configured_ = false;
     bool changed_ = false;              // the cache must look its textures up again
     std::uint64_t generation_ = 0;
