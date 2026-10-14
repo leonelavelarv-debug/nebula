@@ -9,6 +9,7 @@
 #endif
 
 #include "galaxy/gx/gx_backend.h"
+#include "galaxy/gx/texture_cache.h"
 #include "galaxy/gx/texture_pack.h"
 
 #include <d3d12.h>
@@ -23,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -435,6 +437,116 @@ void test_packs_on_warp() {
     std::filesystem::remove_all(root);
 }
 
+// The texture cache with a pack: the original shows first, the replacement takes its place at a frame
+// begin, binds without a decode once resident, and turning packs off brings the original back. Dump mode
+// writes the original under the name the pack uses.
+void test_cache_on_warp() {
+    Gpu gpu;
+    if (!gpu.create()) {
+        std::cerr << "FAILED: WARP device\n";
+        ++failures;
+        return;
+    }
+    const std::filesystem::path root = std::filesystem::temp_directory_path() /
+                                       ("nebula-texture-cache-pack-test-" + std::to_string(GetCurrentProcessId()));
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / TexturePacks::kGameId);
+    // A 32x32 RGBA8 guest texture: 16 tiles of 64 bytes.
+    constexpr std::uint32_t kAddress = 0x80100000u;
+    std::vector<std::byte> guest(4096u);
+    for (std::size_t i = 0; i < guest.size(); ++i) guest[i] = static_cast<std::byte>(i * 31u + 7u);
+    galaxy::GuestMemoryRegionV1 region{kAddress, static_cast<std::uint32_t>(guest.size()), guest.data()};
+    galaxy::GuestMemoryV1 memory{};
+    memory.regions = &region;
+    memory.region_count = 1u;
+    TexImage image{};
+    image.guest_addr = kAddress;
+    image.width = 32u;
+    image.height = 32u;
+    image.format = TexFormat::RGBA8;
+    TexMode mode{};
+    mode.wrap_s = TexWrap::Repeat;
+    mode.wrap_t = TexWrap::Repeat;
+    mode.mag_filter = TexMagFilter::Linear;
+    mode.min_filter = TexMinFilter::Linear;
+    TexturePackName name{};
+    name.width = 32u;
+    name.height = 32u;
+    name.format = static_cast<std::uint8_t>(TexFormat::RGBA8);
+    name.hash = texture_pack_hash(reinterpret_cast<const std::uint8_t*>(guest.data()), guest.size());
+    std::vector<std::uint8_t> big(96u * 96u * 4u, 0x80u);
+    expect(write_png(root / TexturePacks::kGameId / (texture_pack_name(name) + ".png"), 96u, 96u, big),
+           "cache test PNG written");
+
+    // Large (TMEM model, descriptor tables): on the heap.
+    const auto owner = std::make_unique<TextureCache>();
+    TextureCache& cache = *owner;
+    expect(cache.initialize(gpu.device.Get()), "cache initializes");
+    unsigned frame = 0;
+    const auto next_frame = [&] {
+        gpu.list->Close();
+        ID3D12CommandList* lists[] = {gpu.list.Get()};
+        gpu.queue->ExecuteCommandLists(1, lists);
+        gpu.queue->Signal(gpu.fence.Get(), ++gpu.value);
+        while (gpu.fence->GetCompletedValue() < gpu.value) std::this_thread::yield();
+        gpu.allocator->Reset();
+        gpu.list->Reset(gpu.allocator.Get(), nullptr);
+        cache.begin_frame(frame++ % 2u, 2u);
+        cache.set_upload_list(gpu.list.Get());
+        cache.apply_texture_packs();
+    };
+    cache.begin_frame(frame++ % 2u, 2u);
+    cache.set_upload_list(gpu.list.Get());
+    TexturePackSettings settings{};
+    settings.packs = root;
+    settings.dumps = root / "dumps";
+    settings.budget_bytes = 64ull << 20;
+    cache.configure_texture_packs(settings);
+    for (int i = 0; i < 400 && cache.texture_pack_stats().names == 0u; ++i) {
+        next_frame();
+        if (cache.texture_pack_stats().names == 0u) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    expect(cache.texture_pack_stats().names == 1u, "cache publishes the pack index");
+    const TextureHandle original = cache.get(image, mode, TlutRef{}, &memory);
+    expect(original.resource != nullptr && original.resource->GetDesc().Width == 32u && original.lod_shift_x16 == 0u,
+           "the original shows while its replacement loads");
+    TextureHandle replaced{};
+    for (int i = 0; i < 400; ++i) {
+        next_frame();
+        replaced = cache.get(image, mode, TlutRef{}, &memory);
+        if (replaced.resource != nullptr && replaced.resource->GetDesc().Width == 96u) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    expect(replaced.resource != nullptr && replaced.resource->GetDesc().Width == 96u && replaced.width == 32u &&
+               replaced.height == 32u && replaced.mip_levels == 7u && replaced.lod_shift_x16 == 25u &&
+               cache.srv_index_retired(original.srv_index),
+           "the replacement takes the original's place (guest size kept, 3x shift, original retired)");
+    cache.invalidate_all();
+    const TextureHandle bound = cache.get(image, mode, TlutRef{}, &memory);
+    expect(bound.resource == replaced.resource && bound.srv_index != replaced.srv_index,
+           "a resident replacement binds again without a decode");
+    expect(gpu.device->GetDeviceRemovedReason() == S_OK, "device alive with the replacement");
+
+    // Packs off: the original decodes again; dump mode writes it under its pack name.
+    settings.enabled = false;
+    settings.dump = true;
+    cache.configure_texture_packs(settings);
+    next_frame();
+    const TextureHandle back = cache.get(image, mode, TlutRef{}, &memory);
+    expect(back.resource != nullptr && back.resource->GetDesc().Width == 32u, "packs off: the original again");
+    const std::filesystem::path dumped = settings.dumps / TexturePacks::kGameId / (texture_pack_name(name) + ".png");
+    for (int i = 0; i < 400 && !std::filesystem::exists(dumped); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    std::uint32_t w = 0, h = 0;
+    std::vector<std::uint8_t> pixels;
+    expect(read_png(dumped, w, h, pixels) && w == 32u && h == 32u, "dump writes the texture under its pack name");
+    next_frame();
+    cache.set_upload_list(nullptr);
+    cache.shutdown();
+    std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main() {
@@ -445,6 +557,12 @@ int main() {
     test_dds();
     test_sampler_shift();
     test_packs_on_warp();
+    try {
+        test_cache_on_warp();
+    } catch (const std::exception& error) {
+        std::cerr << "FAILED: cache test threw: " << error.what() << std::endl;
+        ++failures;
+    }
     if (failures == 0) {
         std::cout << "texture pack tests passed\n";
     }
