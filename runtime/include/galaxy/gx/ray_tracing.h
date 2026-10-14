@@ -239,7 +239,21 @@ private:
         std::uint32_t triangles = 0;
     };
     // GALAXY_RT_PASS_TIMING=1: GPU time of the passes outside trace_scene's timestamps ([rt-pass]).
-    enum Pass : std::uint32_t { kPassGeometry, kPassComposite, kPassGlowBase, kPassCapture, kPassCount };
+    // The finish's compute passes then run one after another (a barrier after each) to be timed alone.
+    enum Pass : std::uint32_t {
+        kPassGeometry,
+        kPassComposite,
+        kPassGlowBase,
+        kPassCapture,
+        kPassPostCopy,
+        kPassPostBright,
+        kPassPostFocus,
+        kPassPostShafts,
+        kPassPostBlur,
+        kPassPostFinish,
+        kPassBloom,
+        kPassCount
+    };
     struct PassEntry {
         std::uint64_t frame = 0;
         std::uint32_t pass = 0;
