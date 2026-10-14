@@ -764,6 +764,23 @@ void reset_controls_draft() {
     s_input_mode_draft = get_runtime_settings().input_mode;
 }
 
+// Texture-pack rows: TEXTURE PACKS (off, on: each texture at its first use, preload) and DUMP TEXTURES.
+std::string texture_pack_row_text(const RenderConfig& c) {
+    return std::string("TEXTURE PACKS: ") + (!c.texture_packs ? "OFF" : c.texture_pack_preload ? "PRELOAD" : "ON");
+}
+
+void texture_pack_row_step(RenderConfig& c, int delta) {
+    const int mode = std::clamp((!c.texture_packs ? 0 : c.texture_pack_preload ? 2 : 1) + delta, 0, 2);
+    c.texture_packs = mode != 0;
+    c.texture_pack_preload = mode == 2;
+}
+
+std::string texture_dump_row_text(const RenderConfig& c) {
+    return std::string("DUMP TEXTURES: ") + (c.texture_dump ? "ON" : "OFF");
+}
+
+void texture_dump_row_step(RenderConfig& c, int) { c.texture_dump = !c.texture_dump; }
+
 // The graphics page has its FSR 3 QUALITY row (row 3) only in runtimes built
 // with FSR 3 and its RAY TRACING row (row 9) only where ray tracing is offered;
 // maps a shown row to its graphics row.
@@ -1143,13 +1160,8 @@ void adjust_native_setting_unlogged(int delta) {
         case 7: draft.per_pixel_lighting = !draft.per_pixel_lighting; break;
         case 8: draft.hud_output_resolution = !draft.hud_output_resolution; break;
         case 9: draft.ray_tracing_enabled = !draft.ray_tracing_enabled; break;
-        case 10: {  // texture packs: off, on (each texture at its first use), preload
-            const unsigned packs = step(!draft.texture_packs ? 0u : draft.texture_pack_preload ? 2u : 1u, 3u);
-            draft.texture_packs = packs != 0u;
-            draft.texture_pack_preload = packs == 2u;
-            break;
-        }
-        case 11: draft.texture_dump = !draft.texture_dump; break;
+        case 10: texture_pack_row_step(draft, delta); break;
+        case 11: texture_dump_row_step(draft, delta); break;
         default: return;
         }
         return;
@@ -12863,11 +12875,8 @@ std::string native_settings_row_text(
                    (render.hud_output_resolution ? "DISPLAY RES" : "INTERNAL RES");
         case 9:
             return std::string("RAY TRACING: ") + (render.ray_tracing_enabled ? "ON" : "OFF");
-        case 10:
-            return std::string("TEXTURE PACKS: ") +
-                   (!render.texture_packs ? "OFF" : render.texture_pack_preload ? "PRELOAD" : "ON");
-        case 11:
-            return std::string("DUMP TEXTURES: ") + (render.texture_dump ? "ON" : "OFF");
+        case 10: return texture_pack_row_text(render);
+        case 11: return texture_dump_row_text(render);
         default:
             return {};
         }

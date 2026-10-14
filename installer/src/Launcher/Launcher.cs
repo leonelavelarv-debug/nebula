@@ -450,17 +450,7 @@ namespace Nebula.Launcher
                 if (File.Exists(setup)) Process.Start(new ProcessStartInfo(setup, "--update") { WorkingDirectory = session.Root });
             };
             y += 56;
-            Row(advanced, "Texture packs", texturePacks, ref y);
-            texturePacks.Items.AddRange(GraphicsSettings.TexturePackModes);
-            textureDump.Text = "Dump textures (for pack makers)";
-            textureDump.Location = new Point(12, y);
-            textureDump.Size = new Size(340, 28);
-            advanced.Controls.Add(textureDump);
-            Button(advanced, "Open texture pack folder", 368, y - 2, 240).Click += delegate
-            {
-                Directory.CreateDirectory(Path.Combine(GraphicsSettings.TexturePackFolder, "RMGE01"));
-                Process.Start("explorer.exe", "\"" + GraphicsSettings.TexturePackFolder + "\"");
-            };
+            AddTexturePackRows(advanced, ref y);
 
             var play = new Button { Text = "Save and play", Location = new Point(608, 508), Size = new Size(140, 38) };
             play.Click += delegate { if (Commit()) Play(); };
@@ -798,6 +788,23 @@ namespace Nebula.Launcher
             var button = new Button { Text = text, Location = new Point(x, y), Size = new Size(width, 32) };
             parent.Controls.Add(button);
             return button;
+        }
+
+        // Texture packs (Off / On / Preload at start), the dump switch and the pack folder button.
+        private void AddTexturePackRows(Control parent, ref int y)
+        {
+            Row(parent, "Texture packs", texturePacks, ref y);
+            texturePacks.Items.AddRange(GraphicsSettings.TexturePackModes);
+            textureDump.Text = "Dump textures (for pack makers)";
+            textureDump.Location = new Point(12, y);
+            textureDump.Size = new Size(340, 28);
+            parent.Controls.Add(textureDump);
+            Button(parent, "Open texture pack folder", 368, y - 2, 240).Click += delegate
+            {
+                Directory.CreateDirectory(Path.Combine(GraphicsSettings.TexturePackFolder, "RMGE01"));
+                Process.Start("explorer.exe", "\"" + GraphicsSettings.TexturePackFolder + "\"");
+            };
+            y += 40;
         }
 
         private MonitorEntry SelectedMonitor
