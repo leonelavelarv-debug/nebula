@@ -31,6 +31,7 @@
 #include "galaxy/gx/placed_texture_allocator.h"
 #include "galaxy/gx/shader_keys.h"  // fnv1a64
 #include "galaxy/gx/texture_decode_pool.h"
+#include "galaxy/gx/texture_pack.h"
 #include "galaxy/native_api.h"
 
 #include <array>
@@ -120,6 +121,9 @@ struct TextureHandle {
     std::uint8_t mip_levels = 1;
     bool from_efb_copy = false;
     bool generated_mips = false;
+    // A texture-pack replacement: width/height stay the guest texture's, the resource is larger by
+    // 2^(lod_shift_x16 / 16) and samplers shift their LOD range by that much.
+    std::uint8_t lod_shift_x16 = 0;
     std::uint32_t guest_byte_size = 0;
 };
 
@@ -266,6 +270,14 @@ public:
         return async_decode_jobs_;
     }
 
+    // Texture packs (texture_pack.h). configure_texture_packs applies changed settings; once per frame
+    // after set_upload_list, apply_texture_packs uploads finished replacements and swaps them in for
+    // the entries that wait for them (through retire(), like an invalidation); a new index or a
+    // changed dump mode drops every decoded entry so each texture is looked up again.
+    void configure_texture_packs(const TexturePackSettings& settings) { packs_.configure(settings); }
+    void apply_texture_packs();
+    [[nodiscard]] TexturePacks::Stats texture_pack_stats() const noexcept;
+
 private:
     DependencyEventSink* dependency_event_sink_ = nullptr;
     std::uint64_t debug_capture_frame_ = 0u;
@@ -291,6 +303,9 @@ private:
         Microsoft::WRL::ComPtr<ID3D12Resource> texture;
         TextureHandle handle;
         std::uint64_t allocation_bytes = 0;
+        // Its texture-pack replacement (bound, or awaited while the decoded original shows).
+        std::uint32_t pack_slot = TexturePacks::kNone;
+        bool pack_waiting = false;
     };
     // Adapted from Aurora's MIT-licensed TextureContentKey and bounded LRU:
     // encounter/aurora@77326d45415a64c40e560cebd2cdef0a0f08d840,
@@ -347,6 +362,11 @@ private:
         }
     };
     void retire(Entry&& entry);
+    // An entry for `key` that binds a resident replacement (no decode; charges no decoded budget).
+    [[nodiscard]] Entry make_replacement_entry(const TextureReplacement& replacement, std::uint32_t slot,
+                                               std::uint16_t width, std::uint16_t height, bool generated_mips,
+                                               std::uint32_t guest_byte_size);
+    void wait_for_replacement(const Key& key, Entry& entry, std::uint32_t slot);
     // Decoded-map LRU maintenance. `decoded_lru_touch` moves a key to the most
     // recently used end; `decoded_lru_forget` removes it. Both are no-ops when
     // the key is absent, so the invalidation paths can call them unguarded.
@@ -441,6 +461,14 @@ private:
     // preserving exact decode bytes and GPU upload semantics.
     std::vector<std::vector<RGBA8>> level_pixels_scratch_;
     std::unique_ptr<TextureDecodePool> decode_pool_;
+    TexturePacks packs_;
+    // Entries waiting for each replacement slot (validated when the slot becomes resident).
+    std::unordered_map<std::uint32_t, std::vector<Key>> pack_waiters_;
+    std::vector<std::uint32_t> pack_ready_;
+    std::uint64_t pack_hashed_ = 0;
+    std::uint64_t pack_bound_ = 0;
+    std::uint64_t pack_swapped_ = 0;
+    std::uint64_t pack_stats_frame_ = 0;
     // Decoded textures are placed in shared heaps (placed_texture_allocator.h).
     PlacedTextureAllocator texture_heap_{
         D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES, 64ull << 20};

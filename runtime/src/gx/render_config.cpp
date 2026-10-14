@@ -200,6 +200,10 @@ static void apply_kv(RenderConfig& cfg, const char* key, const char* val) {
     else if (std::strcmp(key, "ray_tracing_enabled") == 0) cfg.ray_tracing_enabled = parse_bool(val, false);
     else if (std::strcmp(key, "rt_shadow_quality") == 0) cfg.rt_shadow_quality = std::clamp(parse_uint(val, 0), 0u, 3u);
     else if (std::strcmp(key, "rt_ao_enabled")  == 0) cfg.rt_ao_enabled       = parse_bool(val, false);
+    else if (std::strcmp(key, "texture_packs") == 0) cfg.texture_packs = parse_bool(val, cfg.texture_packs);
+    else if (std::strcmp(key, "texture_pack_preload") == 0) cfg.texture_pack_preload = parse_bool(val, cfg.texture_pack_preload);
+    else if (std::strcmp(key, "texture_dump") == 0) cfg.texture_dump = parse_bool(val, cfg.texture_dump);
+    else if (std::strcmp(key, "texture_pack_budget_mb") == 0) cfg.texture_pack_budget_mb = std::clamp(parse_uint(val, cfg.texture_pack_budget_mb), 64u, 65536u);
     else if (std::strcmp(key, "rt_reflections") == 0) cfg.rt_reflections      = parse_bool(val, false);
     else if (std::strcmp(key, "window_width")   == 0) cfg.window_width        = parse_window_dimension(val, cfg.window_width);
     else if (std::strcmp(key, "window_height")  == 0) cfg.window_height       = parse_window_dimension(val, cfg.window_height);
@@ -282,6 +286,10 @@ static void apply_env_overrides(RenderConfig& cfg) {
     apply_env(cfg, "GALAXY_RT_SHADOW_QUALITY", "rt_shadow_quality");
     apply_env(cfg, "GALAXY_RT_AO_ENABLED", "rt_ao_enabled");
     apply_env(cfg, "GALAXY_RT_REFLECTIONS", "rt_reflections");
+    apply_env(cfg, "GALAXY_TEXTURE_PACKS", "texture_packs");
+    apply_env(cfg, "GALAXY_TEXTURE_PACK_PRELOAD", "texture_pack_preload");
+    apply_env(cfg, "GALAXY_TEXTURE_DUMP", "texture_dump");
+    apply_env(cfg, "GALAXY_TEXTURE_PACK_BUDGET_MB", "texture_pack_budget_mb");
     apply_env(cfg, "GALAXY_WINDOW_WIDTH", "window_width");
     apply_env(cfg, "GALAXY_WINDOW_HEIGHT", "window_height");
     // Launch variable of earlier launchers and the test tools:
@@ -602,6 +610,10 @@ bool save_render_config_to_file() {
              << (cfg.hud_output_resolution ? 1u : 0u) << '\n'
              << "ray_tracing_enabled="
              << (cfg.ray_tracing_enabled ? 1u : 0u) << '\n'
+             << "texture_packs=" << (cfg.texture_packs ? 1u : 0u) << '\n'
+             << "texture_pack_preload=" << (cfg.texture_pack_preload ? 1u : 0u) << '\n'
+             << "texture_dump=" << (cfg.texture_dump ? 1u : 0u) << '\n'
+             << "texture_pack_budget_mb=" << cfg.texture_pack_budget_mb << '\n'
              << "window_width=" << cfg.window_width << '\n'
              << "window_height=" << cfg.window_height << '\n'
              << "display_mode=" << cfg.display_mode << '\n'
@@ -639,6 +651,32 @@ void record_render_adapter(const wchar_t* description, unsigned vendor_id, unsig
         static_cast<void>(io::write_text_file_atomically(config.parent_path() / L"adapter.ini", contents.str()));
     } catch (...) {
     }
+}
+
+namespace {
+
+std::filesystem::path data_folder(const wchar_t* override_name, const wchar_t* folder) {
+    SetLastError(ERROR_SUCCESS);
+    const DWORD required = GetEnvironmentVariableW(override_name, nullptr, 0);
+    if (required != 0u) {
+        std::wstring value(required, L'\0');
+        const DWORD copied = GetEnvironmentVariableW(override_name, value.data(), required);
+        if (copied == 0u || copied >= required) return {};
+        value.resize(copied);
+        return std::filesystem::path(value);
+    }
+    const std::filesystem::path config = config_path();
+    return config.empty() ? std::filesystem::path{} : config.parent_path() / folder;
+}
+
+}  // namespace
+
+std::filesystem::path texture_pack_directory() {
+    return data_folder(L"GALAXY_TEXTURE_PACK_DIR", L"TexturePacks");
+}
+
+std::filesystem::path texture_dump_directory() {
+    return data_folder(L"GALAXY_TEXTURE_DUMP_DIR", L"TextureDumps");
 }
 
 }  // namespace galaxy::gx

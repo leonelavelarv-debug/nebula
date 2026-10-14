@@ -750,6 +750,7 @@ add_library(galaxy_gx STATIC
     runtime/src/gx/renderer_d3d12.cpp
     runtime/src/gx/window_owner.cpp
     runtime/src/gx/texture_cache.cpp
+    runtime/src/gx/texture_pack.cpp
     runtime/src/gx/placed_texture_allocator.cpp
     runtime/src/gx/vertex_loader.cpp
     runtime/src/gx/shader_keys.cpp
@@ -806,6 +807,9 @@ target_link_libraries(galaxy_gx
         d3d12
         dxgi
         d3dcompiler
+        # Texture packs: PNG through the Windows Imaging Component.
+        windowscodecs
+        ole32
 )
 target_compile_definitions(
     galaxy_gx
@@ -1181,6 +1185,10 @@ target_link_libraries(galaxy_native_settings_overlay_tests PRIVATE galaxy_gx)
 add_executable(galaxy_post_process_tests
     runtime/src/gx/post_process_tests.cpp)
 target_link_libraries(galaxy_post_process_tests PRIVATE galaxy_gx)
+
+add_executable(galaxy_texture_pack_tests
+    runtime/src/gx/texture_pack_tests.cpp)
+target_link_libraries(galaxy_texture_pack_tests PRIVATE galaxy_gx)
 add_executable(galaxy_controls_tests runtime/src/controls_tests.cpp)
 target_link_libraries(galaxy_controls_tests PRIVATE galaxy_runtime_settings galaxy_native_input)
 
@@ -1277,6 +1285,7 @@ if(MSVC)
         galaxy_pipeline_cache_persistence_tests
         galaxy_native_settings_overlay_tests
         galaxy_post_process_tests
+        galaxy_texture_pack_tests
         galaxy_controls_tests
     )
         target_compile_options(${target} PRIVATE /W4 /WX /permissive- /EHsc)
@@ -1376,6 +1385,7 @@ galaxy_add_native_test(
     native_settings_overlay
     galaxy_native_settings_overlay_tests)
 galaxy_add_native_test(post_process galaxy_post_process_tests)
+galaxy_add_native_test(texture_packs galaxy_texture_pack_tests)
 galaxy_add_native_test(controls_bindings_switch_hid galaxy_controls_tests)
 galaxy_add_native_test(shader_gen_compiles galaxy_shader_gen_tests)
 galaxy_add_native_test(fifo_parser_streaming galaxy_fifo_parser_tests)
