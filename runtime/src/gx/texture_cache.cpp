@@ -2093,6 +2093,7 @@ void TextureCache::apply_texture_packs() {
     if (upload_list_ == nullptr) {
         return;
     }
+    const auto apply_start = std::chrono::steady_clock::now();
     if (packs_.pump(upload_list_, pack_ready_)) {
         // New index, packs turned off, or dumping toggled: every decoded texture is looked up
         // again at its next use (handle caches drop retired slots at the next frame begin).
@@ -2125,10 +2126,17 @@ void TextureCache::apply_texture_packs() {
         }
         pack_waiters_.erase(waiting);
     }
+    const auto apply_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - apply_start).count());
+    pack_apply_ns_ += apply_ns;
+    pack_apply_max_ns_ = std::max(pack_apply_max_ns_, apply_ns);
     if (++pack_stats_frame_ % 600u == 0u && (packs_.enabled() || packs_.dumping())) {
         const TexturePacks::Stats stats = packs_.stats();
         std::cerr << "[texture-pack] names=" << stats.names << " hashed=" << pack_hashed_
-                  << " hash-ms=" << static_cast<double>(pack_hash_ns_) / 1.0e6 << " bound=" << pack_bound_ << " swapped=" << pack_swapped_ << " loads=" << stats.loads
+                  << " hash-ms=" << static_cast<double>(pack_hash_ns_) / 1.0e6
+                  << " apply-ms=" << static_cast<double>(pack_apply_ns_) / 1.0e6
+                  << " apply-max-ms=" << static_cast<double>(pack_apply_max_ns_) / 1.0e6
+                  << " bound=" << pack_bound_ << " swapped=" << pack_swapped_ << " loads=" << stats.loads
                   << " failures=" << stats.load_failures << " uploads=" << stats.uploads
                   << " upload-mb=" << (stats.upload_bytes >> 20u) << " resident=" << stats.resident
                   << " resident-mb=" << (stats.resident_bytes >> 20u) << " evictions=" << stats.evictions

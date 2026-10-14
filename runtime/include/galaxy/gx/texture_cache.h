@@ -470,6 +470,8 @@ private:
     std::uint64_t pack_bound_ = 0;
     std::uint64_t pack_swapped_ = 0;
     std::uint64_t pack_stats_frame_ = 0;
+    std::uint64_t pack_apply_ns_ = 0;       // render-thread time in apply_texture_packs (uploads, swaps)
+    std::uint64_t pack_apply_max_ns_ = 0;   // its longest frame
     // Decoded textures are placed in shared heaps (placed_texture_allocator.h).
     PlacedTextureAllocator texture_heap_{
         D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES, 64ull << 20};
