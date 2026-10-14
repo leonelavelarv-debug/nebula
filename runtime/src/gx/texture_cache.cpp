@@ -34,6 +34,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -392,6 +393,75 @@ static inline void rgb5a3x8_to_rgba(__m128i v, RGBA8* row0, RGBA8* row1) noexcep
     // the resource. Authored mips, nearest filtering, small and intensity-only
     // textures have a complete decision from their guest descriptors.
     return get_render_config().enhanced_mipmaps;
+}
+
+// XXH64, seed 0 (xxHash specification): the texture-pack hash of a base level.
+std::uint64_t xxh64(const std::uint8_t* p, std::size_t n) noexcept {
+    constexpr std::uint64_t k1 = 0x9E3779B185EBCA87ull, k2 = 0xC2B2AE3D27D4EB4Full,
+                            k3 = 0x165667B19E3779F9ull, k4 = 0x85EBCA77C2B2AE63ull, k5 = 0x27D4EB2F165667C5ull;
+    const auto read64 = [](const std::uint8_t* q) { std::uint64_t v; std::memcpy(&v, q, 8u); return v; };
+    const auto round = [](std::uint64_t acc, std::uint64_t lane) {
+        return std::rotl(acc + lane * k2, 31) * k1;
+    };
+    const std::uint8_t* const end = p + n;
+    std::uint64_t acc = 0u;
+    if (n >= 32u) {
+        std::uint64_t v1 = k1 + k2, v2 = k2, v3 = 0u, v4 = 0u - k1;
+        for (; p + 32u <= end; p += 32u) {
+            v1 = round(v1, read64(p));
+            v2 = round(v2, read64(p + 8u));
+            v3 = round(v3, read64(p + 16u));
+            v4 = round(v4, read64(p + 24u));
+        }
+        acc = std::rotl(v1, 1) + std::rotl(v2, 7) + std::rotl(v3, 12) + std::rotl(v4, 18);
+        for (const std::uint64_t v : {v1, v2, v3, v4}) {
+            acc = (acc ^ round(0u, v)) * k1 + k4;
+        }
+    } else {
+        acc = k5;
+    }
+    acc += n;
+    for (; p + 8u <= end; p += 8u) {
+        acc = std::rotl(acc ^ round(0u, read64(p)), 27) * k1 + k4;
+    }
+    if (p + 4u <= end) {
+        std::uint32_t v;
+        std::memcpy(&v, p, 4u);
+        acc = std::rotl(acc ^ (static_cast<std::uint64_t>(v) * k1), 23) * k2 + k3;
+        p += 4u;
+    }
+    for (; p < end; ++p) {
+        acc = std::rotl(acc ^ (static_cast<std::uint64_t>(*p) * k5), 11) * k1;
+    }
+    acc ^= acc >> 33u;
+    acc *= k2;
+    acc ^= acc >> 29u;
+    acc *= k3;
+    return acc ^ (acc >> 32u);
+}
+
+// GALAXY_GX_TRACE_TEXTURE_HASH=1: each decoded texture once per address and content, with its
+// texture-pack name (tex1_<w>x<h>[_m]_<XXH64 of the base level>_<format>; palette formats
+// without the palette hash).
+void trace_texture_hash(const TexImage& image, bool mipmapped, const std::uint8_t* base_level) {
+    static const bool enabled = [] {
+        char value[8]{};
+        std::size_t length = 0;
+        return getenv_s(&length, value, sizeof(value), "GALAXY_GX_TRACE_TEXTURE_HASH") == 0 &&
+               length > 1 && value[0] != '0';
+    }();
+    if (!enabled) {
+        return;
+    }
+    static std::unordered_set<std::uint64_t> seen;
+    const std::uint32_t bytes = texture_guest_byte_size(image.format, image.width, image.height, 1u);
+    const std::uint64_t hash = xxh64(base_level, bytes);
+    if (!seen.insert(hash ^ (static_cast<std::uint64_t>(image.guest_addr) * 0x9E3779B97F4A7C15ull)).second) {
+        return;
+    }
+    std::fprintf(stderr, "[tex-hash] addr=%08X tex1_%ux%u%s_%016llx_%u\n", image.guest_addr, image.width,
+                 image.height, mipmapped ? "_m" : "", static_cast<unsigned long long>(hash),
+                 static_cast<unsigned>(image.format));
 }
 
 }  // namespace
@@ -2268,6 +2338,7 @@ TextureHandle TextureCache::get(
             std::span<const std::byte>(guest_bytes, total_guest_size));
     }
     const auto* src = reinterpret_cast<const std::uint8_t*>(guest_bytes);
+    trace_texture_hash(image, guest_levels > 1u, src);
     std::optional<ContentKey> content_key;
     if (decoded_content_cache_enabled() &&
         !debug_invalidate_every_frame && total_guest_size != 0u &&
