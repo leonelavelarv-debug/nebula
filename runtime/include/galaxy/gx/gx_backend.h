@@ -813,6 +813,8 @@ private:
     bool scene_point_lit_ = false;           // the flushed draw does
     bool enhanced_points_memo_ = false;      // scene_point_lit_ when enhanced_material_ was taken
     bool scene_eye_to_world_known_ = false;
+    // The open scene's key light (GX light 0 of its first lit draw) went into its record.
+    bool scene_key_written_ = false;
     std::array<float, 12> scene_eye_to_world_{};
     std::array<SceneEmitters, 2> scene_emitters_{};  // [scene_emitter_set_] the open scene's
     unsigned scene_emitter_set_ = 0u;

@@ -50,8 +50,9 @@ struct ScenePointLightRules {
 };
 
 inline constexpr unsigned kScenePointLightMax = 16u;
-// One record: texel 0 x the light count; per light (eye position, reach; the reach negative for a
-// game light) and (colour, 1 / half distance^2).
+// One record: texel 0 x the light count, yzw the scene's key light (eye-space direction towards it,
+// written later in the scene; 0 none); per light (eye position, reach; the reach negative for a game
+// light) and (colour, 1 / half distance^2).
 inline constexpr unsigned kScenePointLightTexels = 1u + 2u * kScenePointLightMax;
 
 // `view`: world to eye, three rows of four. The game's lights, the star core and `emitters` (world

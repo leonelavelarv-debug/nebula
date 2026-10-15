@@ -7729,6 +7729,7 @@ void GxBackend::write_scene_lights(const std::array<float, 12>* view) {
     pack_scene_point_lights({lights.data(), count}, std::span<float, 4u * kScenePointLightTexels>(record, 4u * kScenePointLightTexels));
     scene_light_count_ = static_cast<std::uint32_t>(count);
     scene_lights_on_ = true;
+    scene_key_written_ = false;
     // GALAXY_ENHANCED_TRACE_LIGHTS=1: every 240th scene's lights.
     static const bool trace = read_env_u64("GALAXY_ENHANCED_TRACE_LIGHTS", 0u) != 0u;
     if (trace && frame_index_ % 240u == 0u) [[unlikely]] {
@@ -13626,6 +13627,25 @@ ID3D12PipelineState* GxBackend::flush_draw_state(
         topology_key == static_cast<std::uint8_t>(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE) &&
         state_.xf(static_cast<std::uint16_t>(xf::kProjectionBase + 6u)) == 0u) {
         note_enhanced_view();
+    }
+    if (scene_lights_on_ && !scene_key_written_ && scene_point_lit_ && (vs_key_.flags & 0x02u) != 0u) {
+        // The scene's key light for the glints of unlit surfaces the table names glossy or metal: GX
+        // light 0 of its first lit draw (the key light the game gives its actors there).
+        const XfChannelCtrl colour = state_.channel_ctrl(0u);
+        const auto word = [this](unsigned k) {
+            return std::bit_cast<float>(state_.xf(static_cast<std::uint16_t>(xf::kLightsBase + k)));
+        };
+        const std::array<float, 3> key{word(10u), word(11u), word(12u)};
+        const float length = std::sqrt(key[0] * key[0] + key[1] * key[1] + key[2] * key[2]);
+        if (colour.lighting_enable && (colour.light_mask & 1u) != 0u &&
+            (state_.xf(static_cast<std::uint16_t>(xf::kLightsBase + 3u)) & 0xFFFFFF00u) != 0u && std::isfinite(length) &&
+            length > 1e-3f) {
+            float* record = scene_light_mapped_ + static_cast<std::size_t>(scene_light_slot_) * 4u * kScenePointLightTexels;
+            for (unsigned k = 0; k < 3u; ++k) {
+                record[1u + k] = key[k] / length;
+            }
+            scene_key_written_ = true;
+        }
     }
     if (scene_lights_on_ && scene_eye_to_world_known_ && current_rt_material_ != 0u && scene_phase_ &&
         side_layer_ == kSceneLayer && state_.xf(static_cast<std::uint16_t>(xf::kProjectionBase + 6u)) == 0u) {

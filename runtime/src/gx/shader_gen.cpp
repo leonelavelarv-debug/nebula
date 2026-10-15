@@ -823,7 +823,8 @@ float3 enh_finish(float3 frag, EnhShade e, bool view) {
 // the game's own point light, GX light 4), then its colour and 1 / half distance^2. A light halves
 // at its half distance and is windowed to zero at its reach; a little of it wraps past the
 // terminator (the light it bounces). Highlights on lit and environment-mapped draws, and on unlit
-// ones where the material table names the surface.
+// ones where the material table names the surface; those also glint in the scene's key light
+// (element 0 yzw: towards it, eye space), which the others take from their own GX lights.
 static constexpr const char* kEnhancedPointLightsHlsl = R"HLSL(
 float3 enh_points(inout EnhShade e, float3 P, float3 N, bool skip_game, bool env, bool lit) {
     float3 sum = float3(0.0, 0.0, 0.0);
@@ -831,6 +832,10 @@ float3 enh_points(inout EnhShade e, float3 P, float3 N, bool skip_game, bool env
         return sum;  // a light source the list holds
     }
     const bool shiny = e.valid && (lit || env || (uber_ps_header.w & 0x40000000u) != 0u);
+    const float3 key = enh_lights[0].yzw;
+    if (shiny && !lit && !env && dot(key, key) > 0.0) {
+        enh_highlight(e, key, float3(0.8, 0.8, 0.8), false);
+    }
     const uint count = min(uint(enh_lights[0].x), 16u);
     [loop] for (uint i = 0u; i < count; ++i) {
         const float4 a = enh_lights[1u + 2u * i];
