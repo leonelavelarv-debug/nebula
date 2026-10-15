@@ -512,6 +512,14 @@ float spot_factor(float4 spot, float3 from_light)
     return smoothstep(spot.w, lerp(spot.w, 1.0f, 0.35f), c);
 }
 
+// An alpha-tested foliage card (rt_lighting.hlsl kDrawTableCard): in the scene whole, its cut-outs
+// filled; reflections and their highlights pass it.
+bool traced_card(uint primitive)
+{
+    const uint draw = g_surfaces.Load(primitive * 16u + 12u) >> 16u;
+    return (g_flags & 128u) != 0u && draw < g_draw_count && (g_draws.Load(draw * 48u + 24u) & 8u) != 0u;
+}
+
 bool lit_from(float3 origin, float3 direction, float length)
 {
     RayDesc ray;
@@ -519,10 +527,14 @@ bool lit_from(float3 origin, float3 direction, float length)
     ray.Direction = direction;
     ray.TMin = 0.0f;
     ray.TMax = max(length, 0.0f);
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES>
+    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES>
         query;
     query.TraceRayInline(g_scene, RAY_FLAG_NONE, 0xFFu, ray);
-    query.Proceed();
+    while (query.Proceed()) {
+        if (!traced_card(query.CandidatePrimitiveIndex())) {
+            query.CommitNonOpaqueTriangleHit();
+        }
+    }
     return query.CommittedStatus() != COMMITTED_TRIANGLE_HIT;
 }
 
@@ -725,9 +737,13 @@ Reflected reflect_light(uint2 s, float3 dir, float3 n, float3 ng, float3 hit, fl
     reflection.Direction = l;
     reflection.TMin = 0.0f;
     reflection.TMax = g_range;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
     query.TraceRayInline(g_scene, RAY_FLAG_NONE, 0xFFu, reflection);
-    query.Proceed();
+    while (query.Proceed()) {
+        if (!traced_card(query.CandidatePrimitiveIndex())) {
+            query.CommitNonOpaqueTriangleHit();
+        }
+    }
     r.distance = g_range;
     if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
         r.distance = query.CommittedRayT();

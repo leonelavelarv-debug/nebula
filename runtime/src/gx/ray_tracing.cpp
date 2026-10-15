@@ -192,6 +192,8 @@ constexpr std::uint32_t kDrawTableTint = 1u;
 constexpr std::uint32_t kDrawTableGlow = 2u;
 // g_draws word 6 (rt_lighting.hlsl kDrawTableFoliage): alpha-cut leaves, grass and flower cards.
 constexpr std::uint32_t kDrawTableFoliage = 4u;
+// g_draws word 6 (rt_lighting.hlsl kDrawTableCard): an alpha-tested card, traced whole (kRtDrawCard).
+constexpr std::uint32_t kDrawTableCard = 8u;
 constexpr float kDrawGlowScale = 16.0f;
 // AuthoredLight.flags (rt_lighting.hlsl kAuthored*): the colour the draw shows; a spot light.
 constexpr std::uint32_t kAuthoredTint = 1u;
@@ -1567,7 +1569,8 @@ void SceneRayTracer::add_draw(const RtDraw& draw, const RtDrawInfo& info) {
                    (material->no_light ? 8u : 0u);
         intensity = material->intensity;
         surface = unit_pair(material->matte ? 1.0f : material->roughness, material->metallic);
-        flags = (material->tint ? kDrawTableTint : 0u) | (material->foliage ? kDrawTableFoliage : 0u);
+        flags = (material->tint ? kDrawTableTint : 0u) | (material->foliage ? kDrawTableFoliage : 0u) |
+                ((info.surface & kRtDrawCard) != 0u ? kDrawTableCard : 0u);
         if (material->glow >= 0.0f) {
             flags |= kDrawTableGlow |
                      (static_cast<std::uint32_t>(std::lround(std::min(material->glow / kDrawGlowScale, 1.0f) * 65535.0f))
