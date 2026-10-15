@@ -5373,6 +5373,9 @@ void RendererD3D12::shutdown() {
     for (auto& tables : sampler_tables_) tables.reset();
     default_sampler_table_ = {};
     default_sampler_valid_.fill(false);
+    swap_chain_media_.Reset();
+    swap_chain_media_checked_ = false;
+    last_present_mode_ = -1;
     swap_chain_.Reset(); command_list_.Reset();
     for (auto& a : allocators_) a.Reset();
     vertex_ring_.reset();
@@ -6680,6 +6683,7 @@ void RendererD3D12::present_to_swap_chain() {
         d3d_check(present_hr, "Present");
     }
     has_presented_swap_chain_ = true;
+    ++measured_present_total_;
     {
         LARGE_INTEGER now{};
         QueryPerformanceCounter(&now);
@@ -6700,6 +6704,34 @@ void RendererD3D12::present_to_swap_chain() {
     }
     if (collect_present_telemetry) {
         QueryPerformanceCounter(&present_end);
+        if (!swap_chain_media_checked_) {
+            swap_chain_media_checked_ = true;
+            if (FAILED(swap_chain_.As(&swap_chain_media_))) swap_chain_media_.Reset();
+        }
+        DXGI_FRAME_STATISTICS_MEDIA media{};
+        if (swap_chain_media_ && SUCCEEDED(swap_chain_media_->GetFrameStatisticsMedia(&media)) &&
+            static_cast<unsigned>(media.CompositionMode) < telemetry_present_modes_.size()) {
+            const int mode = static_cast<int>(media.CompositionMode);
+            ++telemetry_present_modes_[static_cast<std::size_t>(mode)];
+            const double call_ms = static_cast<double>(present_end.QuadPart - present_start.QuadPart) * 1000.0 /
+                                   static_cast<double>(qpc_frequency_.QuadPart);
+            if (mode != last_present_mode_) {
+                static constexpr const char* kModes[] = {"composed", "overlay", "none",
+                                                         "composition-failure"};
+                std::ostringstream line;
+                line << "[present-mode] " << kModes[mode] << " at present " << measured_present_total_;
+                if (last_present_mode_ >= 0) {
+                    line << " after " << (measured_present_total_ - present_mode_since_) << " presents "
+                         << kModes[last_present_mode_] << " (Present max " << present_mode_max_ms_ << " ms)";
+                }
+                line << '\n';
+                std::cerr << line.str();
+                last_present_mode_ = mode;
+                present_mode_since_ = measured_present_total_;
+                present_mode_max_ms_ = 0.0;
+            }
+            present_mode_max_ms_ = std::max(present_mode_max_ms_, call_ms);
+        }
         DXGI_FRAME_STATISTICS shown{};
         if (SUCCEEDED(swap_chain_->GetFrameStatistics(&shown)) &&
             shown.PresentCount != last_stats_present_count_) {
@@ -6847,9 +6879,13 @@ void RendererD3D12::present_to_swap_chain() {
                 << telemetry_shown_refreshes_[2] << '/'
                 << telemetry_shown_refreshes_[3] << '/'
                 << telemetry_shown_refreshes_[4]
+                << " present-mode(composed/overlay/none/failed)="
+                << telemetry_present_modes_[0] << '/' << telemetry_present_modes_[1] << '/'
+                << telemetry_present_modes_[2] << '/' << telemetry_present_modes_[3]
                 << '\n';
             std::cerr << message.str();
             telemetry_shown_refreshes_ = {};
+            telemetry_present_modes_ = {};
 
             telemetry_window_start_qpc_ = present_end.QuadPart;
             telemetry_first_serial_start_ = progress.first_serial_presentations;

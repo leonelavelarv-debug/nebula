@@ -1725,6 +1725,18 @@ private:
     UINT last_stats_present_count_ = 0;
     UINT last_stats_present_refresh_count_ = 0;
     std::array<std::uint64_t, 5> telemetry_shown_refreshes_{};
+    // How the OS showed the presents (DXGI_FRAME_PRESENTATION_MODE: composed
+    // by DWM, overlay, none, composition failure) per telemetry window, and
+    // the mode of the last present (-1: unknown). A change is logged
+    // ([present-mode]): an OS overlay over a fullscreen game forces
+    // composition.
+    Microsoft::WRL::ComPtr<IDXGISwapChainMedia> swap_chain_media_;
+    bool swap_chain_media_checked_ = false;
+    std::array<std::uint64_t, 4> telemetry_present_modes_{};
+    int last_present_mode_ = -1;
+    std::uint64_t measured_present_total_ = 0;
+    std::uint64_t present_mode_since_ = 0;
+    double present_mode_max_ms_ = 0.0;
 
     // EFB->texture copy destinations, keyed by (guest dest address, copy format,
     // depth-source). SMG reuses one address with different copy formats, and each format
