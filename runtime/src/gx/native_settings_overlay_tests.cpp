@@ -205,10 +205,11 @@ int main() {
 
     // Graphics page with no upscaler and the manual quality mode: 0 heading, 1 upscaling, 2 quality
     // mode, 3 render resolution, 4 sharpening, 5 anti-aliasing, 6 heading, 7 interpolation, 8 frame
-    // rate limit, 9 heading, 10 texture filtering, 11 mipmaps, 12 lighting.
+    // rate limit, 9 heading, 10 texture filtering, 11 mipmaps, 12 texture packs, 13 dump textures,
+    // 14 lighting.
     passed &= expect(key(VK_TAB), "Tab enters the graphics page");
     snapshot = galaxy::gx::native_settings_overlay_snapshot();
-    passed &= expect(snapshot.tab == 1u && snapshot.row == 1u && snapshot.row_count == 13u,
+    passed &= expect(snapshot.tab == 1u && snapshot.row == 1u && snapshot.row_count == 15u,
                      "graphics page: resolution, frame rate and detail sections");
     passed &= expect(key(VK_DOWN) && key(VK_DOWN), "down moves to the render resolution");
     passed &= expect(key(VK_LEFT), "left lowers the render resolution in the draft");

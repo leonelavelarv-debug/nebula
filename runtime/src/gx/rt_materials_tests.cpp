@@ -23,7 +23,7 @@ bool expect(bool condition, const char* message) {
     return condition;
 }
 
-bool near(float a, float b) { return std::fabs(a - b) < 1e-5f; }
+bool nearly(float a, float b) { return std::fabs(a - b) < 1e-5f; }
 
 std::uint64_t hash_of(const char* text) {
     return galaxy::gx::texture_pack_hash(reinterpret_cast<const std::uint8_t*>(text), std::strlen(text));
@@ -55,7 +55,7 @@ bool columns_by_header() {
     ok &= expect(table.skipped() == 1u, "the row without a hash is skipped");
     const RtMaterial* pipe = find(table, 0xA1u);
     ok &= expect(pipe != nullptr && pipe->surface_class == static_cast<std::uint8_t>(RtSurfaceClass::Metal) &&
-                     near(pipe->roughness, 0.35f) && near(pipe->metallic, 1.0f) && pipe->shadow,
+                     nearly(pipe->roughness, 0.35f) && nearly(pipe->metallic, 1.0f) && pipe->shadow,
                  "metal row by its pack name");
     const RtMaterial* glass = find(table, 0xA2u);
     ok &= expect(glass != nullptr && glass->surface_class == static_cast<std::uint8_t>(RtSurfaceClass::Crystal) &&
@@ -85,21 +85,21 @@ bool lights_fill_their_fields() {
     bool ok = expect(table.size() == 4u, "four textures");
     const RtMaterial* luma = find(table, 0xB1u);
     ok &= expect(luma != nullptr && luma->surface_class == static_cast<std::uint8_t>(RtSurfaceClass::Glossy) &&
-                     near(luma->roughness, 0.4f) && luma->emission == RtEmission::Point && luma->tint &&
-                     near(luma->intensity, 1.0f) && near(luma->pulse, 0.5f) && luma->cone == 0.0f,
+                     nearly(luma->roughness, 0.4f) && luma->emission == RtEmission::Point && luma->tint &&
+                     nearly(luma->intensity, 1.0f) && nearly(luma->pulse, 0.5f) && luma->cone == 0.0f,
                  "a lights row keeps the surface it leaves empty; emitters default to a Luma's intensity");
     const RtMaterial* beam = find(table, 0xB2u);
     ok &= expect(beam != nullptr && beam->helper && beam->particle && beam->no_light && beam->hide && beam->unlit_only &&
                      !beam->shadow,
                  "tokens add up across files");
     const RtMaterial* lamp = find(table, 0xB3u);
-    ok &= expect(lamp != nullptr && lamp->emission == RtEmission::Point && near(lamp->color[1], 0.95f) &&
-                     near(lamp->intensity, 3.0f) && near(lamp->range, 2500.0f) && near(lamp->cone, 28.0f) &&
+    ok &= expect(lamp != nullptr && lamp->emission == RtEmission::Point && nearly(lamp->color[1], 0.95f) &&
+                     nearly(lamp->intensity, 3.0f) && nearly(lamp->range, 2500.0f) && nearly(lamp->cone, 28.0f) &&
                      lamp->surface_class == 0xFFu,
                  "a spot light without a surface row");
     const RtMaterial* lava = find(table, 0xB4u);
-    ok &= expect(lava != nullptr && lava->emission == RtEmission::Area && near(lava->color[2], 0.1f) &&
-                     near(lava->intensity, 1.0f),
+    ok &= expect(lava != nullptr && lava->emission == RtEmission::Area && nearly(lava->color[2], 0.1f) &&
+                     nearly(lava->intensity, 1.0f),
                  "an area light");
     return ok;
 }
@@ -112,8 +112,8 @@ bool values_are_clamped() {
     RtMaterialTable table;
     table.read(file);
     const RtMaterial* a = find(table, 0xC1u);
-    bool ok = expect(a != nullptr && near(a->roughness, 1.0f) && near(a->metallic, 0.0f) && near(a->color[0], 1.0f) &&
-                         near(a->intensity, 100.0f) && near(a->cone, 90.0f),
+    bool ok = expect(a != nullptr && nearly(a->roughness, 1.0f) && nearly(a->metallic, 0.0f) && nearly(a->color[0], 1.0f) &&
+                         nearly(a->intensity, 100.0f) && nearly(a->cone, 90.0f),
                      "out-of-range values clamp");
     const RtMaterial* b = find(table, 0xC2u);
     ok &= expect(b != nullptr && b->roughness < 0.0f && b->metallic < 0.0f && b->intensity == 0.0f,
@@ -132,15 +132,15 @@ bool stage_suns() {
     bool ok = expect(table.read(file) == 4u, "four suns");
     using Source = galaxy::gx::RtStageSun::Source;
     const auto* egg = table.find("EggStarGalaxy");
-    ok &= expect(egg != nullptr && egg->source == Source::Game && egg->has_color && near(egg->color[2], 0.85f) &&
-                     near(egg->strength, 1.2f) && near(egg->size, 3.0f) && near(egg->shafts, 0.8f),
+    ok &= expect(egg != nullptr && egg->source == Source::Game && egg->has_color && nearly(egg->color[2], 0.85f) &&
+                     nearly(egg->strength, 1.2f) && nearly(egg->size, 3.0f) && nearly(egg->shafts, 0.8f),
                  "a game sun with its look");
     const auto* honey = table.find("HoneyBeeKingdomGalaxy");
-    ok &= expect(honey != nullptr && honey->source == Source::Table && near(honey->direction[1], 0.6f) &&
-                     near(honey->direction[2], 0.8f) && !honey->has_color && honey->size < 0.0f,
+    ok &= expect(honey != nullptr && honey->source == Source::Table && nearly(honey->direction[1], 0.6f) &&
+                     nearly(honey->direction[2], 0.8f) && !honey->has_color && honey->size < 0.0f,
                  "a table sun, its direction normalised");
     const auto* bad = table.find("BadGalaxy");
-    ok &= expect(bad != nullptr && bad->source == Source::Game && near(bad->strength, 4.0f),
+    ok &= expect(bad != nullptr && bad->source == Source::Game && nearly(bad->strength, 4.0f),
                  "no direction: the game's sun; strength clamped");
     const auto* lava = table.find("HellProminenceGalaxy");
     ok &= expect(lava != nullptr && lava->source == Source::None, "no sun");
