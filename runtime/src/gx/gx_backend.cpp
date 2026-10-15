@@ -10417,13 +10417,12 @@ void GxBackend::render_frame_on_thread(FrameChunk& chunk) {
                              static_cast<unsigned long long>(frame_index_), flipped.texture_packs ? 1u : 0u);
             }
             const RenderConfig render = get_render_config();
-            static const std::filesystem::path packs = texture_pack_directory();
             static const std::filesystem::path dumps = texture_dump_directory();
             TexturePackSettings settings{};
             settings.enabled = render.texture_packs;
             settings.preload = render.texture_pack_preload;
             settings.dump = render.texture_dump;
-            settings.packs = packs;
+            settings.packs = texture_pack_directory(render);
             settings.dumps = dumps;
             settings.budget_bytes = static_cast<std::uint64_t>(render.texture_pack_budget_mb) << 20u;
             if (!texture_pack_settings_applied_ || !(settings == texture_pack_settings_)) {

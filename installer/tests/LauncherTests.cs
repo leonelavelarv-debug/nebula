@@ -129,6 +129,14 @@ namespace Nebula.Launcher
             string saved = File.ReadAllText(path);
             Check(saved.Contains("texture_packs=0") && saved.Contains("texture_pack_preload=0") && saved.Contains("texture_dump=0"),
                   "Off and no dumping are saved as the runtime's keys");
+            Check(fresh.TexturePackFolderChoice == "" && fresh.TexturePackFolderInUse == GraphicsSettings.TexturePackFolder,
+                  "no folder chosen: the default pack folder");
+            File.WriteAllText(path, "texture_pack_folder=D:\\Packs\\Super Mario Galaxy HD\n");
+            var chosen = GraphicsSettings.Load();
+            Check(chosen.TexturePackFolderInUse == @"D:\Packs\Super Mario Galaxy HD", "a chosen pack folder is read");
+            chosen.Save();
+            Check(File.ReadAllText(path).Contains(@"texture_pack_folder=D:\Packs\Super Mario Galaxy HD"),
+                  "the chosen pack folder is saved");
             File.Delete(path);
         }
 
@@ -399,6 +407,8 @@ namespace Nebula.Launcher
                     var packs = All(form).OfType<ComboBox>().Single(c => c.Items.Contains("Preload at start"));
                     var dump = All(form).OfType<CheckBox>().Single(c => c.Text == "Dump textures (for pack makers)");
                     Check(packs.SelectedIndex == 1 && !dump.Checked, "Advanced: Texture packs shows On, dumping off");
+                    Check(All(form).OfType<Label>().Any(l => l.Text == GraphicsSettings.TexturePackFolder),
+                          "Advanced: the pack folder in use is shown");
                     packs.SelectedIndex = 2;
                     dump.Checked = true;
                     var commit = typeof(SettingsForm).GetMethod("Commit", BindingFlags.NonPublic | BindingFlags.Instance);

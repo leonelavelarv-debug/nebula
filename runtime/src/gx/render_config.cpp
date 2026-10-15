@@ -214,6 +214,10 @@ static void apply_kv(RenderConfig& cfg, const char* key, const char* val) {
         cfg.monitor.fill('\0');
         const std::size_t length = std::min(std::strlen(val), cfg.monitor.size() - 1u);
         std::memcpy(cfg.monitor.data(), val, length);
+    } else if (std::strcmp(key, "texture_pack_folder") == 0) {
+        cfg.texture_pack_folder.fill('\0');
+        const std::size_t length = std::min(std::strlen(val), cfg.texture_pack_folder.size() - 1u);
+        std::memcpy(cfg.texture_pack_folder.data(), val, length);
     }
     else if (std::strcmp(key, "fullscreen_width") == 0) cfg.fullscreen_width = std::min(parse_uint(val, 0u), 16384u);
     else if (std::strcmp(key, "fullscreen_height") == 0) cfg.fullscreen_height = std::min(parse_uint(val, 0u), 16384u);
@@ -614,6 +618,7 @@ bool save_render_config_to_file() {
              << "texture_pack_preload=" << (cfg.texture_pack_preload ? 1u : 0u) << '\n'
              << "texture_dump=" << (cfg.texture_dump ? 1u : 0u) << '\n'
              << "texture_pack_budget_mb=" << cfg.texture_pack_budget_mb << '\n'
+             << "texture_pack_folder=" << cfg.texture_pack_folder.data() << '\n'
              << "window_width=" << cfg.window_width << '\n'
              << "window_height=" << cfg.window_height << '\n'
              << "display_mode=" << cfg.display_mode << '\n'
@@ -673,6 +678,15 @@ std::filesystem::path data_folder(const wchar_t* override_name, const wchar_t* f
 
 std::filesystem::path texture_pack_directory() {
     return data_folder(L"GALAXY_TEXTURE_PACK_DIR", L"TexturePacks");
+}
+
+std::filesystem::path texture_pack_directory(const RenderConfig& cfg) {
+    static const bool overridden = GetEnvironmentVariableW(L"GALAXY_TEXTURE_PACK_DIR", nullptr, 0) != 0u;
+    if (cfg.texture_pack_folder[0] == '\0' || overridden) {
+        static const std::filesystem::path fixed = texture_pack_directory();
+        return fixed;
+    }
+    return std::filesystem::path(reinterpret_cast<const char8_t*>(cfg.texture_pack_folder.data()));
 }
 
 std::filesystem::path texture_dump_directory() {

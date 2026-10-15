@@ -210,6 +210,21 @@ int main() {
             passed &= expect(galaxy::gx::get_render_config().max_fps == value.max_fps,
                 "Unicode config paths reload the exact file that was saved");
         }
+        {
+            // The pack folder: TexturePacks beside config.ini unless texture_pack_folder (UTF-8) names one.
+            const auto chosen = root / L"Packs Ω";
+            galaxy::gx::RenderConfig value{};
+            passed &= expect(galaxy::gx::texture_pack_directory(value) == root / "TexturePacks",
+                "no pack folder chosen: TexturePacks beside config.ini");
+            const std::u8string utf8 = chosen.u8string();
+            std::memcpy(value.texture_pack_folder.data(), utf8.data(), utf8.size());
+            galaxy::gx::set_render_config(value);
+            passed &= expect(galaxy::gx::save_render_config_to_file(), "the pack folder saves");
+            galaxy::gx::set_render_config(galaxy::gx::RenderConfig{});
+            galaxy::gx::load_render_config_from_file();
+            passed &= expect(galaxy::gx::texture_pack_directory(galaxy::gx::get_render_config()) == chosen,
+                "a chosen pack folder (UTF-8) reloads and is used");
+        }
         std::filesystem::remove_all(root);
     }
 

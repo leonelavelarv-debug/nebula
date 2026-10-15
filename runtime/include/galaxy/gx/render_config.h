@@ -140,6 +140,8 @@ struct RenderConfig {
     bool     texture_pack_preload = false;
     bool     texture_dump        = false;
     unsigned texture_pack_budget_mb = 2048;
+    // The pack folder (UTF-8); empty: TexturePacks beside config.ini.
+    std::array<char, 260> texture_pack_folder{};
 
     // Back-buffer dimensions (may differ from EFB; the present blit scales).
     // In windowed mode this is the client size, limited to the monitor's
@@ -338,6 +340,8 @@ void record_render_adapter(const wchar_t* description, unsigned vendor_id, unsig
 // Folders beside config.ini: TexturePacks (packs, a <GameID> folder inside) and TextureDumps.
 // GALAXY_TEXTURE_PACK_DIR and GALAXY_TEXTURE_DUMP_DIR replace them. Empty when unknown.
 [[nodiscard]] std::filesystem::path texture_pack_directory();
+// The pack folder for these settings: GALAXY_TEXTURE_PACK_DIR, else texture_pack_folder, else the default.
+[[nodiscard]] std::filesystem::path texture_pack_directory(const RenderConfig& cfg);
 [[nodiscard]] std::filesystem::path texture_dump_directory();
 
 } // namespace galaxy::gx
