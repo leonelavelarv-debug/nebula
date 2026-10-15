@@ -7795,6 +7795,29 @@ void GxBackend::note_scene_emitter() {
             for (unsigned k = 0; k < 3u; ++k) {
                 color[k] = shown[k] * peak;
             }
+        } else {
+            // GALAXY_ENHANCED_TRACE_LIGHTS: the colour sources of a tinted light source that shows none.
+            static const bool trace = read_env_u64("GALAXY_ENHANCED_TRACE_LIGHTS", 0u) != 0u;
+            static std::uint32_t traced = 0u;
+            if (trace && traced < 40u) [[unlikely]] {
+                ++traced;
+                const auto regs = state_.tev_register_values();
+                const auto konst = state_.tev_konst_colors();
+                std::fprintf(stderr,
+                             "[enh-tint] frame=%llu stages=%u c0=%d,%d,%d c1=%d,%d,%d c2=%d,%d,%d k=%08X,%08X,%08X,%08X "
+                             "mat=%08X amb=%08X chan=%08X vcd-color=%u pnmtx=%u env=",
+                             static_cast<unsigned long long>(frame_index_), ps_key_.num_tev_stages, regs[1][0],
+                             regs[1][1], regs[1][2], regs[2][0], regs[2][1], regs[2][2], regs[3][0], regs[3][1],
+                             regs[3][2], konst[0], konst[1], konst[2], konst[3], state_.xf(xf::kMaterialColorBase),
+                             state_.xf(xf::kAmbientColorBase), state_.xf(xf::kChannelCtrlBase),
+                             static_cast<unsigned>(state_.vertex_desc(0u).color[0].vcd),
+                             state_.vertex_desc(0u).has_pn_matrix_index ? 1u : 0u);
+                for (unsigned st = 0; st < ps_key_.num_tev_stages && st < 16u; ++st) {
+                    std::fprintf(stderr, "%06X/%03X/%02X,", ps_key_.stages[st].color_env & 0xFFFFFFu,
+                                 ps_key_.stages[st].order & 0x3FFu, ps_key_.stages[st].ksel & 0x1Fu);
+                }
+                std::fprintf(stderr, "\n");
+            }
         }
     }
     // The origin of the draw's position matrix (eye space): its model's, or a joint of a skinned one.
@@ -7848,7 +7871,10 @@ void GxBackend::on_fifo_marker(FifoMarker marker, const std::array<float, 12>* v
                              (renderer_.rt_reflections_active() ? kEnhancedRtReflections : 0u) |
                              (renderer_.rt_lighting() ? kEnhancedRtLighting : 0u);
         write_scene_lights(view);
-        enhanced_finish_on_ = enhanced_lighting_ && !renderer_.rt_lighting() && renderer_.enhanced_finish_ready();
+        static const bool enhanced_ab = read_env_u64("GALAXY_ENHANCED_AB", 0u) != 0u;
+        enhanced_ab_original_ = enhanced_ab && ((g_snapshot_presents + 1u) & 1u) != 0u;
+        enhanced_finish_on_ = enhanced_lighting_ && !enhanced_ab_original_ && !renderer_.rt_lighting() &&
+                              renderer_.enhanced_finish_ready();
         enhanced_occluded_ = false;
         renderer_.enhanced_begin_scene();
     } else {
@@ -13551,8 +13577,10 @@ ID3D12PipelineState* GxBackend::flush_draw_state(
     const std::uint32_t enhanced_material_bits =
         (ps_key_.reserved & kPsKeyEnhancedLighting) != 0u ? enhanced_table_material(rt_material(current_rt_material_)) : 0u;
     if (tev_dirty || tev_c_dirty || tex_dirty || frame_bindings_dirty_ || glow_changed || enhanced_changed ||
-        dirty == ~0u || (ps_record_restart_ && history_scene_) || enhanced_material_bits != enhanced_material_bits_) {
+        dirty == ~0u || (ps_record_restart_ && history_scene_) || enhanced_material_bits != enhanced_material_bits_ ||
+        enhanced_ab_original_ != enhanced_ab_uploaded_) {
         enhanced_material_bits_ = enhanced_material_bits;
+        enhanced_ab_uploaded_ = enhanced_ab_original_;
         const auto constants_start = time_detail
             ? std::chrono::steady_clock::now()
             : std::chrono::steady_clock::time_point{};
@@ -13567,8 +13595,8 @@ ID3D12PipelineState* GxBackend::flush_draw_state(
             (ps_key_.output_flags & 0x20u) != 0u ? renderer_.rt_glow_spill(glow_kind_ == 2u) : 0.0f;
         apply_uber_ps_key(ps_key_, ps_c);
         if ((ps_key_.reserved & kPsKeyEnhancedLighting) != 0u) {
-            std::uint32_t column = 0u;
-            if (enhanced_split_ > 0.0f) {
+            std::uint32_t column = enhanced_ab_original_ ? kEnhancedSplitMask : 0u;
+            if (enhanced_split_ > 0.0f && !enhanced_ab_original_) {
                 // The viewport's left edge plus the fraction of its width, in render-target pixels.
                 const float wd = std::bit_cast<float>(state_.xf(xf::kViewportBase));
                 const float left = std::bit_cast<float>(state_.xf(static_cast<std::uint16_t>(xf::kViewportBase + 3u))) -

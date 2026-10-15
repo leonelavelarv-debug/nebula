@@ -829,6 +829,10 @@ private:
     // draw.
     bool enhanced_finish_on_ = false;
     bool enhanced_occluded_ = false;
+    // GALAXY_ENHANCED_AB=1: odd presents show the game's own lighting (an A/B pair per snapshot pair);
+    // the flag the last uploaded PS constants carry.
+    bool enhanced_ab_original_ = false;
+    bool enhanced_ab_uploaded_ = false;
     void note_enhanced_view();
     bool rt_water_eligible_ = false;
     bool rt_scene_traced_ = true;
