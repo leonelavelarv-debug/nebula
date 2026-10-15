@@ -883,6 +883,27 @@ int main() {
         } else {
             std::printf("ok: ps_actor_compile_ms plain=%.1f enhanced=%.1f\n", plain_ms, enhanced_ms);
         }
+        // Baked map geometry (one texture times the vertex colour) as the game draws it and under the
+        // scene's point lights (printed, not checked).
+        PixelShaderKey map{};
+        std::memset(&map, 0, sizeof(map));
+        map.num_tev_stages = 1;
+        map.num_texgens = 1;
+        map.num_chans = 1;
+        map.alpha_comp0 = 7;
+        map.alpha_comp1 = 7;
+        map.stages[0] = basic_stage();
+        PixelShaderKey lit_map = map;
+        lit_map.reserved = kPsKeyEnhancedLighting;
+        lit_map.ind_reserved = kEnhancedPointLights;
+        const double map_ms = fxc_ms(gen.generate_ps(map));
+        const double points_ms = fxc_ms(gen.generate_ps(lit_map));
+        if (map_ms < 0.0 || points_ms < 0.0) {
+            ++g_failures;
+            std::printf("FAILED: map material compile\n");
+        } else {
+            std::printf("ok: ps_map_compile_ms plain=%.1f points=%.1f\n", map_ms, points_ms);
+        }
     }
 
     // ---- Pixel shaders ------------------------------------------------------

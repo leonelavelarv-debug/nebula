@@ -822,9 +822,10 @@ float3 enh_finish(float3 frag, EnhShade e, bool view) {
 // kEnhancedLighting: element 0 x their count; per light its eye position and reach (negative for
 // the game's own point light, GX light 4), then its colour and 1 / half distance^2. A light halves
 // at its half distance and is windowed to zero at its reach; a little of it wraps past the
-// terminator (the light it bounces). Highlights on lit and environment-mapped draws, and on unlit
-// ones where the material table names the surface; those also glint in the scene's key light
-// (element 0 yzw: towards it, eye space), which the others take from their own GX lights.
+// terminator (the light it bounces). One highlight, of the strongest light at the point, on lit and
+// environment-mapped draws and on unlit ones where the material table names the surface; for those
+// the scene's key light (element 0 yzw: towards it, eye space) competes too (the others take it from
+// their own GX lights). One highlight keeps the variants quick to compile.
 static constexpr const char* kEnhancedPointLightsHlsl = R"HLSL(
 float3 enh_points(inout EnhShade e, float3 P, float3 N, bool skip_game, bool env, bool lit) {
     float3 sum = float3(0.0, 0.0, 0.0);
@@ -832,10 +833,9 @@ float3 enh_points(inout EnhShade e, float3 P, float3 N, bool skip_game, bool env
         return sum;  // a light source the list holds
     }
     const bool shiny = e.valid && (lit || env || (uber_ps_header.w & 0x40000000u) != 0u);
-    const float3 key = enh_lights[0].yzw;
-    if (shiny && !lit && !env && dot(key, key) > 0.0) {
-        enh_highlight(e, key, float3(0.8, 0.8, 0.8), false);
-    }
+    float3 hl_dir = enh_lights[0].yzw;
+    float3 hl_light = !lit && !env && dot(hl_dir, hl_dir) > 0.0 ? float3(0.8, 0.8, 0.8) : float3(0.0, 0.0, 0.0);
+    float hl_weight = hl_light.g * saturate(dot(N, hl_dir));
     const uint count = min(uint(enh_lights[0].x), 16u);
     [loop] for (uint i = 0u; i < count; ++i) {
         const float4 a = enh_lights[1u + 2u * i];
@@ -852,10 +852,17 @@ float3 enh_points(inout EnhShade e, float3 P, float3 N, bool skip_game, bool env
         const float3 L = d * rsqrt(max(d2, 1e-4));
         const float win = 1.0 - d2 / r2;
         const float3 light = b.rgb * (win * win / (1.0 + d2 * b.w));
-        sum += light * saturate(0.15 + 0.85 * dot(N, L));
-        if (shiny) {
-            enh_highlight(e, L, light, env);
+        const float NoL = dot(N, L);
+        sum += light * saturate(0.15 + 0.85 * NoL);
+        const float weight = dot(light, float3(0.2126, 0.7152, 0.0722)) * saturate(NoL);
+        if (weight > hl_weight) {
+            hl_weight = weight;
+            hl_dir = L;
+            hl_light = light;
         }
+    }
+    if (shiny && hl_weight > 0.0) {
+        enh_highlight(e, hl_dir, hl_light, env);
     }
     e.points = sum;
     return sum;
