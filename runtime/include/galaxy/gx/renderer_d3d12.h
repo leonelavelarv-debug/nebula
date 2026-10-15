@@ -27,6 +27,7 @@
 #include <wrl/client.h>
 
 #include "galaxy/gx/efb_copy.h"
+#include "galaxy/gx/enhanced_finish.h"
 #include "galaxy/gx/temporal_upscaler.h"
 #include "galaxy/gx/immutable_upload.h"
 #include "galaxy/gx/interp_gpu.h"
@@ -529,6 +530,17 @@ public:
     // After the translucent phases: the water drawn since the trace reflects (its composite is
     // recorded for the sub-frames' replays).
     void rt_trace_water();
+    // Enhanced lighting's finish without the ray tracer (enhanced_finish.h): a new 3D scene, its
+    // camera, whether the finish runs, the occlusion after the opaque scene and the finish at its
+    // end (both recorded for the sub-frames' replays).
+    void enhanced_begin_scene() noexcept { enhanced_finish_.begin_scene(); }
+    void enhanced_set_view(const RtView& view, float split) noexcept { enhanced_finish_.set_view(view, split); }
+    [[nodiscard]] bool enhanced_finish_ready();
+    [[nodiscard]] bool enhanced_view_known() const noexcept { return enhanced_finish_.view_known(); }
+    [[nodiscard]] bool enhanced_occlusion_done() const noexcept { return enhanced_finish_.occlusion_done(); }
+    void enhanced_occlusion();
+    void enhanced_finish();
+    void record_enhanced(bool finish);
     // Matrix-ring segment advances back whose palettes are still alive while
     // this frame executes (0 outside temporal mode). In temporal mode the
     // segment advances only after frames that wrote palettes, so present and
@@ -1129,7 +1141,8 @@ private:
     };
     // RtComposite: the ambient occlusion of ray-tracer result slot `index`.
     enum class ReplayKind : std::uint8_t {
-        Draw, BindEfb, Clear, Copy, SwapEfbSets, ClearDepth, RtComposite, RtBloom, RtPost, RtWater
+        Draw, BindEfb, Clear, Copy, SwapEfbSets, ClearDepth, RtComposite, RtBloom, RtPost, RtWater,
+        EnhancedOcclusion, EnhancedFinish
     };
     struct ReplayOp {
         ReplayKind kind = ReplayKind::Draw;
@@ -1250,6 +1263,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> blend_validate_root_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> blend_validate_pso_;
     SceneRayTracer ray_tracer_;
+    EnhancedFinish enhanced_finish_;
+    bool enhanced_finish_failed_ = false;
     // The ray tracer could not start on this device: not retried every frame.
     bool rt_start_failed_ = false;
     static RtUpload rt_allocate(void* renderer, std::size_t bytes, std::size_t alignment);

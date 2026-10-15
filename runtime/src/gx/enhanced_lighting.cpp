@@ -30,6 +30,8 @@ constexpr TuningField kTuningFields[] = {
     {"metal_f0", &EnhancedLightingTuning::metal_f0},
     {"env_base", &EnhancedLightingTuning::env_base},
     {"env_graze", &EnhancedLightingTuning::env_graze},
+    {"point", &EnhancedLightingTuning::point},
+    {"point_cap", &EnhancedLightingTuning::point_cap},
 };
 
 EnhancedLightingTuning parse_tuning() {
@@ -76,16 +78,48 @@ const EnhancedLightingTuning& enhanced_lighting_tuning() {
 }
 
 std::uint32_t enhanced_table_material(const RtMaterial* material) noexcept {
-    if (material == nullptr || (material->roughness < 0.0f && material->metallic < 0.0f)) {
+    if (material == nullptr) {
         return 0u;
     }
-    const float rough = material->roughness >= 0.0f ? std::clamp(material->roughness, 0.0f, 1.0f) : 0.6f;
+    const std::uint32_t source =
+        material->emission == RtEmission::Point && material->intensity > 0.0f && !material->no_light
+            ? kEnhancedLightSource
+            : 0u;
+    if (material->roughness < 0.0f && material->metallic < 0.0f && !material->matte) {
+        return source;
+    }
+    // Matte classes (foliage, cloth) absorb light: roughness 1, no highlight.
+    const float rough = material->matte ? 1.0f
+                        : material->roughness >= 0.0f ? std::clamp(material->roughness, 0.0f, 1.0f)
+                                                      : 0.6f;
     const float metal = material->metallic >= 0.0f ? std::clamp(material->metallic, 0.0f, 1.0f) : 0.0f;
-    return kEnhancedTableKnown | (static_cast<std::uint32_t>(std::lround(rough * 63.0f)) << kEnhancedTableRoughShift) |
+    return source | kEnhancedTableKnown |
+           (static_cast<std::uint32_t>(std::lround(rough * 63.0f)) << kEnhancedTableRoughShift) |
            (static_cast<std::uint32_t>(std::lround(metal * 15.0f)) << kEnhancedTableMetalShift);
 }
 
-std::uint32_t enhanced_lighting_material(const VertexShaderKey& vs, const PixelShaderKey& ps) noexcept {
+bool enhanced_table_light(const RtMaterial* material, float time_s, float out_color[3], float& half,
+                          float& reach) noexcept {
+    if (material == nullptr || material->emission != RtEmission::Point || material->no_light ||
+        !(material->intensity > 0.0f)) {
+        return false;
+    }
+    float intensity = std::min(material->intensity, 8.0f);
+    if (material->pulse > 0.0f) {
+        intensity *= 0.75f + 0.25f * std::sin(6.2831853f * material->pulse * time_s);
+    }
+    // A Luma (intensity 1) reaches 350 units; the reach grows with the square root of the light.
+    reach = material->range > 0.0f ? std::clamp(material->range, 40.0f, 4000.0f)
+                                   : std::clamp(350.0f * std::sqrt(intensity), 60.0f, 2500.0f);
+    half = 0.25f * reach;
+    for (unsigned k = 0; k < 3u; ++k) {
+        out_color[k] = std::clamp(material->color[k], 0.0f, 1.0f) * intensity;
+    }
+    return true;
+}
+
+std::uint32_t enhanced_lighting_material(const VertexShaderKey& vs, const PixelShaderKey& ps,
+                                         bool point_lit) noexcept {
     const RtSurface surface = classify_rt_surface(vs, ps);
     // Texcoords from normals that a colour combiner reads (environment maps).
     std::uint32_t env = 0u;
@@ -115,6 +149,9 @@ std::uint32_t enhanced_lighting_material(const VertexShaderKey& vs, const PixelS
                     (colour.atten_func == 3u ? kEnhancedSpot : 0u) |
                     (colour.ambient_from_vertex ? kEnhancedAmbientVertex : 0u) |
                     (colour.material_from_vertex ? kEnhancedMaterialVertex : 0u);
+    }
+    if (point_lit) {
+        material |= kEnhancedPointLights;
     }
     if (material == 0u) {
         return 0u;

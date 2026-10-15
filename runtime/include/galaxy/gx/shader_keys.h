@@ -121,8 +121,9 @@ inline constexpr std::uint8_t kPsKeyEnhancedLighting = 0x10u;
 // highlights the ray tracer's reflections own (environment-mapped metal,
 // indirect water), bits 10-17 colour channel 0's lights, 18-19 its diffuse
 // function, bit 20 spot attenuation, bit 21 ambient and bit 22 material from
-// the vertex colour, bits 24-31 the tuning (GALAXY_ENHANCED_LIGHTING_TUNE)
-// hash, zero by default.
+// the vertex colour, bit 23 the scene's point lights (scene_lights.h) in t7
+// (map 7 unsampled; any draw, lit or not), bits 24-31 the tuning
+// (GALAXY_ENHANCED_LIGHTING_TUNE) hash, zero by default.
 inline constexpr std::uint32_t kEnhancedEnvCoordMask = 0xFFu;
 inline constexpr std::uint32_t kEnhancedLit = 1u << 8u;
 inline constexpr std::uint32_t kEnhancedReflective = 1u << 9u;
@@ -131,13 +132,14 @@ inline constexpr unsigned kEnhancedDiffuseShift = 18u;
 inline constexpr std::uint32_t kEnhancedSpot = 1u << 20u;
 inline constexpr std::uint32_t kEnhancedAmbientVertex = 1u << 21u;
 inline constexpr std::uint32_t kEnhancedMaterialVertex = 1u << 22u;
+inline constexpr std::uint32_t kEnhancedPointLights = 1u << 23u;
 inline constexpr unsigned kEnhancedTuneShift = 24u;
 // GxPsConstants::uber_ps_header[3] for enhanced pipelines: bits 0-15 the
 // split column in render-target pixels (left of it the game's own lighting,
 // 0 none), bit 16 the ray tracer's reflections are live, bit 17 its lighting
 // is (it supplies the sky light: no hemisphere ambient or sky rim), bit 18
 // the highlights alone (GALAXY_ENHANCED_LIGHTING_VIEW=1), bit 19 colour
-// channel 0 alone (=2).
+// channel 0 alone (=2), both the point lights' light alone (=3).
 inline constexpr std::uint32_t kEnhancedSplitMask = 0xFFFFu;
 inline constexpr std::uint32_t kEnhancedRtReflections = 1u << 16u;
 inline constexpr std::uint32_t kEnhancedRtLighting = 1u << 17u;
@@ -146,6 +148,8 @@ inline constexpr std::uint32_t kEnhancedRtLighting = 1u << 17u;
 inline constexpr unsigned kEnhancedTableRoughShift = 20u;
 inline constexpr unsigned kEnhancedTableMetalShift = 26u;
 inline constexpr std::uint32_t kEnhancedTableKnown = 1u << 30u;
+// Bit 31: the draw is a light source the scene's point lights hold (its own light leaves it).
+inline constexpr std::uint32_t kEnhancedLightSource = 1u << 31u;
 inline constexpr std::uint32_t kEnhancedView = 1u << 18u;
 inline constexpr std::uint32_t kEnhancedViewChannel = 1u << 19u;
 

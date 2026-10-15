@@ -717,9 +717,11 @@ struct EnhShade {
     float3 V;
     float  NoV;
     float  env_gain;  // environment lookups: Fresnel gain
-    float3 spec;      // dielectric highlight, linear, added after the TEV
-    float3 metal;     // metal lobe, linear, times the surface's Fresnel after the TEV
-    float  metal_fw;  // its Schlick weight
+    float3 spec;      // dielectric highlights, linear, added after the TEV
+    float3 metal;     // metal lobes, linear, times the surface's Fresnel after the TEV
+    float  metal_fw;  // their largest Schlick weight
+    float3 points;    // the scene's point lights' light (linear; 1 a full light)
+    float3 gain;      // what they add to an unlit surface, times its own colour
 };
 
 EnhShade enh_begin(float3 P, float3 n) {
@@ -734,14 +736,18 @@ EnhShade enh_begin(float3 P, float3 n) {
     return e;
 }
 
-// The material table's lobe for this draw (uber header bits 20-30), else the tuning's.
-void enh_table(bool metal, out float rough, out bool is_metal) {
+// The material table's lobe for this draw (uber header bits 20-30), else the tuning's. Rough
+// dielectrics (the table's natural materials, roughness 0.7 and more; matte classes 1) take no
+// highlight: `weight` 0.
+void enh_table(bool metal, out float rough, out bool is_metal, out float weight) {
     const uint w = uber_ps_header.w;
     rough = metal ? kEnhMetalRough : kEnhSheenRough;
     is_metal = metal;
+    weight = 1.0;
     if ((w & 0x40000000u) != 0u) {
         rough = max(float((w >> 20) & 63u) / 63.0, 0.05);
         is_metal = metal || float((w >> 26) & 15u) / 15.0 >= 0.5;
+        weight = is_metal ? 1.0 : 1.0 - smoothstep(0.5, 0.7, rough);
     }
 }
 
@@ -752,18 +758,21 @@ void enh_highlight(inout EnhShade e, float3 ldir, float3 radiance, bool env_meta
     }
     float rough;
     bool metal;
-    enh_table(env_metal, rough, metal);
+    float weight;
+    enh_table(env_metal, rough, metal, weight);
+    if (weight <= 0.0) {
+        return;
+    }
     const float3 H = normalize(ldir + e.V);
     const float NoH = saturate(dot(e.N, H));
     const float fw = pow(1.0 - saturate(dot(e.V, H)), 5.0);
+    const float a = rough * rough;
     if (metal) {
-        const float a = rough * rough;
-        e.metal = radiance * (NoL * enh_ggx(NoH, a * a) * enh_vis(NoL, e.NoV, a) * kEnhMetal);
-        e.metal_fw = fw;
+        e.metal += radiance * (NoL * enh_ggx(NoH, a * a) * enh_vis(NoL, e.NoV, a) * kEnhMetal);
+        e.metal_fw = max(e.metal_fw, fw);
     } else {
-        const float a = rough * rough;
-        e.spec = radiance * (NoL * enh_ggx(NoH, a * a) * enh_vis(NoL, e.NoV, a) * kEnhSheen *
-                             (0.04 + 0.96 * fw));
+        e.spec += radiance * (NoL * enh_ggx(NoH, a * a) * enh_vis(NoL, e.NoV, a) * kEnhSheen * weight *
+                              (0.04 + 0.96 * fw));
     }
 }
 
@@ -792,15 +801,57 @@ void enh_key_highlight(inout EnhShade e, float3 P) {
     }
 }
 
-// The highlights added to the TEV result in linear light. A metal's F0 is its own colour raised to
-// a peak of at least kEnhMetalF0, so metals baked dull still reflect their light in their own hue.
-// `view`: the highlights alone (diagnostics).
+// The point lights' gain on an unlit surface and the highlights, added to the TEV result in linear
+// light. A metal's F0 is its own colour raised to a peak of at least kEnhMetalF0, so metals baked
+// dull still reflect their light in their own hue. `view`: the highlights alone (diagnostics).
 float3 enh_finish(float3 frag, EnhShade e, bool view) {
-    const float3 c = enh_lin(frag);
+    float3 c = enh_lin(frag);
+    if (any(e.gain > 0.0)) {
+        c = enh_shoulder(c * (1.0 + e.gain));
+    }
     const float peak = max(max(c.r, c.g), max(c.b, 1e-4));
     const float3 f0 = saturate(c * (max(peak, kEnhMetalF0) / peak));
     const float3 h = e.spec + e.metal * (f0 + (1.0 - f0) * e.metal_fw);
     return enh_srgb(view ? h : c + h);
+}
+)HLSL";
+
+// The scene's point lights (scene_lights.h, enhanced draws with kEnhancedPointLights), after
+// kEnhancedLighting: element 0 x their count; per light its eye position and reach (negative for
+// the game's own point light, GX light 4), then its colour and 1 / half distance^2. A light halves
+// at its half distance and is windowed to zero at its reach; a little of it wraps past the
+// terminator (the light it bounces). Highlights on lit and environment-mapped draws, and on unlit
+// ones where the material table names the surface.
+static constexpr const char* kEnhancedPointLightsHlsl = R"HLSL(
+float3 enh_points(inout EnhShade e, float3 P, float3 N, bool skip_game, bool env, bool lit) {
+    float3 sum = float3(0.0, 0.0, 0.0);
+    if ((uber_ps_header.w & 0x80000000u) != 0u) {
+        return sum;  // a light source the list holds
+    }
+    const bool shiny = e.valid && (lit || env || (uber_ps_header.w & 0x40000000u) != 0u);
+    const uint count = min(uint(enh_lights[0].x), 16u);
+    [loop] for (uint i = 0u; i < count; ++i) {
+        const float4 a = enh_lights[1u + 2u * i];
+        if (skip_game && a.w < 0.0) {
+            continue;
+        }
+        const float3 d = a.xyz - P;
+        const float d2 = dot(d, d);
+        const float r2 = a.w * a.w;
+        if (d2 >= r2) {
+            continue;
+        }
+        const float4 b = enh_lights[2u + 2u * i];
+        const float3 L = d * rsqrt(max(d2, 1e-4));
+        const float win = 1.0 - d2 / r2;
+        const float3 light = b.rgb * (win * win / (1.0 + d2 * b.w));
+        sum += light * saturate(0.15 + 0.85 * dot(N, L));
+        if (shiny) {
+            enh_highlight(e, L, light, env);
+        }
+    }
+    e.points = sum;
+    return sum;
 }
 )HLSL";
 
@@ -1461,9 +1512,24 @@ std::string ShaderGenerator::generate_ps(const PixelShaderKey& key) const {
     const bool reactive = !motion && (key.reserved & kPsKeyReactive) != 0u;
     const std::uint32_t enh_env = enhanced ? key.ind_reserved & kEnhancedEnvCoordMask : 0u;
     const bool enh_lit = enhanced && (key.ind_reserved & kEnhancedLit) != 0u;
+    // The scene's point lights take map 7's slot: never while the draw samples it.
+    bool enh_points = enhanced && (key.ind_reserved & kEnhancedPointLights) != 0u && (key.output_flags & 0x40u) == 0u;
+    for (unsigned st = 0; enh_points && st < key.num_tev_stages && st < 16u; ++st) {
+        const std::uint32_t order = key.stages[st].order;
+        enh_points = ((order >> 6) & 1u) == 0u || (order & 7u) != 7u;
+    }
+    for (unsigned ind = 0; enh_points && ind < key.num_ind_stages && ind < 4u; ++ind) {
+        enh_points = indirect_order_texmap(key, ind) != 7u;
+    }
     if (enhanced) {
         // The split column and the ray tracer's state ride in the uber header's last word.
-        s << insert_before_close(kPsConstantsDef, "    uint4    uber_ps_header;\n", false);
+        std::string constants = insert_before_close(kPsConstantsDef, "    uint4    uber_ps_header;\n", false);
+        if (enh_points) {
+            const std::string_view textures = "Texture2D    tex[8] : register(t0);\n";
+            constants.replace(constants.find(textures), textures.size(),
+                              "Texture2D    tex[7] : register(t0);\nBuffer<float4> enh_lights : register(t7);\n");
+        }
+        s << constants;
     } else {
         s << kPsConstantsDef;
     }
@@ -1498,6 +1564,11 @@ std::string ShaderGenerator::generate_ps(const PixelShaderKey& key) const {
              t.ramp, t.hemi, t.rim, t.knee, t.sheen, t.sheen_rough, t.metal, t.metal_rough, t.metal_f0, t.env_base,
              t.env_graze);
         s << kEnhancedLighting;
+        if (enh_points) {
+            emit(s, "static const float kEnhPoint = %.9g;\nstatic const float kEnhPointCap = %.9g;\n", t.point,
+                 t.point_cap);
+            s << kEnhancedPointLightsHlsl;
+        }
     }
 
     // ---- main() ----
@@ -1570,6 +1641,12 @@ std::string ShaderGenerator::generate_ps(const PixelShaderKey& key) const {
         // Left of the split column the game's own (per-vertex) lighting.
         s << "    const bool enh_on = pin.pos.x >= float(uber_ps_header.w & 0xFFFFu);\n";
         s << "    EnhShade enh = enh_begin(pin.ppl_pos, pin.ppl_nrm);\n";
+        if (enh_points) {
+            // Draws without normals light by their facets (towards the viewer).
+            s << "    const float3 enh_facet = cross(ddx(pin.ppl_pos), ddy(pin.ppl_pos));\n"
+                 "    const float3 enh_pn = enh.valid ? enh.N : dot(enh_facet, enh_facet) > 0.0\n"
+                 "        ? normalize(enh_facet) * (dot(enh_facet, pin.ppl_pos) > 0.0 ? -1.0 : 1.0) : enh.V;\n";
+        }
         if (enh_lit) {
             // Colour channel 0 (ind_reserved bits 10-22): its lights in key order, the first one's
             // highlight.
@@ -1625,11 +1702,25 @@ std::string ShaderGenerator::generate_ps(const PixelShaderKey& key) const {
                 s << "        }\n";
                 first = false;
             }
+            if (enh_points) {
+                // The game's point light (GX light 4) already lights a channel that takes it.
+                emit(s, "        enh_acc += kEnhPoint * enh_points(enh, pin.ppl_pos, enh_pn, %s, %s, true);\n",
+                     (lights & 0x10u) != 0u ? "true" : "false", enh_env != 0u ? "true" : "false");
+            }
             s << "        pin.col0.rgb = enh_mat * enh_srgb(enh_shoulder(max(enh_acc, 0.0)));\n"
                  "        }\n"
                  "    }\n";
         } else {
-            s << "    if (enh_on && (uber_ps_header.w & 0x20000u) == 0u) enh_key_highlight(enh, pin.ppl_pos);\n";
+            // Draws that only take the point lights read no GX light (the backend gives them no palette).
+            if (enh_env != 0u) {
+                s << "    if (enh_on && (uber_ps_header.w & 0x20000u) == 0u) enh_key_highlight(enh, pin.ppl_pos);\n";
+            }
+            if (enh_points) {
+                emit(s,
+                     "    if (enh_on && (uber_ps_header.w & 0x20000u) == 0u)\n"
+                     "        enh.gain = min(kEnhPoint * enh_points(enh, pin.ppl_pos, enh_pn, false, %s, false), kEnhPointCap);\n",
+                     enh_env != 0u ? "true" : "false");
+            }
         }
     }
     s << "    int4 tex_color_i = int4(0,0,0,0);\n";
@@ -2197,14 +2288,19 @@ std::string ShaderGenerator::generate_ps(const PixelShaderKey& key) const {
         if ((key.ind_reserved & kEnhancedReflective) != 0u) {
             // The ray tracer's reflections own this class's highlights while they run.
             s << "    if (enh_on && (uber_ps_header.w & 0x30000u) == 0u)\n"
-                 "        frag.rgb = enh_finish(frag.rgb, enh, (uber_ps_header.w & 0x40000u) != 0u);\n\n";
+                 "        frag.rgb = enh_finish(frag.rgb, enh, (uber_ps_header.w & 0xC0000u) == 0x40000u);\n\n";
         } else {
             s << "    if (enh_on && (uber_ps_header.w & 0x20000u) == 0u)\n"
-                 "        frag.rgb = enh_finish(frag.rgb, enh, (uber_ps_header.w & 0x40000u) != 0u);\n\n";
+                 "        frag.rgb = enh_finish(frag.rgb, enh, (uber_ps_header.w & 0xC0000u) == 0x40000u);\n\n";
         }
         if (enh_lit) {
             // Diagnostics: colour channel 0 itself, the game's left of the split.
-            s << "    if ((uber_ps_header.w & 0x80000u) != 0u) frag.rgb = saturate(pin.col0.rgb);\n\n";
+            s << "    if ((uber_ps_header.w & 0xC0000u) == 0x80000u) frag.rgb = saturate(pin.col0.rgb);\n\n";
+        }
+        if (enh_points) {
+            // Diagnostics: the point lights' light alone.
+            s << "    if (enh_on && (uber_ps_header.w & 0xC0000u) == 0xC0000u)\n"
+                 "        frag.rgb = enh_srgb(saturate(kEnhPoint * enh.points));\n\n";
         }
     }
 

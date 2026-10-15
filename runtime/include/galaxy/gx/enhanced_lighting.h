@@ -7,8 +7,11 @@
 // Lambert ramp between those ends, under a soft shoulder instead of the channel clamp; the ambient
 // becomes a sky/ground hemisphere with a sky rim; lit draws get a dielectric highlight of their key
 // light; environment-mapped materials (the game's metals, crystals and ice) get a Fresnel gain on
-// their environment lookups and a metal highlight tinted by their own colour. Unlit,
-// non-environment-mapped draws (baked map geometry) are unchanged.
+// their environment lookups and a metal highlight tinted by their own colour. With the scene's
+// point lights (scene_lights.h) every scene draw takes them: lit draws in their colour channel,
+// unlit ones (baked map geometry) over their own colour; the material table's roughness and
+// metalness shape every highlight (natural materials none). Otherwise unlit,
+// non-environment-mapped draws are unchanged.
 
 #include "galaxy/gx/shader_keys.h"
 
@@ -28,6 +31,8 @@ struct EnhancedLightingTuning {
     float metal_f0 = 0.50f;     // least peak of a metal's F0 (its colour raised in its own hue)
     float env_base = 1.0f;      // environment lookup gain facing the viewer
     float env_graze = 0.80f;    // gain added at grazing angles, Schlick (1 - N.V)^5
+    float point = 0.8f;         // the scene's point lights' strength
+    float point_cap = 1.5f;     // most they add to an unlit surface, times its own colour
     std::uint32_t hash = 0u;    // nonzero when GALAXY_ENHANCED_LIGHTING_TUNE changes a value
 };
 
@@ -36,13 +41,19 @@ struct EnhancedLightingTuning {
 [[nodiscard]] const EnhancedLightingTuning& enhanced_lighting_tuning();
 
 // The ind_reserved material word of an enhanced draw (shader_keys.h kEnhanced*), zero when the
-// draw is neither lit nor environment-mapped (enhanced lighting leaves it as the game draws it).
-// The keys are the draw's own, before the enhanced bits are set.
+// draw is neither lit nor environment-mapped nor `point_lit` (enhanced lighting leaves it as the
+// game draws it). The keys are the draw's own, before the enhanced bits are set.
 struct RtMaterial;
 // The material table's roughness and metalness for an enhanced draw's uber header (kEnhancedTable*;
-// 0 without an entry or without either value).
+// matte classes roughness 1; 0 without an entry or without either value), and kEnhancedLightSource
+// for a light source the scene's point lights hold.
 [[nodiscard]] std::uint32_t enhanced_table_material(const RtMaterial* material) noexcept;
-[[nodiscard]] std::uint32_t enhanced_lighting_material(const VertexShaderKey& vs,
-                                                       const PixelShaderKey& ps) noexcept;
+[[nodiscard]] std::uint32_t enhanced_lighting_material(const VertexShaderKey& vs, const PixelShaderKey& ps,
+                                                       bool point_lit = false) noexcept;
+// A point light source of the material table (an emitter row that lights): its light at the source
+// (colour times intensity, pulsing at `time_s`), half distance and reach (eye units); false
+// otherwise.
+[[nodiscard]] bool enhanced_table_light(const RtMaterial* material, float time_s, float out_color[3], float& half,
+                                        float& reach) noexcept;
 
 }  // namespace galaxy::gx

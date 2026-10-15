@@ -731,6 +731,60 @@ int main() {
             }
             check_compiles(src, "ps_5_1", label);
         }
+        // The scene's point lights (t7): unlit baked geometry, a lit actor (its channel takes the game's
+        // point light, GX light 4), an environment map; each also with motion vectors.
+        for (unsigned variant = 0; variant < 6u; ++variant) {
+            PixelShaderKey k{};
+            std::memset(&k, 0, sizeof(k));
+            k.num_tev_stages = 2;
+            k.num_texgens = 2;
+            k.num_chans = 1;
+            k.alpha_comp0 = 7;
+            k.alpha_comp1 = 7;
+            k.stages[0] = basic_stage();
+            k.stages[1] = basic_stage();
+            k.stages[1].order = (1u << 3) | 1u | (1u << 6);
+            k.reserved = kPsKeyEnhancedLighting;
+            const unsigned material = variant % 3u;
+            const std::uint32_t actor = kEnhancedLit | (0x13u << kEnhancedLightShift) |
+                                        (2u << kEnhancedDiffuseShift) | kEnhancedSpot | kEnhancedMaterialVertex;
+            k.ind_reserved = kEnhancedPointLights | (material == 1u ? actor : material == 2u ? 0x02u : 0u);
+            if (variant >= 3u) k.reserved |= kPsKeyMotion;
+            const std::string src = gen.generate_ps(k);
+            char label[64];
+            std::snprintf(label, sizeof(label), "ps_enhanced_points_variant%u", variant);
+            check_contains(src, "Buffer<float4> enh_lights : register(t7);", label);
+            check_contains(src, "Texture2D    tex[7] : register(t0);", label);
+            check_contains(src, "enh_pn", label);
+            if (material == 1u) {
+                check_contains(src, "enh_acc += kEnhPoint * enh_points(enh, pin.ppl_pos, enh_pn, true, false, true);",
+                               label);
+            } else {
+                check_contains(src, "enh.gain = min(kEnhPoint * enh_points(", label);
+            }
+            if (material == 0u) {
+                // Baked geometry reads no GX light.
+                check_not_contains(src, "enh_key_highlight(enh", label);
+            }
+            check_compiles(src, "ps_5_1", label);
+        }
+        {
+            // A draw that samples map 7 keeps its texture there: no point lights.
+            PixelShaderKey k{};
+            std::memset(&k, 0, sizeof(k));
+            k.num_tev_stages = 1;
+            k.num_texgens = 1;
+            k.num_chans = 1;
+            k.alpha_comp0 = 7;
+            k.alpha_comp1 = 7;
+            k.stages[0] = basic_stage();
+            k.stages[0].order = 7u | (1u << 6);
+            k.reserved = kPsKeyEnhancedLighting;
+            k.ind_reserved = kEnhancedPointLights;
+            const std::string src = gen.generate_ps(k);
+            check_not_contains(src, "enh_lights", "ps_enhanced_points_map7");
+            check_compiles(src, "ps_5_1", "ps_enhanced_points_map7");
+        }
         // Keys without the enhanced bits generate no enhanced code (their cached shaders stay valid).
         PixelShaderKey k{};
         std::memset(&k, 0, sizeof(k));
@@ -780,6 +834,11 @@ int main() {
             if (enhanced_lighting_material(vs, ps) != 0u) {
                 ++g_failures;
                 std::printf("FAILED: baked map geometry is enhanced\n");
+            }
+            if (enhanced_lighting_material(vs, ps, true) != kEnhancedPointLights) {
+                ++g_failures;
+                std::printf("FAILED: baked map geometry under the point lights 0x%08X\n",
+                            enhanced_lighting_material(vs, ps, true));
             }
             std::printf("ok: enhanced_lighting_material\n");
         }

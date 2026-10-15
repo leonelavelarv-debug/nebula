@@ -40,6 +40,7 @@
 #include "galaxy/gx/pipeline_cache.h"
 #include "galaxy/gx/renderer_d3d12.h"
 #include "galaxy/gx/resident_vertex_arena.h"
+#include "galaxy/gx/scene_lights.h"
 #include "galaxy/gx/shader_keys.h"
 #include "galaxy/gx/texture_cache.h"
 #include "galaxy/gx/frame_interpolation.h"
@@ -797,6 +798,38 @@ private:
     // map 7 (output_flags bit 6); the texture binding key marks them in map 7's TEX_MODE0 word.
     bool lit_translucent_ = false;
     static constexpr std::uint32_t kLitTranslucentKey = 0x4C495431u;
+    // Enhanced lighting's scene point lights (scene_lights.h): one record per scene in a ring of
+    // kSceneLightSlots in a persistently mapped upload buffer, each with a CPU SRV (a Buffer of
+    // float4) that point-lit draws copy into map 7 of their texture table (kEnhancedPointLights);
+    // the texture binding key marks them in map 7's TEX_MODE0 word, as lit translucents. The light
+    // sources the material table names among one scene's draws (world space) join the next one's.
+    static constexpr unsigned kSceneLightSlots = 64u;
+    static constexpr std::uint32_t kSceneLightKey = 0x50544C00u;
+    Microsoft::WRL::ComPtr<ID3D12Resource> scene_light_buffer_;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> scene_light_srvs_;
+    float* scene_light_mapped_ = nullptr;
+    unsigned scene_light_slot_ = 0u;
+    bool scene_lights_on_ = false;           // the open scene's draws take the point lights
+    bool scene_point_lit_ = false;           // the flushed draw does
+    bool enhanced_points_memo_ = false;      // scene_point_lit_ when enhanced_material_ was taken
+    bool scene_eye_to_world_known_ = false;
+    std::array<float, 12> scene_eye_to_world_{};
+    std::array<SceneEmitters, 2> scene_emitters_{};  // [scene_emitter_set_] the open scene's
+    unsigned scene_emitter_set_ = 0u;
+    std::uint32_t scene_light_count_ = 0u;
+    std::uint32_t scene_emitter_notes_ = 0u;
+    // SceneBegin under enhanced lighting: the scene's point lights into the next record of the ring,
+    // creating the ring on first use.
+    void write_scene_lights(const std::array<float, 12>* view);
+    // A scene draw whose texture the material table names a light source: its light for the next
+    // scene, at its position matrix's origin.
+    void note_scene_emitter();
+    // Enhanced lighting's finish without the ray tracer (enhanced_finish.h) in the open scene; its
+    // occlusion was recorded (after the opaque phases); the scene camera from its first perspective
+    // draw.
+    bool enhanced_finish_on_ = false;
+    bool enhanced_occluded_ = false;
+    void note_enhanced_view();
     bool rt_water_eligible_ = false;
     bool rt_scene_traced_ = true;
     bool rt_view_set_ = false;

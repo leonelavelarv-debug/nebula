@@ -654,6 +654,25 @@ foreach(galaxy_smaa_preset LOW MEDIUM HIGH ULTRA)
     galaxy_post_shader(post_smaa_weights_ps_${galaxy_smaa_suffix}
         PASS_SMAA_WEIGHTS SMAA_PRESET_${galaxy_smaa_preset} smaa ps_5_0 PSMain)
 endforeach()
+# Enhanced lighting's finish without the ray tracer (runtime/src/gx/enhanced_finish.hlsl, shader
+# model 5.0 for every Direct3D 12 GPU).
+set(galaxy_enh_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/runtime/src/gx/enhanced_finish.hlsl")
+foreach(galaxy_enh_pass half_depth_cs:HalfDepthCS:cs_5_0 occlusion_cs:OcclusionCS:cs_5_0
+        occlusion_blur_cs:OcclusionBlurCS:cs_5_0 opaque_cs:OpaqueCS:cs_5_0 bright_cs:BrightCS:cs_5_0
+        blur_quarter_cs:BlurQuarterCS:cs_5_0 blur_eighth_cs:BlurEighthCS:cs_5_0 down_cs:DownCS:cs_5_0
+        sky_cs:SkyCS:cs_5_0 finish_vs:FinishVS:vs_5_0 occlusion_ps:OcclusionPS:ps_5_0 finish_ps:FinishPS:ps_5_0)
+    string(REPLACE ":" ";" galaxy_enh_pair "${galaxy_enh_pass}")
+    list(GET galaxy_enh_pair 0 galaxy_enh_name)
+    list(GET galaxy_enh_pair 1 galaxy_enh_entry)
+    list(GET galaxy_enh_pair 2 galaxy_enh_profile)
+    set(galaxy_enh_header "${galaxy_post_dir}/enh_${galaxy_enh_name}.h")
+    add_custom_command(OUTPUT "${galaxy_enh_header}"
+        COMMAND "${GALAXY_FXC}" /nologo /T ${galaxy_enh_profile} /E ${galaxy_enh_entry} /O3 /WX
+            /Vn g_enh_${galaxy_enh_name} /Fh "${galaxy_enh_header}" "${galaxy_enh_hlsl}"
+        DEPENDS "${galaxy_enh_hlsl}"
+        VERBATIM)
+    list(APPEND galaxy_post_headers "${galaxy_enh_header}")
+endforeach()
 
 # Ray-tracing compute shaders (runtime/src/gx/ray_tracing.hlsl: DXR 1.1 inline ray queries,
 # shader model 6.5) are compiled by the Windows SDK's DXC at build time into signed DXIL headers.
@@ -772,6 +791,8 @@ add_library(galaxy_gx STATIC
     runtime/src/gx/rt_surfaces.cpp
     runtime/src/gx/rt_materials.cpp
     runtime/src/gx/enhanced_lighting.cpp
+    runtime/src/gx/scene_lights.cpp
+    runtime/src/gx/enhanced_finish.cpp
     ${galaxy_rt_headers}
     runtime/src/gx/streamline_bridge.cpp
     runtime/src/gx/transform_history.cpp
@@ -1155,6 +1176,8 @@ target_link_libraries(galaxy_rt_surfaces_tests PRIVATE galaxy_gx)
 
 add_executable(galaxy_rt_materials_tests runtime/src/gx/rt_materials_tests.cpp)
 target_link_libraries(galaxy_rt_materials_tests PRIVATE galaxy_gx)
+add_executable(galaxy_scene_lights_tests runtime/src/gx/scene_lights_tests.cpp)
+target_link_libraries(galaxy_scene_lights_tests PRIVATE galaxy_gx)
 
 add_executable(galaxy_xfb_present_selection_tests
     runtime/src/gx/xfb_present_selection_tests.cpp)
@@ -1284,6 +1307,7 @@ if(MSVC)
         galaxy_sampler_key_tests
         galaxy_rt_surfaces_tests
         galaxy_rt_materials_tests
+        galaxy_scene_lights_tests
         galaxy_xfb_present_selection_tests
         galaxy_efb_conversion_tests
         galaxy_line_point_raster_tests
@@ -1379,6 +1403,7 @@ galaxy_add_native_test(compact_memory_snapshot galaxy_memory_snapshot_tests)
 galaxy_add_native_test(sampler_key_packing galaxy_sampler_key_tests)
 galaxy_add_native_test(rt_surface_classes galaxy_rt_surfaces_tests)
 galaxy_add_native_test(rt_material_table galaxy_rt_materials_tests)
+galaxy_add_native_test(scene_lights galaxy_scene_lights_tests)
 galaxy_add_native_test(xfb_present_selection galaxy_xfb_present_selection_tests)
 galaxy_add_native_test(efb_content_key_identity galaxy_efb_conversion_tests --content-key-hash)
 galaxy_add_native_test(efb_conversion_pipeline galaxy_efb_conversion_tests)

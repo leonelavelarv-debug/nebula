@@ -7568,6 +7568,11 @@ void GxBackend::note_rt_phase(std::uint8_t phase) {
         phase == static_cast<std::uint8_t>(ScenePhase::AfterIndirect) ||
         phase == static_cast<std::uint8_t>(ScenePhase::ImageEffect)) {
         trace_rt_scene();
+        if (enhanced_finish_on_ && !enhanced_occluded_ && side_layer_ == kSceneLayer) {
+            enhanced_occluded_ = true;
+            flush_pending_draw_batch();
+            renderer_.enhanced_occlusion();
+        }
     }
     if (phase == static_cast<std::uint8_t>(ScenePhase::ImageEffect)) {
         trace_rt_water();
@@ -7590,6 +7595,219 @@ void GxBackend::trace_rt_scene() {
     rt_scene_traced_ = true;
     flush_pending_draw_batch();
     renderer_.rt_trace_scene();
+}
+
+namespace {
+
+float read_env_float(const char* name, float fallback) {
+    char value[32]{};
+    std::size_t length = 0;
+    if (getenv_s(&length, value, sizeof(value), name) != 0 || length == 0) {
+        return fallback;
+    }
+    char* end = nullptr;
+    const float parsed = std::strtof(value, &end);
+    return end == value ? fallback : parsed;
+}
+
+// The colour a light-source draw shows (rt_materials.h tint: Luma and star-bit colours live in the
+// game's colour registers): the most colourful of the TEV colour registers, konstant colours and
+// the material register its colour combiners read, at full brightness; false when all are grey.
+bool draw_tint(const GxState& state, const PixelShaderKey& key, float out[3]) {
+    const auto regs = state.tev_register_values();
+    const auto konst = state.tev_konst_colors();
+    const std::uint32_t material = state.xf(xf::kMaterialColorBase);
+    float best = 0.15f;
+    bool found = false;
+    const auto offer = [&](float r, float g, float b) {
+        const float peak = std::max(r, std::max(g, b));
+        const float chroma = peak - std::min(r, std::min(g, b));
+        if (peak > 0.1f && chroma / peak > best) {
+            best = chroma / peak;
+            out[0] = r / peak;
+            out[1] = g / peak;
+            out[2] = b / peak;
+            found = true;
+        }
+    };
+    const unsigned stages = std::min<unsigned>(key.num_tev_stages, 16u);
+    for (unsigned st = 0; st < stages; ++st) {
+        const TevStagePacked& stage = key.stages[st];
+        for (unsigned shift = 0; shift < 16u; shift += 4u) {
+            const auto arg = static_cast<TevColorArg>((stage.color_env >> shift) & 0xFu);
+            if (arg == TevColorArg::C0 || arg == TevColorArg::C1 || arg == TevColorArg::C2) {
+                const unsigned r = arg == TevColorArg::C0 ? 1u : arg == TevColorArg::C1 ? 2u : 3u;
+                offer(std::clamp(regs[r][0], 0, 255) / 255.0f, std::clamp(regs[r][1], 0, 255) / 255.0f,
+                      std::clamp(regs[r][2], 0, 255) / 255.0f);
+            } else if (arg == TevColorArg::Konst) {
+                const unsigned sel = stage.ksel & 0x1Fu;
+                if (sel >= 12u && sel <= 15u) {
+                    const std::uint32_t v = konst[sel - 12u];
+                    offer(static_cast<float>(v >> 24u) / 255.0f, static_cast<float>((v >> 16u) & 0xFFu) / 255.0f,
+                          static_cast<float>((v >> 8u) & 0xFFu) / 255.0f);
+                }
+            } else if (arg == TevColorArg::RasColor && ((stage.order >> 7u) & 7u) == 0u &&
+                       !state.channel_ctrl(0u).material_from_vertex) {
+                offer(static_cast<float>(material >> 24u) / 255.0f, static_cast<float>((material >> 16u) & 0xFFu) / 255.0f,
+                      static_cast<float>((material >> 8u) & 0xFFu) / 255.0f);
+            }
+        }
+    }
+    return found;
+}
+
+}  // namespace
+
+void GxBackend::write_scene_lights(const std::array<float, 12>* view) {
+    // GALAXY_ENHANCED_POINT_LIGHTS=0: enhanced lighting without them.
+    static const bool enabled = read_env_u64("GALAXY_ENHANCED_POINT_LIGHTS", 1u) != 0u;
+    scene_lights_on_ = false;
+    if (!enabled || !enhanced_lighting_ || renderer_.rt_lighting()) {
+        scene_eye_to_world_known_ = false;
+        return;
+    }
+    scene_eye_to_world_known_ = view != nullptr && affine_invert(*view, scene_eye_to_world_);
+    // The previous scene's light sources; this one's start empty.
+    const SceneEmitters& previous = scene_emitters_[scene_emitter_set_];
+    scene_emitter_set_ ^= 1u;
+    scene_emitters_[scene_emitter_set_].clear();
+    constexpr UINT64 kRecordBytes = 16u * kScenePointLightTexels;
+    if (!scene_light_buffer_) {
+        ID3D12Device* device = renderer_.device();
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width = kRecordBytes * kSceneLightSlots;
+        desc.Height = 1u;
+        desc.DepthOrArraySize = 1u;
+        desc.MipLevels = 1u;
+        desc.SampleDesc.Count = 1u;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        D3D12_DESCRIPTOR_HEAP_DESC heap_desc{};
+        heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        heap_desc.NumDescriptors = kSceneLightSlots;
+        void* mapped = nullptr;
+        const D3D12_RANGE no_read{0, 0};
+        if (device == nullptr ||
+            FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                   D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                   IID_PPV_ARGS(&scene_light_buffer_))) ||
+            FAILED(scene_light_buffer_->Map(0, &no_read, &mapped)) ||
+            FAILED(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&scene_light_srvs_)))) {
+            std::fprintf(stderr, "[enh-lights] the scene light ring could not be created\n");
+            scene_light_buffer_.Reset();
+            scene_light_srvs_.Reset();
+            return;
+        }
+        scene_light_buffer_->SetName(L"enhanced scene lights");
+        scene_light_mapped_ = static_cast<float*>(mapped);
+        const UINT stride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        D3D12_CPU_DESCRIPTOR_HANDLE at = scene_light_srvs_->GetCPUDescriptorHandleForHeapStart();
+        for (unsigned slot = 0; slot < kSceneLightSlots; ++slot) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+            srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Buffer.FirstElement = static_cast<UINT64>(slot) * kScenePointLightTexels;
+            srv.Buffer.NumElements = kScenePointLightTexels;
+            device->CreateShaderResourceView(scene_light_buffer_.Get(), &srv, at);
+            at.ptr += stride;
+        }
+    }
+    // The ring outlasts the frames in flight and the interpolated sub-frames that replay a scene.
+    scene_light_slot_ = (scene_light_slot_ + 1u) % kSceneLightSlots;
+    static const ScenePointLightRules rules = [] {
+        ScenePointLightRules r{};
+        // GALAXY_ENHANCED_GAME_LIGHT: the game's point lights' strength.
+        r.game_light = std::clamp(read_env_float("GALAXY_ENHANCED_GAME_LIGHT", r.game_light), 0.0f, 4.0f);
+        return r;
+    }();
+    std::array<ScenePointLight, kScenePointLightMax> lights{};
+    const std::size_t count = view != nullptr ? scene_point_lights(*view, rules, previous.lights(), lights) : 0u;
+    float* record = scene_light_mapped_ + static_cast<std::size_t>(scene_light_slot_) * 4u * kScenePointLightTexels;
+    pack_scene_point_lights({lights.data(), count}, std::span<float, 4u * kScenePointLightTexels>(record, 4u * kScenePointLightTexels));
+    scene_light_count_ = static_cast<std::uint32_t>(count);
+    scene_lights_on_ = true;
+    // GALAXY_ENHANCED_TRACE_LIGHTS=1: every 240th scene's lights.
+    static const bool trace = read_env_u64("GALAXY_ENHANCED_TRACE_LIGHTS", 0u) != 0u;
+    if (trace && frame_index_ % 240u == 0u) [[unlikely]] {
+        std::fprintf(stderr, "[enh-lights] frame=%llu lights=%zu emitters=%zu notes=%u\n",
+                     static_cast<unsigned long long>(frame_index_), count, previous.lights().size(),
+                     scene_emitter_notes_);
+        for (std::size_t i = 0; i < count; ++i) {
+            const ScenePointLight& l = lights[i];
+            std::fprintf(stderr, "[enh-lights]   %zu eye=(%.0f %.0f %.0f) color=(%.2f %.2f %.2f) half=%.0f reach=%.0f game=%d\n",
+                         i, l.position[0], l.position[1], l.position[2], l.color[0], l.color[1], l.color[2], l.half,
+                         l.reach, l.game ? 1 : 0);
+        }
+        scene_emitter_notes_ = 0u;
+    }
+}
+
+void GxBackend::note_enhanced_view() {
+    float regs[6]{};
+    for (unsigned i = 0; i < 6u; ++i) {
+        regs[i] = std::bit_cast<float>(state_.xf(static_cast<std::uint16_t>(xf::kViewportBase + i)));
+    }
+    const ScaledGxViewport viewport = compute_scaled_gx_viewport(regs, renderer_.efb_scale());
+    if (!viewport.valid() || viewport.max_depth - viewport.min_depth < 0.5f) {
+        return;
+    }
+    const auto projection = [this](unsigned i) {
+        return std::bit_cast<float>(state_.xf(static_cast<std::uint16_t>(xf::kProjectionBase + i)));
+    };
+    // fill_vs_projection: D3D clip z = -(z E + F) (1 - 1e-7).
+    constexpr float kFarEps = 1.0f - 1e-7f;
+    RtView view{};
+    view.projection = {projection(0u), projection(1u), projection(2u), projection(3u)};
+    view.z_scale = -projection(4u) * kFarEps;
+    view.z_offset = -projection(5u) * kFarEps;
+    view.viewport = {viewport.x, viewport.y, viewport.width, viewport.height};
+    view.min_depth = viewport.min_depth;
+    view.max_depth = viewport.max_depth;
+    float column = 0.0f;
+    if (enhanced_split_ > 0.0f) {
+        // As the enhanced pipelines' split column (uber_ps_header[3]).
+        const float wd = regs[0];
+        const float left = regs[3] - static_cast<float>(state_.efb_scissor().offset.x) - 342.0f - wd;
+        column = std::clamp((left + enhanced_split_ * 2.0f * wd) * static_cast<float>(renderer_.efb_scale()), 1.0f,
+                            65535.0f);
+    }
+    renderer_.enhanced_set_view(view, column);
+}
+
+void GxBackend::note_scene_emitter() {
+    const RtMaterial* material = rt_material(current_rt_material_);
+    static const auto start = std::chrono::steady_clock::now();
+    const float time_s = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+    float color[3]{};
+    float half = 0.0f;
+    float reach = 0.0f;
+    if (!enhanced_table_light(material, time_s, color, half, reach) ||
+        (material->unlit_only && state_.channel_ctrl(0u).lighting_enable)) {
+        return;
+    }
+    if (material->tint) {
+        float shown[3]{};
+        if (draw_tint(state_, ps_key_, shown)) {
+            const float peak = std::max(color[0], std::max(color[1], color[2]));
+            for (unsigned k = 0; k < 3u; ++k) {
+                color[k] = shown[k] * peak;
+            }
+        }
+    }
+    // The origin of the draw's position matrix (eye space): its model's, or a joint of a skinned one.
+    const unsigned row = std::min(state_.cp(cp::kMatrixIndexA) & 0x3Fu, 61u);
+    const std::array<float, 3> eye{std::bit_cast<float>(state_.xf(static_cast<std::uint16_t>(row * 4u + 3u))),
+                                   std::bit_cast<float>(state_.xf(static_cast<std::uint16_t>(row * 4u + 7u))),
+                                   std::bit_cast<float>(state_.xf(static_cast<std::uint16_t>(row * 4u + 11u)))};
+    if (!std::isfinite(eye[0]) || !std::isfinite(eye[1]) || !std::isfinite(eye[2]) || eye[2] > reach) {
+        return;
+    }
+    scene_emitters_[scene_emitter_set_].add(affine_apply(scene_eye_to_world_, eye), {color[0], color[1], color[2]},
+                                            half, reach);
+    ++scene_emitter_notes_;
 }
 
 void GxBackend::on_fifo_marker(FifoMarker marker, const std::array<float, 12>* view) {
@@ -7629,8 +7847,16 @@ void GxBackend::on_fifo_marker(FifoMarker marker, const std::array<float, 12>* v
         enhanced_ps_flags_ = (enhanced_ps_flags_ & ~(kEnhancedRtReflections | kEnhancedRtLighting)) |
                              (renderer_.rt_reflections_active() ? kEnhancedRtReflections : 0u) |
                              (renderer_.rt_lighting() ? kEnhancedRtLighting : 0u);
+        write_scene_lights(view);
+        enhanced_finish_on_ = enhanced_lighting_ && !renderer_.rt_lighting() && renderer_.enhanced_finish_ready();
+        enhanced_occluded_ = false;
+        renderer_.enhanced_begin_scene();
     } else {
         trace_rt_scene();
+        if (enhanced_finish_on_ && side_layer_ == kSceneLayer) {
+            enhanced_finish_on_ = false;
+            renderer_.enhanced_finish();
+        }
         if (renderer_.rt_active() && side_layer_ == kSceneLayer) {
             trace_rt_water();
             renderer_.rt_capture_picture();
@@ -10624,7 +10850,8 @@ void GxBackend::render_frame_on_thread(FrameChunk& chunk) {
             // =1 always does (tests at 60).
             static const std::uint64_t identity_env = read_env_u64("GALAXY_DRAW_IDENTITY", 2u);
             const bool wanted = identity_env == 2u
-                ? (interp_recording_ || renderer_.temporal_mode() || renderer_.rt_active())
+                ? (interp_recording_ || renderer_.temporal_mode() || renderer_.rt_active() ||
+                   (enhanced_lighting_ && !renderer_.rt_lighting() && renderer_.enhanced_finish_ready()))
                 : identity_env != 0u;
             if (draw_identity_wanted_.load(std::memory_order_relaxed) != wanted) {
                 draw_identity_wanted_.store(wanted, std::memory_order_relaxed);
@@ -12514,8 +12741,18 @@ ID3D12PipelineState* GxBackend::flush_draw_state(
             (rt_phase_ == static_cast<std::uint8_t>(ScenePhase::Xlu) ||
              rt_phase_ == static_cast<std::uint8_t>(ScenePhase::ListXlu)) &&
             renderer_.rt_light_texture_ready() && renderer_.rt_light_texture() != nullptr;
+        // Enhanced lighting's point lights: perspective scene triangles that do not add light (glows),
+        // with map 7 free for the scene's light record.
+        scene_point_lit_ =
+            scene_lights_on_ && !lit_translucent_ && scene_phase_ && side_layer_ == kSceneLayer &&
+            (texture_map_mask & 0x80u) == 0u &&
+            topology_key == static_cast<std::uint8_t>(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE) &&
+            state_.xf(static_cast<std::uint16_t>(xf::kProjectionBase + 6u)) == 0u &&
+            !(b.blend_enable && !b.logic_op_enable && !b.subtract && b.dst_factor == BlendFactor::One);
         if ((texture_map_mask & 0x80u) == 0u) {
-            texture_binding_key.regs[7u * 5u] = lit_translucent_ ? kLitTranslucentKey : 0u;
+            texture_binding_key.regs[7u * 5u] = lit_translucent_  ? kLitTranslucentKey
+                                                : scene_point_lit_ ? kSceneLightKey + scene_light_slot_
+                                                                   : 0u;
         }
     }
     // A dirty BP input requires a fresh capture, but writes to unused maps,
@@ -12587,9 +12824,11 @@ ID3D12PipelineState* GxBackend::flush_draw_state(
         const bool gate = (enhanced_lighting_ || (delight && (enhanced_ps_flags_ & kEnhancedRtLighting) != 0u)) && triangles &&
                           scene_phase_ && side_layer_ == kSceneLayer &&
                           state_.xf(static_cast<std::uint16_t>(xf::kProjectionBase + 6u)) == 0u;
-        if (gate != enhanced_gate_ || tev_dirty || xf_dirty || vcd_dirty || !shader_key_hashes_valid_) {
+        if (gate != enhanced_gate_ || scene_point_lit_ != enhanced_points_memo_ || tev_dirty || xf_dirty ||
+            vcd_dirty || !shader_key_hashes_valid_) {
             enhanced_gate_ = gate;
-            enhanced_material_ = gate ? enhanced_lighting_material(vs_key_, ps_key_) : 0u;
+            enhanced_points_memo_ = scene_point_lit_;
+            enhanced_material_ = gate ? enhanced_lighting_material(vs_key_, ps_key_, scene_point_lit_) : 0u;
         }
         const std::uint32_t material = enhanced_material_;
         enhanced = material != 0u;
@@ -12906,10 +13145,13 @@ ID3D12PipelineState* GxBackend::flush_draw_state(
     for (unsigned texgen = 0; texgen < vs_key_.num_texgens; ++texgen) {
         emboss_palette_required |= state_.tex_gen(texgen).type == TexGenType::EmbossMap;
     }
-    // Enhanced lighting reads the lights in the pixel shader, unlit draws included.
+    // Enhanced lighting reads the lights in the pixel shader, unlit environment-mapped draws included
+    // (draws that only take the scene's point lights read none).
     const bool palette_required =
         emboss_palette_required ||
-        (vs_key_.flags & (0x03u | kVsKeyEnhancedLighting)) != 0u ||
+        (vs_key_.flags & 0x03u) != 0u ||
+        ((vs_key_.flags & kVsKeyEnhancedLighting) != 0u &&
+         (ps_key_.ind_reserved & (kEnhancedLit | kEnhancedEnvCoordMask)) != 0u) ||
         (vs_key_.texmtx_idx_mask & active_texgen_mask) != 0u;
     current_palette_required_ = palette_required;
     // Actor lights (actor_lights.h): a lit scene draw's follow-camera lights are moved in its
@@ -13179,6 +13421,11 @@ ID3D12PipelineState* GxBackend::flush_draw_state(
                     table_key.resources[7] = reinterpret_cast<std::uintptr_t>(renderer_.rt_light_texture());
                     table_key.srv_indices[7] = 0xFFFFFFFFu;
                 }
+                const bool light_table = !lit_table && scene_point_lit_ && texture_handles[7].resource == nullptr;
+                if (light_table) {
+                    table_key.resources[7] = reinterpret_cast<std::uintptr_t>(scene_light_buffer_.Get());
+                    table_key.srv_indices[7] = 0xFFFF0000u | scene_light_slot_;
+                }
 
                 const auto table_start = time_detail
                     ? std::chrono::steady_clock::now()
@@ -13212,6 +13459,10 @@ ID3D12PipelineState* GxBackend::flush_draw_state(
                     }
                     if (lit_table) {
                         sources[7] = renderer_.rt_light_texture_srv();
+                    }
+                    if (light_table) {
+                        sources[7] = scene_light_srvs_->GetCPUDescriptorHandleForHeapStart();
+                        sources[7].ptr += static_cast<SIZE_T>(scene_light_slot_) * srv_stride;
                     }
                     // CPU-only sources, one contiguous frame-owned table.
                     const UINT destination_size = num_maps;
@@ -13343,7 +13594,15 @@ ID3D12PipelineState* GxBackend::flush_draw_state(
                 elapsed_us(constants_start, std::chrono::steady_clock::now());
         }
     }
-
+    if (enhanced_finish_on_ && scene_phase_ && side_layer_ == kSceneLayer && !renderer_.enhanced_view_known() &&
+        topology_key == static_cast<std::uint8_t>(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE) &&
+        state_.xf(static_cast<std::uint16_t>(xf::kProjectionBase + 6u)) == 0u) {
+        note_enhanced_view();
+    }
+    if (scene_lights_on_ && scene_eye_to_world_known_ && current_rt_material_ != 0u && scene_phase_ &&
+        side_layer_ == kSceneLayer && state_.xf(static_cast<std::uint16_t>(xf::kProjectionBase + 6u)) == 0u) {
+        note_scene_emitter();
+    }
 
     frame_bindings_dirty_ = false;
     texture_bindings_dirty_ = false;

@@ -6258,6 +6258,7 @@ void RendererD3D12::begin_frame(bool present_swap_chain) {
     }
 
     ray_tracer_.begin_frame(frame_index_);
+    enhanced_finish_.begin_frame(frame_index_);
 
     const auto reset_start = collect_begin_timing
         ? std::chrono::steady_clock::now()
@@ -7801,6 +7802,56 @@ void RendererD3D12::record_rt_post(bool replay) {
     ray_tracer_.post_finish(command_list_.Get(), efb_rtv_, conv_efb_depth_srv_, width, desc.Height);
     std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);
     command_list_->ResourceBarrier(1, &barriers[1]);
+    command_list_->SetGraphicsRootSignature(root_signature_.Get());
+    invalidate_gx_bindings();
+    bound_rt_aux_ = 0xFFu;
+    bound_pipeline_ = nullptr;
+}
+
+bool RendererD3D12::enhanced_finish_ready() {
+    if (!enhanced_finish_.ready() && !enhanced_finish_failed_ && device_) {
+        enhanced_finish_failed_ = !enhanced_finish_.initialize(device_.Get(), timestamp_frequency_);
+    }
+    return enhanced_finish_.ready();
+}
+
+void RendererD3D12::enhanced_occlusion() {
+    record_enhanced(false);
+    if (replay_recording_) {
+        replay_ops_.push_back({ReplayKind::EnhancedOcclusion, 0u});
+    }
+}
+
+void RendererD3D12::enhanced_finish() {
+    record_enhanced(true);
+    if (replay_recording_) {
+        replay_ops_.push_back({ReplayKind::EnhancedFinish, 0u});
+    }
+}
+
+void RendererD3D12::record_enhanced(bool finish) {
+    if (!enhanced_finish_.ready() || !efb_color_ || !efb_depth_ || conv_efb_color_srv_.ptr == 0u) {
+        return;
+    }
+    if (!enhanced_finish_.sized_for(efb_color_.Get())) {
+        // Its textures may still be in flight.
+        wait_for_gpu();
+        const D3D12_RESOURCE_DESC desc = efb_color_->GetDesc();
+        if (!enhanced_finish_.allocate_resources(static_cast<std::uint32_t>(desc.Width), desc.Height)) {
+            return;
+        }
+    }
+    const EnhancedTarget target{efb_color_.Get(), efb_depth_.Get(), conv_efb_color_srv_, efb_rtv_};
+    const auto allocate = [](void* context, unsigned count) {
+        const DescriptorRing::Table table = static_cast<RendererD3D12*>(context)->srv_ring_.allocate(count);
+        return EnhancedDescriptors{table.cpu, table.gpu};
+    };
+    dred_marker(command_list_.Get(), finish ? L"enhanced finish" : L"enhanced occlusion");
+    if (finish) {
+        enhanced_finish_.finish(command_list_.Get(), target, allocate, this);
+    } else {
+        enhanced_finish_.occlusion(command_list_.Get(), target, allocate, this);
+    }
     command_list_->SetGraphicsRootSignature(root_signature_.Get());
     invalidate_gx_bindings();
     bound_rt_aux_ = 0xFFu;
@@ -9597,6 +9648,12 @@ bool RendererD3D12::record_replay_list(ReplayList& entry) {
                 break;
             case ReplayKind::RtWater:
                 record_rt_water(static_cast<int>(op.index), true);
+                break;
+            case ReplayKind::EnhancedOcclusion:
+                record_enhanced(false);
+                break;
+            case ReplayKind::EnhancedFinish:
+                record_enhanced(true);
                 break;
             }
             if (op.kind == ReplayKind::Copy) {
