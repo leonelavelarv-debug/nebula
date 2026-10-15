@@ -168,6 +168,17 @@ bool trace_texture_uploads_enabled() {
     return enabled;
 }
 
+// GALAXY_TEXTURE_PACK_TRACE=1: each replacement bound or swapped in, with its guest address and file.
+bool trace_texture_packs_enabled() {
+    static const bool enabled = [] {
+        char value[16]{};
+        std::size_t length = 0;
+        return getenv_s(&length, value, sizeof(value), "GALAXY_TEXTURE_PACK_TRACE") == 0 &&
+               length > 1 && value[0] != '0';
+    }();
+    return enabled;
+}
+
 std::uint64_t read_env_u64(const char* name, std::uint64_t fallback) {
     char value[32]{};
     std::size_t length = 0;
@@ -1235,6 +1246,7 @@ std::uint32_t efb_copy_guest_byte_size(const EfbCopyParams& params) {
 bool TextureCache::initialize(ID3D12Device* device) {
     device_ = device;
     texture_heap_.initialize(device);
+    packs_.initialize(device);
     next_srv_index_ = 0u;
     free_srv_indices_.clear();
     retired_srv_indices_.reset();
@@ -1325,6 +1337,7 @@ void TextureCache::begin_frame(
     upload_arenas_[frame_slot].active_chunk = 0;
     upload_arenas_[frame_slot].cursor = 0;
     current_frame_slot_ = frame_slot;
+    packs_.begin_frame(frame_slot);
 }
 
 void TextureCache::release_held_entries(std::vector<Entry>& held) {
@@ -1561,6 +1574,10 @@ bool TextureCache::take_pooled_texture(
 }
 
 void TextureCache::retire(Entry&& entry) {
+    if (entry.pack_slot != TexturePacks::kNone) {
+        packs_.remove_user(entry.pack_slot);
+        entry.pack_slot = TexturePacks::kNone;
+    }
     if (!entry.texture) {
         return;
     }
@@ -1591,6 +1608,8 @@ void TextureCache::release_upload_arenas() {
 void TextureCache::shutdown() {
     finish_pending_decodes_noexcept();
     decode_pool_.reset();
+    packs_.shutdown();
+    pack_waiters_.clear();
     {
         const PlacedTextureAllocator::Stats heap = texture_heap_.stats();
         std::cerr << "[texture-heap] heaps=" << heap.heaps << " heap-bytes=" << heap.heap_bytes
@@ -2022,6 +2041,117 @@ void TextureCache::invalidate_all() {
 }
 
 // ---------------------------------------------------------------------------
+// Texture packs
+// ---------------------------------------------------------------------------
+
+TextureCache::Entry TextureCache::make_replacement_entry(const TextureReplacement& replacement, std::uint32_t slot,
+                                                         std::uint16_t width, std::uint16_t height,
+                                                         bool generated_mips, std::uint32_t guest_byte_size) {
+    const UINT srv_idx = allocate_srv_index();
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc{};
+    srv_desc.Format = replacement.format;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv_desc.Texture2D.MipLevels = replacement.levels;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = srv_cpu_base_;
+    cpu.ptr += static_cast<SIZE_T>(srv_idx) * srv_stride_;
+    device_->CreateShaderResourceView(replacement.texture.Get(), &srv_desc, cpu);
+
+    Entry entry{};
+    entry.texture = replacement.texture;
+    // Not charged to the decoded budget and never pooled: the packs' own budget covers it.
+    entry.allocation_bytes = 0u;
+    entry.handle.resource = replacement.texture.Get();
+    entry.handle.srv_index = srv_idx;
+    entry.handle.width = width;
+    entry.handle.height = height;
+    entry.handle.mip_levels = static_cast<std::uint8_t>(std::min(replacement.levels, 255u));
+    entry.handle.from_efb_copy = false;
+    entry.handle.generated_mips = generated_mips;
+    entry.handle.lod_shift_x16 = replacement.lod_shift_x16;
+    entry.handle.guest_byte_size = guest_byte_size;
+    entry.pack_slot = slot;
+    packs_.add_user(slot);
+    return entry;
+}
+
+void TextureCache::wait_for_replacement(const Key& key, Entry& entry, std::uint32_t slot) {
+    entry.pack_slot = slot;
+    entry.pack_waiting = true;
+    packs_.add_user(slot);
+    std::vector<Key>& waiters = pack_waiters_[slot];
+    if (waiters.size() >= 64u) {
+        // A slot whose load failed keeps its waiters: drop those already gone.
+        std::erase_if(waiters, [&](const Key& waiting) {
+            const auto it = entries_.find(waiting);
+            return it == entries_.end() || it->second.pack_slot != slot || !it->second.pack_waiting;
+        });
+    }
+    waiters.push_back(key);
+}
+
+void TextureCache::apply_texture_packs() {
+    if (upload_list_ == nullptr) {
+        return;
+    }
+    const auto apply_start = std::chrono::steady_clock::now();
+    if (packs_.pump(upload_list_, pack_ready_)) {
+        // New index, packs turned off, or dumping toggled: every decoded texture is looked up
+        // again at its next use (handle caches drop retired slots at the next frame begin).
+        invalidate_all();
+        pack_waiters_.clear();
+    }
+    for (const std::uint32_t slot : pack_ready_) {
+        const auto waiting = pack_waiters_.find(slot);
+        const TextureReplacement* replacement = packs_.resident(slot);
+        if (waiting == pack_waiters_.end() || replacement == nullptr) {
+            continue;
+        }
+        for (const Key& key : waiting->second) {
+            const auto it = entries_.find(key);
+            if (it == entries_.end() || it->second.pack_slot != slot || !it->second.pack_waiting) {
+                continue;
+            }
+            Entry next = make_replacement_entry(*replacement, slot, it->second.handle.width,
+                                                it->second.handle.height, it->second.handle.generated_mips,
+                                                it->second.handle.guest_byte_size);
+            next.handle.rt_material = it->second.handle.rt_material;
+            decoded_lru_release(key, it->second);
+            retire(std::move(it->second));
+            it->second = std::move(next);
+            decoded_lru_track(key);
+            ++pack_swapped_;
+            if (trace_texture_packs_enabled()) {
+                std::cerr << "[texture-pack] swap addr=" << std::hex << key.guest_addr << std::dec << ' '
+                          << packs_.file(slot).filename().string() << '\n';
+            }
+        }
+        pack_waiters_.erase(waiting);
+    }
+    const auto apply_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - apply_start).count());
+    pack_apply_ns_ += apply_ns;
+    pack_apply_max_ns_ = std::max(pack_apply_max_ns_, apply_ns);
+    if (++pack_stats_frame_ % 600u == 0u && (packs_.enabled() || packs_.dumping())) {
+        const TexturePacks::Stats stats = packs_.stats();
+        std::cerr << "[texture-pack] names=" << stats.names << " hashed=" << pack_hashed_
+                  << " hash-ms=" << static_cast<double>(pack_hash_ns_) / 1.0e6
+                  << " apply-ms=" << static_cast<double>(pack_apply_ns_) / 1.0e6
+                  << " apply-max-ms=" << static_cast<double>(pack_apply_max_ns_) / 1.0e6
+                  << " bound=" << pack_bound_ << " swapped=" << pack_swapped_ << " loads=" << stats.loads
+                  << " failures=" << stats.load_failures << " uploads=" << stats.uploads
+                  << " upload-mb=" << (stats.upload_bytes >> 20u) << " resident=" << stats.resident
+                  << " resident-mb=" << (stats.resident_bytes >> 20u) << " evictions=" << stats.evictions
+                  << " deferred=" << stats.deferred << " load-ms=" << stats.load_ms << " dumped=" << stats.dumped
+                  << '\n';
+    }
+}
+
+TexturePacks::Stats TextureCache::texture_pack_stats() const noexcept {
+    return packs_.stats();
+}
+
+// ---------------------------------------------------------------------------
 // get: primary texture fetch
 // ---------------------------------------------------------------------------
 
@@ -2269,11 +2399,52 @@ TextureHandle TextureCache::get(
             std::span<const std::byte>(guest_bytes, total_guest_size));
     }
     const auto* src = reinterpret_cast<const std::uint8_t*>(guest_bytes);
-    // The ray tracer's material table names textures by the texture-pack key of their base level.
+
+    // Texture packs: the naming convention's hashes of the base level (and of the palette range it
+    // uses). A resident replacement binds without a decode; else the original decodes and waits.
+    // The ray tracer's material table names textures by the same base-level key.
+    std::uint32_t pack_slot = TexturePacks::kNone;
+    TexturePackName pack_name{};
     std::uint16_t rt_material = 0u;
-    if (rt_materials_loaded()) {
-        rt_material = rt_material_index(texture_pack_hash(
-            src, texture_guest_byte_size(image.format, image.width, image.height, 1u)));
+    const bool pack_lookup = packs_.may_match(w, h, image.format);
+    const bool pack_dump = packs_.dumping();
+    const bool rt_lookup = rt_materials_loaded();
+    if (pack_lookup || pack_dump || rt_lookup) {
+        const auto hash_start = std::chrono::steady_clock::now();
+        pack_name.width = image.width;
+        pack_name.height = image.height;
+        pack_name.format = static_cast<std::uint8_t>(image.format);
+        pack_name.mipmapped = guest_levels > 1u;
+        pack_name.hash = texture_pack_hash(src, texture_guest_byte_size(image.format, w, h, 1u));
+        if ((pack_lookup || pack_dump) && texture_format_palettized(image.format)) {
+            pack_name.tlut = texture_pack_tlut_hash(image.format, src, w, h, tlut_bank_ + tlut_byte_offset);
+        }
+        ++pack_hashed_;
+        pack_hash_ns_ += static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - hash_start)
+                .count());
+        if (rt_lookup) {
+            rt_material = rt_material_index(pack_name.hash);
+        }
+        if (pack_lookup) {
+            pack_slot = packs_.find(w, h, image.format, pack_name.hash, pack_name.tlut);
+            if (const TextureReplacement* replacement = packs_.resident(pack_slot)) {
+                Entry entry = make_replacement_entry(*replacement, pack_slot, image.width, image.height,
+                                                     should_generate_native_mips(image, mode), total_guest_size);
+                entry.handle.rt_material = rt_material;
+                const TextureHandle handle = entry.handle;
+                if (entries_.empty()) decoded_guest_envelope_.clear();
+                decoded_guest_envelope_.include(image.guest_addr, total_guest_size);
+                entries_.emplace(key, std::move(entry));
+                decoded_lru_track(key);
+                ++pack_bound_;
+                if (trace_texture_packs_enabled()) {
+                    std::cerr << "[texture-pack] bind addr=" << std::hex << image.guest_addr << std::dec << ' '
+                              << packs_.file(pack_slot).filename().string() << '\n';
+                }
+                return handle;
+            }
+        }
     }
     std::optional<ContentKey> content_key;
     if (decoded_content_cache_enabled() &&
@@ -2349,8 +2520,11 @@ TextureHandle TextureCache::get(
                 const TextureHandle handle = entry.handle;
                 if (entries_.empty()) decoded_guest_envelope_.clear();
                 decoded_guest_envelope_.include(image.guest_addr, total_guest_size);
-                entries_.emplace(key, std::move(entry));
+                const auto inserted = entries_.emplace(key, std::move(entry)).first;
                 decoded_lru_track(key);
+                if (pack_slot != TexturePacks::kNone) {
+                    wait_for_replacement(key, inserted->second, pack_slot);
+                }
                 return handle;
             }
         }
@@ -2405,7 +2579,7 @@ TextureHandle TextureCache::get(
     const bool async_decode = async_decode_allowed_ &&
         texture_decode_format_supported(image.format) &&
         (!palettized || static_cast<unsigned>(tlut.format) <= 2u) &&
-        !trace_texture_uploads_enabled() && tex_dump_dir.empty();
+        !trace_texture_uploads_enabled() && tex_dump_dir.empty() && !pack_dump;
     if (level_pixels_scratch_.size() < levels) {
         level_pixels_scratch_.resize(levels);
     }
@@ -2676,6 +2850,10 @@ TextureHandle TextureCache::get(
             std::fclose(f);
         }
     }
+    if (pack_dump) {
+        // Synchronous decode in dump mode: level_pixels holds the base level.
+        packs_.dump(pack_name, w, h, reinterpret_cast<const std::uint8_t*>(level_pixels[0].data()));
+    }
     const auto tex_dump_end = trace_stalls
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
@@ -2686,8 +2864,11 @@ TextureHandle TextureCache::get(
         : std::chrono::steady_clock::time_point{};
     if (entries_.empty()) decoded_guest_envelope_.clear();
     decoded_guest_envelope_.include(image.guest_addr, total_guest_size);
-    entries_.emplace(key, std::move(entry));
+    const auto decoded = entries_.emplace(key, std::move(entry)).first;
     decoded_lru_track(key);
+    if (pack_slot != TexturePacks::kNone) {
+        wait_for_replacement(key, decoded->second, pack_slot);
+    }
     if (content_key.has_value()) {
         ++content_decoded_misses_;
         // The key lives in both the map and LRU list; count both copies.

@@ -185,8 +185,20 @@ namespace Nebula.Launcher
         public int SpatialQuality = 0;
         public bool GeneratedMipmaps = false, PerPixelLighting = false, EnhancedLighting = false;
         public bool HudOutputResolution = false, RayTracing = false;
+        // Texture packs: 0 off, 1 on (each texture at its first use), 2 preloaded at start.
+        public int TexturePacks = 1;
+        public bool TextureDump = false;
+        // The chosen pack folder; empty for the default one.
+        public string TexturePackFolderChoice = "";
+        public static readonly string[] TexturePackModes = { "Off", "On", "Preload at start" };
 
         public static string ConfigPath { get { return Path.Combine(NebulaPaths.DataRoot, "config.ini"); } }
+        // The runtime reads packs from TexturePacks\RMGE01 and dumps to TextureDumps\RMGE01 beside config.ini.
+        public static string TexturePackFolder { get { return Path.Combine(NebulaPaths.DataRoot, "TexturePacks"); } }
+        public string TexturePackFolderInUse
+        {
+            get { return string.IsNullOrEmpty(TexturePackFolderChoice) ? TexturePackFolder : TexturePackFolderChoice; }
+        }
 
         // Window sizes of exactly the given aspect that fit maxWidth x maxHeight,
         // smallest first. Empty for Auto.
@@ -258,6 +270,13 @@ namespace Nebula.Launcher
             if (values.TryGetValue("enhanced_lighting", out enhanced)) settings.EnhancedLighting = enhanced.Trim() != "0";
             if (values.TryGetValue("hud_output_resolution", out hud)) settings.HudOutputResolution = hud.Trim() != "0";
             if (values.TryGetValue("ray_tracing_enabled", out rt)) settings.RayTracing = rt.Trim() != "0";
+            string packs, preload, dump;
+            bool packsOn = !values.TryGetValue("texture_packs", out packs) || packs.Trim() != "0";
+            bool preloaded = values.TryGetValue("texture_pack_preload", out preload) && preload.Trim() != "0";
+            settings.TexturePacks = !packsOn ? 0 : preloaded ? 2 : 1;
+            if (values.TryGetValue("texture_dump", out dump)) settings.TextureDump = dump.Trim() != "0";
+            string packFolder;
+            if (values.TryGetValue("texture_pack_folder", out packFolder)) settings.TexturePackFolderChoice = packFolder.Trim();
             return settings;
         }
 
@@ -290,6 +309,10 @@ namespace Nebula.Launcher
             Set(lines, "enhanced_lighting", EnhancedLighting ? 1 : 0);
             Set(lines, "hud_output_resolution", HudOutputResolution ? 1 : 0);
             Set(lines, "ray_tracing_enabled", RayTracing ? 1 : 0);
+            Set(lines, "texture_packs", TexturePacks != 0 ? 1 : 0);
+            Set(lines, "texture_pack_preload", TexturePacks == 2 ? 1 : 0);
+            Set(lines, "texture_dump", TextureDump ? 1 : 0);
+            SetText(lines, "texture_pack_folder", TexturePackFolderChoice ?? "");
             Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath));
             string temp = ConfigPath + ".tmp";
             File.WriteAllText(temp, string.Join("\n", lines) + "\n", new UTF8Encoding(false));

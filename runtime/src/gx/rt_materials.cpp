@@ -6,11 +6,9 @@
 #include <windows.h>
 
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -18,52 +16,6 @@
 #include <vector>
 
 namespace galaxy::gx {
-
-std::uint64_t texture_pack_hash(const std::uint8_t* p, std::size_t n) noexcept {
-    constexpr std::uint64_t k1 = 0x9E3779B185EBCA87ull, k2 = 0xC2B2AE3D27D4EB4Full, k3 = 0x165667B19E3779F9ull,
-                            k4 = 0x85EBCA77C2B2AE63ull, k5 = 0x27D4EB2F165667C5ull;
-    const auto read64 = [](const std::uint8_t* q) {
-        std::uint64_t v;
-        std::memcpy(&v, q, 8u);
-        return v;
-    };
-    const auto round = [](std::uint64_t acc, std::uint64_t lane) { return std::rotl(acc + lane * k2, 31) * k1; };
-    const std::uint8_t* const end = p + n;
-    std::uint64_t acc = 0u;
-    if (n >= 32u) {
-        std::uint64_t v1 = k1 + k2, v2 = k2, v3 = 0u, v4 = 0u - k1;
-        for (; p + 32u <= end; p += 32u) {
-            v1 = round(v1, read64(p));
-            v2 = round(v2, read64(p + 8u));
-            v3 = round(v3, read64(p + 16u));
-            v4 = round(v4, read64(p + 24u));
-        }
-        acc = std::rotl(v1, 1) + std::rotl(v2, 7) + std::rotl(v3, 12) + std::rotl(v4, 18);
-        for (const std::uint64_t v : {v1, v2, v3, v4}) {
-            acc = (acc ^ round(0u, v)) * k1 + k4;
-        }
-    } else {
-        acc = k5;
-    }
-    acc += n;
-    for (; p + 8u <= end; p += 8u) {
-        acc = std::rotl(acc ^ round(0u, read64(p)), 27) * k1 + k4;
-    }
-    if (p + 4u <= end) {
-        std::uint32_t v;
-        std::memcpy(&v, p, 4u);
-        acc = std::rotl(acc ^ (static_cast<std::uint64_t>(v) * k1), 23) * k2 + k3;
-        p += 4u;
-    }
-    for (; p < end; ++p) {
-        acc = std::rotl(acc ^ (static_cast<std::uint64_t>(*p) * k5), 11) * k1;
-    }
-    acc ^= acc >> 33u;
-    acc *= k2;
-    acc ^= acc >> 29u;
-    acc *= k3;
-    return acc ^ (acc >> 32u);
-}
 
 namespace {
 

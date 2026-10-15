@@ -716,6 +716,9 @@ unsigned pending_settings_changes() {
     changes += lighting_mode(d) != lighting_mode(live);
     changes += d.hud_output_resolution != live.hud_output_resolution;
     changes += d.ray_tracing_enabled != live.ray_tracing_enabled;
+    changes += d.texture_packs != live.texture_packs ||
+        (d.texture_packs && d.texture_pack_preload != live.texture_pack_preload);
+    changes += d.texture_dump != live.texture_dump;
     changes += controls_changes();
     return changes;
 }
@@ -860,6 +863,19 @@ void reset_controls_draft() {
     s_input_mode_draft = get_runtime_settings().input_mode;
 }
 
+// Texture-pack rows: TEXTURE PACKS (off, on: each texture at its first use, preload) and DUMP TEXTURES.
+std::string texture_pack_row_value(const RenderConfig& c) {
+    return !c.texture_packs ? "OFF" : c.texture_pack_preload ? "PRELOAD" : "ON";
+}
+
+void texture_pack_row_step(RenderConfig& c, int delta) {
+    const int mode = std::clamp((!c.texture_packs ? 0 : c.texture_pack_preload ? 2 : 1) + delta, 0, 2);
+    c.texture_packs = mode != 0;
+    c.texture_pack_preload = mode == 2;
+}
+
+void texture_dump_row_step(RenderConfig& c, int) { c.texture_dump = !c.texture_dump; }
+
 unsigned native_settings_row_count(unsigned tab) {
     tab %= kNativeSettingsTabCount;
     if (settings_page_tab(tab)) {
@@ -979,6 +995,9 @@ void apply_native_settings_draft() {
     applied.enhanced_lighting = next.enhanced_lighting;
     applied.hud_output_resolution = next.hud_output_resolution;
     applied.ray_tracing_enabled = next.ray_tracing_enabled;
+    applied.texture_packs = next.texture_packs;
+    applied.texture_pack_preload = next.texture_pack_preload;
+    applied.texture_dump = next.texture_dump;
     const bool display_changed = display_settings_differ(live, applied);
     const unsigned changes = pending_settings_changes();
     if (applied.internal_follow_window) {
@@ -13093,6 +13112,10 @@ std::vector<SettingsRow> graphics_page(const RenderConfig& render) {
     rows.push_back({"MIPMAPS", render.enhanced_mipmaps ? "GENERATED" : "ORIGINAL",
                     [](RenderConfig& draft, int) { draft.enhanced_mipmaps = !draft.enhanced_mipmaps; },
                     "GENERATED ADDS SMOOTH DISTANT DETAIL WHERE THE GAME HAS NONE"});
+    rows.push_back({"TEXTURE PACKS", texture_pack_row_value(render), texture_pack_row_step,
+                    "HD TEXTURES FROM THE PACK FOLDER. PRELOAD LOADS THE WHOLE PACK AT START"});
+    rows.push_back({"DUMP TEXTURES", render.texture_dump ? "ON" : "OFF", texture_dump_row_step,
+                    "SAVES EACH NEW TEXTURE AS A PNG FOR PACK MAKERS"});
     {
         static constexpr const char* kLighting[] = {"PER VERTEX", "PER PIXEL", "ENHANCED"};
         rows.push_back({"LIGHTING", kLighting[lighting_mode(render)],

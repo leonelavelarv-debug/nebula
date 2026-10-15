@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "galaxy/gx/rt_materials.h"
 #include "galaxy/gx/rt_surfaces.h"
+#include "galaxy/gx/texture_pack.h"
 
 #include <cmath>
 #include <cstdint>

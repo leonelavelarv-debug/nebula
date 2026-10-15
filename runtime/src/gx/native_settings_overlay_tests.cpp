@@ -266,7 +266,7 @@ int main() {
     galaxy::gx::set_render_config(render);
     passed &= expect(reopen() && page_start(), "reopening takes the new live settings");
     snapshot = galaxy::gx::native_settings_overlay_snapshot();
-    passed &= expect(snapshot.tab == 1u && snapshot.row_count == 14u,
+    passed &= expect(snapshot.tab == 1u && snapshot.row_count == 16u,
                      "with FSR 1 and SMAA the page also has the SMAA quality row");
     passed &= expect(key(VK_LEFT), "left lowers the upscaler");
     passed &= expect(key(VK_DOWN) && key(VK_RIGHT), "quality mode row is adjustable");
@@ -277,10 +277,12 @@ int main() {
     for (int i = 0; i < 3; ++i) passed &= expect(key(VK_DOWN), "down moves to texture filtering");
     passed &= expect(key(VK_RIGHT), "texture filtering row is adjustable");
     passed &= expect(key(VK_DOWN) && key(VK_RIGHT), "mipmap row toggles");
+    passed &= expect(key(VK_DOWN) && key(VK_RIGHT), "texture packs row steps ON to PRELOAD");
+    passed &= expect(key(VK_DOWN) && key(VK_RIGHT), "texture dump row toggles");
     passed &= expect(key(VK_DOWN) && key(VK_RIGHT), "lighting row toggles");
     passed &= expect(
         galaxy::gx::get_render_config().aa_mode == 2u &&
-            galaxy::gx::native_settings_overlay_snapshot().pending_changes == 8u,
+            galaxy::gx::native_settings_overlay_snapshot().pending_changes == 10u,
         "every graphics change waits in the draft");
     passed &= expect(key(VK_RETURN), "Enter applies the graphics changes");
     const galaxy::gx::RenderConfig applied = galaxy::gx::get_render_config();
@@ -294,6 +296,8 @@ int main() {
     passed &= expect(!applied.enhanced_mipmaps, "mipmaps switch to the original ones");
     passed &= expect(applied.per_pixel_lighting && applied.enhanced_lighting,
                      "lighting steps from per pixel to enhanced");
+    passed &= expect(applied.texture_packs && applied.texture_pack_preload, "texture packs preload");
+    passed &= expect(applied.texture_dump, "texture dump switches on");
     passed &= expect(galaxy::gx::native_settings_overlay_snapshot().pending_changes == 0u,
                      "nothing is pending after apply");
 

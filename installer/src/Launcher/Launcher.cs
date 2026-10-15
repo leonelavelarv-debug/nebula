@@ -293,6 +293,9 @@ namespace Nebula.Launcher
         private readonly List<int> interpolationChoices = new List<int>();
         private readonly NumericUpDown sharpness = new NumericUpDown();
         private readonly CheckBox mipmaps = new CheckBox(), hudOutput = new CheckBox(), rayTracing = new CheckBox();
+        private readonly ComboBox texturePacks = new ComboBox();
+        private readonly CheckBox textureDump = new CheckBox();
+        private readonly Label texturePackFolderLabel = new Label();
         // Offered once the game has run on a GPU with DXR 1.1 and dedicated memory.
         private readonly bool rayTracingOffered = GraphicsSettings.RayTracingAdapter();
         private readonly TrackBar[] volumes = new TrackBar[AudioSettings.Names.Length];
@@ -456,6 +459,8 @@ namespace Nebula.Launcher
                 string setup = Path.Combine(session.Root, "Nebula-Setup.exe");
                 if (File.Exists(setup)) Process.Start(new ProcessStartInfo(setup, "--update") { WorkingDirectory = session.Root });
             };
+            y += 56;
+            AddTexturePackRows(advanced, ref y);
 
             var play = new Button { Text = "Save and play", Location = new Point(608, 588), Size = new Size(140, 38) };
             play.Click += delegate { if (Commit()) Play(); };
@@ -813,6 +818,42 @@ namespace Nebula.Launcher
             return button;
         }
 
+        // Texture packs (Off / On / Preload at start), the pack folder, the dump switch.
+        private void AddTexturePackRows(Control parent, ref int y)
+        {
+            Row(parent, "Texture packs", texturePacks, ref y);
+            texturePacks.Items.AddRange(GraphicsSettings.TexturePackModes);
+            Label(parent, "Pack folder", 12, y + 3);
+            texturePackFolderLabel.Location = new Point(200, y + 3);
+            texturePackFolderLabel.Size = new Size(380, 26);
+            texturePackFolderLabel.AutoEllipsis = true;
+            parent.Controls.Add(texturePackFolderLabel);
+            Button(parent, "Change…", 590, y, 120).Click += delegate
+            {
+                using (var dialog = new FolderBrowserDialog { Description = "Choose the texture pack folder." })
+                {
+                    dialog.SelectedPath = graphics.TexturePackFolderInUse;
+                    if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                    string chosen = dialog.SelectedPath.TrimEnd('\\');
+                    bool standard = string.Equals(chosen, GraphicsSettings.TexturePackFolder, StringComparison.OrdinalIgnoreCase);
+                    graphics.TexturePackFolderChoice = standard ? "" : chosen;
+                    texturePackFolderLabel.Text = graphics.TexturePackFolderInUse;
+                }
+            };
+            y += 44;
+            textureDump.Text = "Dump textures (for pack makers)";
+            textureDump.Location = new Point(12, y);
+            textureDump.Size = new Size(340, 28);
+            parent.Controls.Add(textureDump);
+            Button(parent, "Open pack folder", 368, y - 2, 200).Click += delegate
+            {
+                string folder = graphics.TexturePackFolderInUse;
+                if (string.IsNullOrEmpty(graphics.TexturePackFolderChoice)) Directory.CreateDirectory(Path.Combine(folder, "RMGE01"));
+                if (Directory.Exists(folder)) Process.Start("explorer.exe", "\"" + folder + "\"");
+            };
+            y += 40;
+        }
+
         private MonitorEntry SelectedMonitor
         {
             get { return monitor.SelectedIndex >= 0 && monitor.SelectedIndex < monitors.Count ? monitors[monitor.SelectedIndex] : DisplayInfo.Find(monitors, ""); }
@@ -840,6 +881,9 @@ namespace Nebula.Launcher
             mipmaps.Checked = graphics.GeneratedMipmaps;
             hudOutput.Checked = graphics.HudOutputResolution;
             rayTracing.Checked = graphics.RayTracing;
+            texturePacks.SelectedIndex = Math.Max(0, Math.Min(graphics.TexturePacks, GraphicsSettings.TexturePackModes.Length - 1));
+            textureDump.Checked = graphics.TextureDump;
+            texturePackFolderLabel.Text = graphics.TexturePackFolderInUse;
             for (int i = 0; i < volumes.Length; i++)
             {
                 volumes[i].Value = Math.Max(0, Math.Min(200, audio.Percent[i]));
@@ -1015,6 +1059,8 @@ namespace Nebula.Launcher
                 graphics.GeneratedMipmaps = mipmaps.Checked;
                 graphics.HudOutputResolution = hudOutput.Checked;
                 if (rayTracingOffered) graphics.RayTracing = rayTracing.Checked;
+                graphics.TexturePacks = Math.Max(0, texturePacks.SelectedIndex);
+                graphics.TextureDump = textureDump.Checked;
                 graphics.Save();
                 for (int i = 0; i < volumes.Length; i++) audio.Percent[i] = volumes[i].Value;
                 audio.Save();

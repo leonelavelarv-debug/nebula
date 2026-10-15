@@ -111,9 +111,6 @@ private:
 // The stage's row of the loaded sun table; null without one.
 [[nodiscard]] const RtStageSun* rt_stage_sun(std::string_view stage) noexcept;
 
-// XXH64 with seed 0 of a texture's base level: the texture-pack key.
-[[nodiscard]] std::uint64_t texture_pack_hash(const std::uint8_t* data, std::size_t bytes) noexcept;
-
 // The table is loaded on first use; false when it is missing or empty (nothing is hashed then).
 [[nodiscard]] bool rt_materials_loaded() noexcept;
 // 0: not in the table; else its index + 1.
