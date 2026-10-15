@@ -2617,6 +2617,38 @@ static constexpr char kBlitVs[] =
     " return o;"
     "}";
 
+// Fullscreen triangle of the moving-source conversion: the copy's source
+// origin between its pair's in the log before (b1) and its own (b0), by the
+// presented frame's t (frame values element, renderer ensure_frame_values).
+static constexpr char kConvMovingVs[] = R"HLSL(
+cbuffer C : register(b0) {
+    float4 src_xform;
+    float4 modes;
+    float4 filt;
+    float4 filt2;
+};
+cbuffer M : register(b1) {
+    float2 from_xy;
+    uint frame_element;
+    uint unused;
+};
+StructuredBuffer<uint4> frame_values : register(t1);
+struct V {
+    float4 pos : SV_Position;
+    float2 uv : TEXCOORD0;
+    nointerpolation float3 moved : TEXCOORD1;
+};
+V main(uint id : SV_VertexID) {
+    V o;
+    o.uv = float2(id == 1 ? 2 : 0, id == 2 ? 2 : 0);
+    o.pos = float4(o.uv.x * 2 - 1, 1 - o.uv.y * 2, 0.5, 1);
+    const float t = saturate(asfloat(frame_values[min(frame_element, 8193u)].x));
+    const float2 origin = lerp(from_xy, src_xform.xy, t);
+    o.moved = float3(origin, origin.y - src_xform.y);
+    return o;
+}
+)HLSL";
+
 static constexpr char kBlitPs[] =
     "Texture2D t:register(t0);"
     "SamplerState s:register(s0);"
@@ -2740,7 +2772,14 @@ cbuffer C : register(b0) {
 Texture2D srctex : register(t0);
 SamplerState s_lin : register(s0);
 SamplerState s_pt  : register(s1);
-struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
+struct V {
+    float4 pos : SV_Position;
+    float2 uv : TEXCOORD0;
+#ifdef MOVING_SOURCE
+    // The source origin at this sub-frame's t and the shift of the clamp rows.
+    nointerpolation float3 moved : TEXCOORD1;
+#endif
+};
 uint4 pack_depth(float depth_sample) {
     uint z24 = uint(clamp(
         (1.0 - depth_sample) * 16777216.0, 0.0, 16777215.0));
@@ -2786,7 +2825,14 @@ float4 main(V v) : SV_Target {
     float2 dims;
     srctex.GetDimensions(dims.x, dims.y);
     float2 inv = 1.0 / dims;
-    float2 sp = src_xform.xy + v.pos.xy * src_xform.zw;
+#ifdef MOVING_SOURCE
+    const float2 origin_xy = v.moved.xy;
+    const float row_shift = v.moved.z;
+#else
+    const float2 origin_xy = src_xform.xy;
+    const float row_shift = 0.0;
+#endif
+    float2 sp = origin_xy + v.pos.xy * src_xform.zw;
     uint reduction_width = filt2.w < 0.0 ? 1u : uint(filt2.w + 0.5);
     uint4 texcol_raw;
     if (reduction_width != 0u || filt2.w < 0.0) {
@@ -2796,12 +2842,12 @@ float4 main(V v) : SV_Target {
             // multi-texel blend that linear sampling produced at scaled EFB sizes.
             texcol_raw = pack_depth(
                 srctex.Load(int3(
-                    filt2.w < 0.0 ? int2(src_xform.xy + floor(v.pos.xy) * src_xform.zw)
-                                 : int2(src_xform.xy), 0)).r);
+                    filt2.w < 0.0 ? int2(origin_xy + floor(v.pos.xy) * src_xform.zw)
+                                 : int2(origin_xy), 0)).r);
         } else {
             // Color peeks reduce the complete scaled logical-pixel block.
             float4 sum = 0.0;
-            int2 origin = int2(src_xform.xy);
+            int2 origin = int2(origin_xy);
             [loop] for (uint py = 0u; py < reduction_width; ++py) {
                 [loop] for (uint px = 0u; px < reduction_width; ++px) {
                     sum += srctex.Load(int3(origin + int2(px, py), 0));
@@ -2811,7 +2857,7 @@ float4 main(V v) : SV_Target {
             texcol_raw = uint4(round(saturate(reduced) * 255.0));
         }
     } else {
-        float ylo = filt.w, yhi = filt2.x;
+        float ylo = filt.w + row_shift, yhi = filt2.x + row_shift;
         float filter_offset = max(filt2.z, 1.0);
         uint3 coefficients = uint3(filt.xyz + 0.5);
         uint4 current_row = sample_efb(
@@ -4292,6 +4338,94 @@ bool RendererD3D12::create_conversion_pipeline() {
     }
 
     refresh_efb_conversion_source_views();
+    if (!conv_moving_shaders_.valid() && !conv_moving_pipeline_) {
+        conv_moving_shaders_ = std::async(std::launch::async, [] {
+            std::array<ComPtr<ID3DBlob>, 2> blobs;
+            try {
+                const std::string ps = std::string("#define MOVING_SOURCE 1\n") + kConvPs;
+                blobs[0] = compile_hlsl(kConvMovingVs, sizeof(kConvMovingVs) - 1, "vs_5_1", "main");
+                blobs[1] = compile_hlsl(ps.data(), ps.size(), "ps_5_1", "main");
+            } catch (const std::exception& error) {
+                std::cerr << "[interp] moving-source conversion unavailable: " << error.what() << '\n';
+                blobs = {};
+            }
+            return blobs;
+        });
+    }
+    return true;
+}
+
+bool RendererD3D12::ensure_moving_conversion() {
+    if (conv_moving_pipeline_) {
+        return true;
+    }
+    if (conv_moving_failed_ || !blend_verdicts_ || !conv_moving_shaders_.valid() ||
+        conv_moving_shaders_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        return false;
+    }
+    conv_moving_failed_ = true;
+    const std::array<ComPtr<ID3DBlob>, 2> blobs = conv_moving_shaders_.get();
+    if (!blobs[0] || !blobs[1]) {
+        return false;
+    }
+    D3D12_DESCRIPTOR_RANGE range{};
+    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    range.NumDescriptors = 1;
+    range.BaseShaderRegister = 0;
+    D3D12_ROOT_PARAMETER params[4]{};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;
+    params[0].Constants.Num32BitValues = 16;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 1;
+    params[1].DescriptorTable.pDescriptorRanges = &range;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[2].Constants.ShaderRegister = 1;
+    params[2].Constants.Num32BitValues = 4;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[3].Descriptor.ShaderRegister = 1;
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    D3D12_STATIC_SAMPLER_DESC ss[2]{};
+    ss[0].Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    ss[0].AddressU = ss[0].AddressV = ss[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    ss[0].ShaderRegister = 0;
+    ss[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    ss[1] = ss[0];
+    ss[1].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    ss[1].ShaderRegister = 1;
+    D3D12_ROOT_SIGNATURE_DESC rsd{};
+    rsd.NumParameters = 4;
+    rsd.pParameters = params;
+    rsd.NumStaticSamplers = 2;
+    rsd.pStaticSamplers = ss;
+    ComPtr<ID3DBlob> blob, err;
+    if (FAILED(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err)) ||
+        FAILED(device_->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                            IID_PPV_ARGS(&conv_moving_root_)))) {
+        return false;
+    }
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
+    pd.pRootSignature = conv_moving_root_.Get();
+    pd.VS = {blobs[0]->GetBufferPointer(), blobs[0]->GetBufferSize()};
+    pd.PS = {blobs[1]->GetBufferPointer(), blobs[1]->GetBufferSize()};
+    pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pd.SampleMask = UINT_MAX;
+    pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pd.RasterizerState.DepthClipEnable = TRUE;
+    pd.DepthStencilState.DepthEnable = FALSE;
+    pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pd.NumRenderTargets = 1;
+    pd.RTVFormats[0] = kEfbColorFormat;
+    pd.SampleDesc.Count = 1;
+    if (FAILED(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&conv_moving_pipeline_)))) {
+        conv_moving_root_.Reset();
+        return false;
+    }
+    conv_moving_failed_ = false;
     return true;
 }
 
@@ -5294,6 +5428,9 @@ void RendererD3D12::shutdown() {
     blit_pipeline_.Reset();
     s_conv_root_sig.Reset();
     conv_pipeline_.Reset();
+    conv_moving_pipeline_.Reset();
+    conv_moving_root_.Reset();
+    conv_moving_failed_ = false;
     conv_scratch_rtv_slot_.reset();
     conv_rtv_heap_.Reset();
     conv_scratch_rtv_ = {};
@@ -8056,6 +8193,9 @@ void RendererD3D12::record_blend_validation() {
 
 void RendererD3D12::prepare_vertex_blend(std::span<const std::int32_t> previous_record) {
     run_blend_vertices_.assign(run_draws_.size(), BlendSource{});
+    run_copy_motion_.assign(run_copies_.size(), CopyMotion{});
+    moving_copies_ = 0u;
+    moving_copies_blended_ = 0u;
     blend_pairs_.clear();
     stripe_gather_.clear();
     blend_validate_pending_ = false;
@@ -8271,8 +8411,17 @@ void RendererD3D12::prepare_vertex_blend(std::span<const std::int32_t> previous_
         }
     }
     // Texture copies of both logs paired by destination and order: those whose
-    // source rectangle moved (screen boxes that follow an object).
-    moving_copies_ = 0u;
+    // source rectangle moved (screen boxes that follow an object) sample from
+    // between the two origins at a sub-frame. A move of more than a quarter of
+    // the EFB is a different box, not a follow.
+    static const bool blend_copies = [] {
+        char value[8]{};
+        std::size_t length = 0u;
+        return !(getenv_s(&length, value, sizeof(value), "GALAXY_INTERP_MOVING_COPIES") == 0 && length > 1u &&
+                 value[0] == '0');
+    }();
+    const float reach_x = static_cast<float>(kEfbWidth * efb_scale_) * 0.25f;
+    const float reach_y = static_cast<float>(kEfbHeight * efb_scale_) * 0.25f;
     for (std::size_t c = 0; c < run_copies_.size(); ++c) {
         const ReplayCopy& copy = run_copies_[c];
         if (copy.mode != 0u || copy.dest == nullptr) continue;
@@ -8281,9 +8430,18 @@ void RendererD3D12::prepare_vertex_blend(std::span<const std::int32_t> previous_
         for (const ReplayCopy& was : prev_run_copies_) {
             if (was.mode != 0u || was.dest != copy.dest) continue;
             if (ordinal-- != 0u) continue;
-            moving_copies_ += was.width == copy.width && was.height == copy.height &&
-                                      (was.geometry[0] != copy.geometry[0] || was.geometry[1] != copy.geometry[1])
-                                  ? 1u : 0u;
+            const bool moved = was.width == copy.width && was.height == copy.height &&
+                               (was.geometry[0] != copy.geometry[0] || was.geometry[1] != copy.geometry[1]);
+            if (moved) {
+                ++moving_copies_;
+                const bool follows = was.geometry[2] == copy.geometry[2] && was.geometry[3] == copy.geometry[3] &&
+                                     std::fabs(was.geometry[0] - copy.geometry[0]) <= reach_x &&
+                                     std::fabs(was.geometry[1] - copy.geometry[1]) <= reach_y;
+                if (blend_copies && follows && !copy.identity) {
+                    run_copy_motion_[c] = {{was.geometry[0], was.geometry[1]}, true};
+                    ++moving_copies_blended_;
+                }
+            }
             break;
         }
     }
@@ -8303,7 +8461,8 @@ void RendererD3D12::prepare_vertex_blend(std::span<const std::int32_t> previous_
                   << " in-scene=" << in_scene << " matched-record=" << matched << " paired=" << paired
                   << " same-buffer=" << same_buffer << " size-differs=" << size_differs
                   << " blended=" << blended << " stripe-draws=" << stripe_blends.size()
-                  << " stripe-vertices=" << stripe_gather_.size() << " moving-copies=" << moving_copies_ << '\n'
+                  << " stripe-vertices=" << stripe_gather_.size() << " moving-copies=" << moving_copies_
+                  << " moving-copies-blended=" << moving_copies_blended_ << '\n'
                   << detail.str();
     }
 }
@@ -8407,7 +8566,7 @@ bool RendererD3D12::ensure_subframe_resources(unsigned xfb_width, unsigned xfb_h
     return true;
 }
 
-void RendererD3D12::execute_replay_copy(const ReplayCopy& copy, ID3D12Resource* target) {
+void RendererD3D12::execute_replay_copy(const ReplayCopy& copy, ID3D12Resource* target, const float* moving_from) {
     if (copy.identity) {
         detail::record_efb_identity_copy(command_list_.Get(), efb_color_.Get(),
                                          target != nullptr ? target : copy.dest, copy.box);
@@ -8433,7 +8592,7 @@ void RendererD3D12::execute_replay_copy(const ReplayCopy& copy, ID3D12Resource* 
         dest, copy.width, copy.height, allocate_conversion_rtv(dest), copy.params,
         copy.depth, copy.intensity, copy.keep_alpha, copy.format,
         copy.geometry[0], copy.geometry[1], copy.geometry[2], copy.geometry[3],
-        copy.geometry[4]);
+        copy.geometry[4], copy.mode == 0u ? moving_from : nullptr);
     std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
     command_list_->ResourceBarrier(1, &b);
 }
@@ -9553,6 +9712,9 @@ bool RendererD3D12::record_replay_list(ReplayList& entry) {
             }
             case ReplayKind::Copy: {
                 const ReplayCopy& copy = run_copies_[op.index];
+                const float* const moving_from =
+                    op.index < run_copy_motion_.size() && run_copy_motion_[op.index].moving
+                        ? run_copy_motion_[op.index].from : nullptr;
                 if (motion_swapped && copy.mode == 2u && !entry.split) {
                     // The output switch is the temporal upscale, recorded per
                     // presented frame (record_subframe_upscale); the rest of
@@ -9586,7 +9748,8 @@ bool RendererD3D12::record_replay_list(ReplayList& entry) {
                         stand_in = acquire_copy_texture(copy.dest, false);
                     }
                     if (stand_in >= 0) {
-                        execute_replay_copy(copy, copy_pool_[static_cast<std::size_t>(stand_in)].texture.Get());
+                        execute_replay_copy(copy, copy_pool_[static_cast<std::size_t>(stand_in)].texture.Get(),
+                                            moving_from);
                         redirect_[copy.dest] = static_cast<std::uint32_t>(stand_in);
                         ++redirect_epoch_;
                         ++copy_redirect_stats_.redirected;
@@ -9594,7 +9757,7 @@ bool RendererD3D12::record_replay_list(ReplayList& entry) {
                     }
                     ++copy_redirect_stats_.fallback_logs;
                 }
-                execute_replay_copy(copy);
+                execute_replay_copy(copy, nullptr, moving_from);
                 break;
             }
             case ReplayKind::SwapEfbSets:
@@ -11239,7 +11402,8 @@ void RendererD3D12::record_conversion_blit(
     float src_y,
     float step_x,
     float step_y,
-    float filter_row_offset) {
+    float filter_row_offset,
+    const float* moving_from) {
     ID3D12Resource* src =
         is_depth_copy ? efb_depth_.Get() : efb_color_.Get();
 
@@ -11276,8 +11440,15 @@ void RendererD3D12::record_conversion_blit(
         0, 0, static_cast<LONG>(dest_w), static_cast<LONG>(dest_h)};
     command_list_->RSSetViewports(1, &vp);
     command_list_->RSSetScissorRects(1, &sci);
-    command_list_->SetGraphicsRootSignature(s_conv_root_sig.Get());
-    command_list_->SetPipelineState(conv_pipeline_.Get());
+    const bool moving = moving_from != nullptr && ensure_moving_conversion();
+    command_list_->SetGraphicsRootSignature(moving ? conv_moving_root_.Get() : s_conv_root_sig.Get());
+    command_list_->SetPipelineState(moving ? conv_moving_pipeline_.Get() : conv_pipeline_.Get());
+    if (moving) {
+        const std::uint32_t motion[4]{std::bit_cast<std::uint32_t>(moving_from[0]),
+                                      std::bit_cast<std::uint32_t>(moving_from[1]), kFrameValuesElement, 0u};
+        command_list_->SetGraphicsRoot32BitConstants(2, 4u, motion, 0u);
+        command_list_->SetGraphicsRootShaderResourceView(3, blend_verdicts_->GetGPUVirtualAddress());
+    }
 
     const EfbConversionShaderConstants constants =
         make_efb_conversion_constants(

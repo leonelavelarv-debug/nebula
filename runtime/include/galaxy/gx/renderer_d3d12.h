@@ -1007,7 +1007,11 @@ private:
         float src_y,
         float step_x,
         float step_y,
-        float filter_row_offset);
+        float filter_row_offset,
+        const float* moving_from = nullptr);
+    // The moving-source conversion (interpolated sub-frames); false while its
+    // shaders still compile or when it cannot be made.
+    bool ensure_moving_conversion();
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE allocate_conversion_rtv(
         ID3D12Resource* resource);
 
@@ -1136,8 +1140,11 @@ private:
         std::uint32_t index = 0;
     };
     void present_to_swap_chain();
-    // `target`: write a texture copy (mode 0) there instead of copy.dest.
-    void execute_replay_copy(const ReplayCopy& copy, ID3D12Resource* target = nullptr);
+    // `target`: write a texture copy (mode 0) there instead of copy.dest;
+    // `moving_from`: the source origin (x, y) of its pair in the log before,
+    // sampled toward the copy's own origin by the sub-frame's t.
+    void execute_replay_copy(const ReplayCopy& copy, ID3D12Resource* target = nullptr,
+                             const float* moving_from = nullptr);
     bool ensure_subframe_resources(unsigned xfb_width, unsigned xfb_height);
     // The log being recorded; a completed log moves to play_* (swapped), so
     // the next game frame records while the previous one is interpolated.
@@ -1229,6 +1236,14 @@ private:
     std::vector<DrawCall> prev_run_draws_;
     std::vector<ReplayCopy> prev_run_copies_;
     std::uint64_t moving_copies_ = 0;     // paired texture copies whose source moved (prepare_vertex_blend)
+    std::uint64_t moving_copies_blended_ = 0;  // of those, sampled between the two sources
+    // Per run_* copy: the source origin of its pair in the log before, for a
+    // texture copy whose source rectangle follows something on screen (B15).
+    struct CopyMotion {
+        float from[2]{};
+        bool moving = false;
+    };
+    std::vector<CopyMotion> run_copy_motion_;
     unsigned prev_run_segment_ = 0;
     std::uint64_t prev_run_serial_ = 0;
     bool prev_run_valid_ = false;
@@ -1787,6 +1802,12 @@ private:
     // time, so every copy rebinds the same CPU-only scratch slot. EFB source
     // SRVs occupy an immutable prefix of the active shader-visible heap.
     Microsoft::WRL::ComPtr<ID3D12PipelineState> conv_pipeline_;
+    // The same conversion whose source origin moves with the sub-frame's t
+    // (frame values read by the vertex shader); compiled on a worker at start.
+    std::future<std::array<Microsoft::WRL::ComPtr<ID3DBlob>, 2>> conv_moving_shaders_;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> conv_moving_root_;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> conv_moving_pipeline_;
+    bool conv_moving_failed_ = false;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> conv_rtv_heap_;
     D3D12_CPU_DESCRIPTOR_HANDLE conv_scratch_rtv_{};
     detail::ConversionRtvSlot conv_scratch_rtv_slot_;
