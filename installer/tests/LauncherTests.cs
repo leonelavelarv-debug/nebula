@@ -379,6 +379,7 @@ namespace Nebula.Launcher
                 GeneralCases();
                 TexturePackCases();
                 SaveArchiveCases(outDir);
+                ControllerTests.Run(outDir);
                 Application.EnableVisualStyles();
 
                 var first = new LaunchSession();
@@ -417,6 +418,7 @@ namespace Nebula.Launcher
                     Check(config.Contains("texture_packs=1") && config.Contains("texture_pack_preload=1") &&
                           config.Contains("texture_dump=1"), "Preload at start and dumping reach config.ini");
                 }
+                ControllerTests.Form(later, outDir);
 
                 // TryLaunch starts <App>\NebulaRuntime.exe, here a stub that records its arguments.
                 string marker = Path.Combine(later.App, "stub-launch.txt");

@@ -1,4 +1,4 @@
-param([string]$Runtime = '', [string]$Setup = '')
+param([string]$Runtime = '', [string]$Setup = '', [string]$ControlsTests = '')
 # Launcher checks without a visible window or the user's %LOCALAPPDATA%\Nebula:
 # first-start decision, settings form rendered offscreen, launch arguments
 # (stub runtime), nebula.ico in every executable. Writes PNGs to the scratch folder.
@@ -32,7 +32,7 @@ $manifest = Join-Path $repo 'installer\app.manifest'
 if ($LASTEXITCODE -ne 0) { throw 'Nebula.exe compilation failed.' }
 & $csc /nologo /target:winexe /platform:x64 /optimize+ /define:NEBULA_SETTINGS_APP "/win32manifest:$manifest" "/win32icon:$icon" "/out:$app\NebulaSettings.exe" @refs @common @launcher
 if ($LASTEXITCODE -ne 0) { throw 'NebulaSettings.exe compilation failed.' }
-& $csc /nologo /target:exe /platform:x64 "/win32manifest:$manifest" "/win32icon:$icon" /main:Nebula.Launcher.LauncherTests "/out:$app\LauncherTests.exe" @refs @common @launcher (Join-Path $PSScriptRoot 'LauncherTests.cs')
+& $csc /nologo /target:exe /platform:x64 "/win32manifest:$manifest" "/win32icon:$icon" /main:Nebula.Launcher.LauncherTests "/out:$app\LauncherTests.exe" @refs @common @launcher (Join-Path $PSScriptRoot 'LauncherTests.cs') (Join-Path $PSScriptRoot 'ControllerTests.cs')
 if ($LASTEXITCODE -ne 0) { throw 'LauncherTests.exe compilation failed.' }
 $runtimeStub = Join-Path $scratch 'RuntimeStub.cs'
 @'
@@ -49,6 +49,27 @@ $env:NEBULA_DATA_ROOT = $data
 $code = $LASTEXITCODE
 Remove-Item Env:NEBULA_DATA_ROOT
 if ($code -ne 0) { throw 'Launcher cases failed.' }
+
+# The launcher's default controls against the runtime's (galaxy_controls_tests --print-defaults).
+if ($ControlsTests -ne '') {
+    $runtimeLines = @(& $ControlsTests --print-defaults)
+    $launcherLines = @(Get-Content -LiteralPath (Join-Path $scratch 'controls-defaults.txt'))
+    $same = $true
+    foreach ($line in $launcherLines) {
+        $key, $value = $line -split '=', 2
+        $match = $runtimeLines | Where-Object { $_.StartsWith($key + '=') }
+        if (-not $match) { $same = $false; Write-Output "MISSING in runtime: $line"; continue }
+        $other = ($match -split '=', 2)[1]
+        $number = 0.0; $otherNumber = 0.0
+        $numeric = [double]::TryParse($value, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$number) -and
+                   [double]::TryParse($other, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$otherNumber)
+        if ($numeric -and [math]::Abs($number - $otherNumber) -gt 1e-6) { $same = $false; Write-Output "DIFFERS $key launcher=$value runtime=$other" }
+        elseif (-not $numeric -and $value -ne $other) { $same = $false; Write-Output "DIFFERS $key launcher=$value runtime=$other" }
+    }
+    if ($launcherLines.Count -ne $runtimeLines.Count) { $same = $false; Write-Output "line count launcher=$($launcherLines.Count) runtime=$($runtimeLines.Count)" }
+    if (-not $same) { throw 'Launcher control defaults differ from the runtime.' }
+    Write-Output "PASS: launcher control defaults match the runtime ($($launcherLines.Count) lines)"
+}
 
 # nebula.ico: frame sizes, and the same 32 px image in every executable.
 Add-Type -AssemblyName System.Drawing

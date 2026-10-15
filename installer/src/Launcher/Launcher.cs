@@ -267,7 +267,7 @@ namespace Nebula.Launcher
             dlssQuality.Items.AddRange(names);
             dlssQuality.SelectedIndex = Math.Max(0, Math.Min(value, names.Length - 1));
         }
-        private readonly ComboBox inputSource = new ComboBox(), editScheme = new ComboBox(), motion = new ComboBox(),
+        private readonly ComboBox inputSource = new ComboBox(), editDevice = new ComboBox(), motion = new ComboBox(),
             vibration = new ComboBox();
         private readonly ListView bindingList = new ListView();
         private readonly NumericUpDown pointerSpeed = new NumericUpDown(), stickDeadzone = new NumericUpDown(),
@@ -277,10 +277,18 @@ namespace Nebula.Launcher
         private readonly Label captureLabel = new Label();
         private int captureTarget = -1;
         private DateTime captureDeadline;
-        private PadCaptureReader padReader;
-        private PadCaptureReader.Sample captureBaseline;
+        private ControllerReader reader;
+        private PadSample captureBaseline;
         private readonly System.Windows.Forms.Timer captureTimer = new System.Windows.Forms.Timer { Interval = 15 };
         private CaptureFilter captureFilter;
+        // The Controls tab device list: keyboard and mouse plus each attached controller by name.
+        private List<ControllerInfo> attached = new List<ControllerInfo>();
+        private List<DeviceEntry> devices = new List<DeviceEntry>();
+        private DeviceKey editing = DeviceList.Keyboard;
+        private string readerPaths = "";
+        private bool watching, devicesDue;
+        private DateTime devicesChecked, steamPrepared;
+        private readonly System.Windows.Forms.Timer watchTimer = new System.Windows.Forms.Timer { Interval = 150 };
 
         private readonly ComboBox monitor = new ComboBox(), mode = new ComboBox(), resolution = new ComboBox(), refresh = new ComboBox();
         private readonly ComboBox aspect = new ComboBox(), internalScale = new ComboBox(), frameRate = new ComboBox();
@@ -329,7 +337,7 @@ namespace Nebula.Launcher
             var intro = new Label
             {
                 Location = new Point(12, 10), Size = new Size(736, 40),
-                Text = "In game: F1, View + Menu (Xbox) or Minus + Plus (Switch) opens the settings."
+                Text = "In game: F1, View + Menu (Xbox, Steam), Share + Options (PlayStation) or Minus + Plus (Switch) opens the settings."
             };
             Controls.Add(intro);
 
@@ -531,7 +539,7 @@ namespace Nebula.Launcher
         }
 
         // ---- Controls -----------------------------------------------------------
-        private int Scheme { get { return Math.Max(0, editScheme.SelectedIndex); } }
+        private int Scheme { get { return editing.Scheme; } }
 
         private void BuildControlsTab(TabPage page)
         {
@@ -542,10 +550,10 @@ namespace Nebula.Launcher
             inputSource.Items.AddRange(new object[] { "Auto (keyboard, mouse and controllers)", "Keyboard and mouse only", "Controller only" });
             if (controls.InputMode == ControlsSettings.ModeRealWiimote) { inputSource.Items.Add("Wii Remote"); inputSource.Enabled = false; }
             y += 36;
-            SmallLabel(page, "Edit controls for", 12, y + 3, 180);
-            Combo(page, editScheme, 200, y);
-            editScheme.Width = 300;
-            editScheme.Items.AddRange(ControlsSettings.SchemeLabels);
+            SmallLabel(page, "Device", 12, y + 3, 180);
+            Combo(page, editDevice, 200, y);
+            editDevice.Width = 300;
+            editDevice.DropDownWidth = 460;
             vibrationOn.Text = "Vibration";
             vibrationOn.Location = new Point(516, y + 1);
             vibrationOn.Size = new Size(96, 24);
@@ -627,12 +635,25 @@ namespace Nebula.Launcher
             motion.SelectedIndexChanged += delegate { if (!loading) controls.Tuning[Scheme].Motion = Math.Max(0, motion.SelectedIndex); };
             vibration.SelectedIndexChanged += delegate { if (!loading) controls.Tuning[Scheme].Rumble = ControlsSettings.RumbleSteps[Math.Max(0, vibration.SelectedIndex)]; };
             vibrationOn.CheckedChanged += delegate { if (!loading) controls.Tuning[Scheme].Vibration = vibrationOn.Checked; vibration.Enabled = vibrationOn.Enabled && vibrationOn.Checked; };
-            editScheme.SelectedIndexChanged += delegate { EndCapture(); LoadTuning(); RefreshBindings(); };
+            editDevice.SelectedIndexChanged += delegate
+            {
+                if (loading || editDevice.SelectedIndex < 0 || editDevice.SelectedIndex >= devices.Count) return;
+                EndCapture();
+                editing = devices[editDevice.SelectedIndex].Key;
+                LoadTuning();
+                RefreshBindings();
+            };
 
             inputSource.SelectedIndex = Math.Min(controls.InputMode, inputSource.Items.Count - 1);
-            editScheme.SelectedIndex = controls.InputMode == ControlsSettings.ModeController ? ControlsSettings.Xbox : ControlsSettings.Keyboard;
+            RefreshDevices();
+            if (controls.InputMode == ControlsSettings.ModeController && devices.Count > 1) editing = devices[1].Key;
+            ShowDevices();
+            LoadTuning();
+            RefreshBindings();
             captureTimer.Tick += delegate { PollCapture(); };
-            FormClosed += delegate { EndCapture(); };
+            watchTimer.Tick += delegate { Watch(); };
+            page.VisibleChanged += delegate { if (page.Visible) StartWatching(); else StopWatching(); };
+            FormClosed += delegate { EndCapture(); StopWatching(); };
         }
 
         private static void SmallLabel(Control parent, string text, int x, int y, int width)
@@ -708,7 +729,9 @@ namespace Nebula.Launcher
             else
             {
                 captureLabel.Text = "Press a button, push a stick or pull a trigger. Esc cancels.";
-                padReader = new PadCaptureReader(Scheme != ControlsSettings.Xbox);
+                EnsureReader();
+                reader.Prepare(editing);
+                steamPrepared = DateTime.UtcNow;
             }
             captureFilter = new CaptureFilter(this);
             Application.AddMessageFilter(captureFilter);
@@ -720,8 +743,8 @@ namespace Nebula.Launcher
         {
             captureTimer.Stop();
             if (captureFilter != null) { Application.RemoveMessageFilter(captureFilter); captureFilter = null; }
-            if (padReader != null) { padReader.Dispose(); padReader = null; }
             if (captureTarget >= 0) { captureTarget = -1; RefreshBindings(); }
+            if (!watching) DisposeReader();
         }
 
         private void FinishCapture(InputSource source)
@@ -744,13 +767,114 @@ namespace Nebula.Launcher
         {
             if (captureTarget < 0) return;
             if (DateTime.UtcNow > captureDeadline) { EndCapture(); captureLabel.Text = ""; return; }
-            if (padReader == null) return;
-            var sample = padReader.Read(Scheme);
-            if (!sample.Connected) { captureLabel.Text = "No " + ControlsSettings.SchemeLabels[Scheme] + " found. Esc cancels."; return; }
+            if (reader == null) return;
+            // The Steam Controller returns to its keyboard/mouse emulation unless it keeps being told.
+            if (Scheme == ControlsSettings.Steam && DateTime.UtcNow - steamPrepared > TimeSpan.FromSeconds(2))
+            {
+                reader.Prepare(editing);
+                steamPrepared = DateTime.UtcNow;
+            }
+            var sample = reader.Read(editing);
+            if (!sample.Connected) { captureLabel.Text = "No input from " + SelectedDeviceLabel() + ". Esc cancels."; return; }
             if (captureBaseline == null) { captureBaseline = sample; return; }
             InputSource source;
-            if (PadCaptureReader.Detect(captureBaseline, sample, out source)) FinishCapture(source);
+            if (PadReports.Detect(captureBaseline, sample, out source)) FinishCapture(source);
             else captureBaseline = sample;
+        }
+
+        // ---- Controller list -------------------------------------------------------
+        private string SelectedDeviceLabel()
+        {
+            int index = DeviceList.Resolve(devices, editing);
+            return index < devices.Count ? devices[index].Label : "the controller";
+        }
+
+        private void EnsureReader()
+        {
+            if (reader != null) return;
+            reader = new ControllerReader(attached);
+            readerPaths = HidPaths(attached);
+        }
+
+        private void DisposeReader()
+        {
+            if (reader != null) { reader.Dispose(); reader = null; }
+            readerPaths = "";
+        }
+
+        private static string HidPaths(IEnumerable<ControllerInfo> controllers)
+        {
+            return string.Join("|", controllers.Where(c => c.Path != null).Select(c => c.Path).ToArray());
+        }
+
+        /// <summary>Lists what is attached now and keeps the edited device through hot plug.</summary>
+        private void RefreshDevices()
+        {
+            attached = ControllerProbe.Enumerate();
+            devicesChecked = DateTime.UtcNow;
+            devicesDue = false;
+            if (reader != null && HidPaths(attached) != readerPaths) DisposeReader();
+            if (watching) EnsureReader();
+            if (reader != null) reader.SetXInput(attached);
+            ShowDevices();
+        }
+
+        private void ShowDevices()
+        {
+            var list = DeviceList.Build(attached, reader == null ? (DeviceKey?)null : reader.Active);
+            bool same = DeviceList.SameEntries(list, devices) && editDevice.Items.Count == list.Count, activeChanged = false;
+            if (same) for (int i = 0; i < list.Count; i++) activeChanged |= list[i].Active != devices[i].Active;
+            devices = list;
+            int index = DeviceList.Resolve(devices, editing);
+            loading = true;
+            if (!same)
+            {
+                editDevice.Items.Clear();
+                foreach (var entry in devices) editDevice.Items.Add(entry.Text);
+            }
+            else if (activeChanged)
+            {
+                for (int i = 0; i < devices.Count; i++) editDevice.Items[i] = devices[i].Text;
+            }
+            if (editDevice.SelectedIndex != index) editDevice.SelectedIndex = index;
+            loading = false;
+            if (!devices[index].Key.Equals(editing))
+            {
+                EndCapture();
+                editing = devices[index].Key;
+                LoadTuning();
+                RefreshBindings();
+            }
+        }
+
+        private void StartWatching()
+        {
+            if (watching) return;
+            watching = true;
+            RefreshDevices();
+            watchTimer.Start();
+        }
+
+        private void StopWatching()
+        {
+            watching = false;
+            watchTimer.Stop();
+            if (captureTarget < 0) DisposeReader();
+        }
+
+        private void Watch()
+        {
+            if (reader != null) reader.PollXInput();
+            if (devicesDue || DateTime.UtcNow - devicesChecked > TimeSpan.FromSeconds(2)) RefreshDevices();
+            else ShowDevices();
+        }
+
+        private const int WM_DEVICECHANGE = 0x0219;
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_DEVICECHANGE) devicesDue = true;
+            base.WndProc(ref m);
         }
 
         [DllImport("user32.dll")] private static extern uint MapVirtualKeyW(uint code, uint mapType);

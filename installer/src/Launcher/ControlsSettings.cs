@@ -41,7 +41,7 @@ namespace Nebula.Launcher
     /// </summary>
     internal sealed class ControlsSettings
     {
-        public const int SchemeCount = 4, TargetCount = 25, Slots = 4;
+        public const int SchemeCount = 6, TargetCount = 25, Slots = 4;
         public const int JumpBack = 24;
         // runtime_settings.ini controls_version (input_bindings.h kControlsVersion).
         public const int ControlsVersion = 5;
@@ -51,9 +51,9 @@ namespace Nebula.Launcher
         public const float Version4PointerHideSeconds = 2.0f;
         public const int Version4Rumble = 100;
         public const int ModeAuto = 0, ModeKeyboardMouse = 1, ModeController = 2, ModeRealWiimote = 3;
-        public const int Keyboard = 0, Xbox = 1, SwitchPro = 2, SwitchPro2 = 3;
-        public static readonly string[] SchemeIds = { "keyboard", "xbox", "switch_pro", "switch_pro2" };
-        public static readonly string[] SchemeLabels = { "Keyboard and mouse", "Xbox controller (XInput)", "Switch Pro Controller", "Switch 2 Pro Controller" };
+        public const int Keyboard = 0, Xbox = 1, SwitchPro = 2, SwitchPro2 = 3, PlayStation = 4, Steam = 5;
+        public static readonly string[] SchemeIds = { "keyboard", "xbox", "switch_pro", "switch_pro2", "playstation", "steam" };
+        public static readonly string[] SchemeLabels = { "Keyboard and mouse", "Xbox controller", "Switch Pro Controller", "Switch 2 Pro Controller", "PlayStation controller", "Steam Controller" };
         public static readonly string[] TargetIds = {
             "a", "b", "one", "two", "plus", "minus", "home", "dpad_up", "dpad_down", "dpad_left", "dpad_right",
             "stick_up", "stick_down", "stick_left", "stick_right", "c", "z", "shake", "nunchuk_shake",
@@ -81,13 +81,18 @@ namespace Nebula.Launcher
         // Unified pad bits (input_bindings.h pad::).
         public const int DpadUp = 0, DpadDown = 1, DpadLeft = 2, DpadRight = 3, Start = 4, Back = 5, LeftStick = 6,
             RightStick = 7, LeftShoulder = 8, RightShoulder = 9, Home = 10, Capture = 11, South = 12, East = 13,
-            West = 14, North = 15, GripLeft = 16, GripRight = 17, Chat = 18, ButtonCount = 19;
+            West = 14, North = 15, GripLeft = 16, GripRight = 17, Chat = 18, GripLeft2 = 19, GripRight2 = 20,
+            LeftPad = 21, RightPad = 22, ButtonCount = 23;
         public const int LeftX = 0, LeftY = 1, RightX = 2, RightY = 3, LeftTrigger = 4, RightTrigger = 5;
 
         private static readonly string[] XboxButtons = { "DpadUp", "DpadDown", "DpadLeft", "DpadRight", "Menu", "View", "LS", "RS",
-            "LB", "RB", "Guide", "Share", "A", "B", "X", "Y", "GL", "GR", "C" };
+            "LB", "RB", "Guide", "Share", "A", "B", "X", "Y", "GL", "GR", "C", "GL2", "GR2", "LPad", "RPad" };
         private static readonly string[] SwitchButtons = { "DpadUp", "DpadDown", "DpadLeft", "DpadRight", "Plus", "Minus", "LS", "RS",
-            "L", "R", "Home", "Capture", "B", "A", "Y", "X", "GL", "GR", "C" };
+            "L", "R", "Home", "Capture", "B", "A", "Y", "X", "GL", "GR", "C", "GL2", "GR2", "LPad", "RPad" };
+        private static readonly string[] PlayStationButtons = { "DpadUp", "DpadDown", "DpadLeft", "DpadRight", "Options", "Share", "L3", "R3",
+            "L1", "R1", "PS", "Touchpad", "Cross", "Circle", "Square", "Triangle", "LeftPaddle", "RightPaddle", "Mute", "GL2", "GR2", "LPad", "RPad" };
+        private static readonly string[] SteamButtons = { "DpadUp", "DpadDown", "DpadLeft", "DpadRight", "Menu", "View", "LS", "RS",
+            "LB", "RB", "Steam", "QAM", "A", "B", "X", "Y", "L4", "R4", "C", "L5", "R5", "LPad", "RPad" };
         private static readonly string[] StickAxes = { "LX", "LY", "RX", "RY" };
         private static readonly string[] MouseNames = { "MouseLeft", "MouseRight", "MouseMiddle", "Mouse4", "Mouse5" };
         private static readonly KeyValuePair<int, string>[] NamedKeys = {
@@ -113,7 +118,46 @@ namespace Nebula.Launcher
         }
 
         public static bool IsAnalog(int target) { return (target >= 11 && target <= 14) || (target >= 19 && target <= 22); }
-        public static bool HasMotion(int scheme) { return scheme == SwitchPro || scheme == SwitchPro2; }
+        public static bool HasMotion(int scheme) { return scheme == SwitchPro || scheme == SwitchPro2 || scheme == PlayStation || scheme == Steam; }
+        private static bool IsGyroPad(int scheme) { return scheme == PlayStation || scheme == Steam; }
+
+        private static string[] ButtonNames(int scheme)
+        {
+            switch (scheme)
+            {
+                case PlayStation: return PlayStationButtons;
+                case Steam: return SteamButtons;
+                case Xbox: return XboxButtons;
+                default: return SwitchButtons;
+            }
+        }
+
+        private static string TriggerName(int scheme, bool left)
+        {
+            switch (scheme)
+            {
+                case Xbox:
+                case Steam: return left ? "LT" : "RT";
+                case PlayStation: return left ? "L2" : "R2";
+                default: return left ? "ZL" : "ZR";
+            }
+        }
+
+        /// <summary>The unified button bits a scheme's controllers have (input_bindings.h scheme_button_mask).</summary>
+        public static int ButtonMask(int scheme)
+        {
+            const int baseBits = (1 << Home) - 1, homeCapture = (1 << Home) | (1 << Capture), face = 0xF000;
+            const int grips = (1 << GripLeft) | (1 << GripRight);
+            switch (scheme)
+            {
+                case Xbox: return baseBits | face;
+                case SwitchPro: return baseBits | homeCapture | face;
+                case SwitchPro2: return baseBits | homeCapture | face | grips | (1 << Chat);
+                case PlayStation: return baseBits | homeCapture | face | grips | (1 << Chat);
+                case Steam: return baseBits | homeCapture | face | grips | (1 << GripLeft2) | (1 << GripRight2) | (1 << LeftPad) | (1 << RightPad);
+            }
+            return 0;
+        }
 
         private static InputSource Key(int vk) { return new InputSource(SourceKind.Key, vk); }
         private static InputSource Mouse(int b) { return new InputSource(SourceKind.Mouse, b); }
@@ -124,6 +168,7 @@ namespace Nebula.Launcher
         /// <summary>The defaults used before controls version 2, kept for migration.</summary>
         public static InputSource[][] LegacyTable(int scheme)
         {
+            if (IsGyroPad(scheme)) return GyroPadTable();
             var t = new InputSource[TargetCount][];
             for (int i = 0; i < TargetCount; i++) t[i] = new InputSource[0];
             if (scheme == Keyboard)
@@ -170,7 +215,7 @@ namespace Nebula.Launcher
         public static InputSource[][] Version2Table(int scheme)
         {
             var t = LegacyTable(scheme);
-            if (scheme == Keyboard) return t;
+            if (scheme == Keyboard || IsGyroPad(scheme)) return t;
             bool xbox = scheme == Xbox;
             t[0] = new[] { Button(xbox ? South : East) };
             t[JumpBack] = new[] { Button(xbox ? East : South) };
@@ -198,7 +243,7 @@ namespace Nebula.Launcher
         public static InputSource[][] Version3Table(int scheme)
         {
             var t = Version2Table(scheme);
-            if (scheme == Keyboard) return t;
+            if (scheme == Keyboard || IsGyroPad(scheme)) return t;
             t[1] = new[] { Button(LeftShoulder) };
             t[16] = new[] { Pos(LeftTrigger), Pos(RightTrigger) };
             t[15] = new[] { Button(LeftStick) };
@@ -215,11 +260,38 @@ namespace Nebula.Launcher
         public static InputSource[][] DefaultTable(int scheme)
         {
             var t = Version3Table(scheme);
-            if (scheme == Keyboard) return t;
+            if (scheme == Keyboard || IsGyroPad(scheme)) return t;
             t[16] = new[] { Pos(LeftTrigger) };
             t[17] = scheme == Xbox
                 ? new[] { Button(West), Button(North), Button(RightShoulder), Pos(RightTrigger) }
                 : new[] { Button(West), Button(North), Pos(RightTrigger) };
+            return t;
+        }
+
+        /// <summary>
+        /// PlayStation and Steam controllers: the Switch gyro layout with the Xbox face positions
+        /// (South confirms and jumps, East backs out of menus).
+        /// </summary>
+        private static InputSource[][] GyroPadTable()
+        {
+            var t = new InputSource[TargetCount][];
+            for (int i = 0; i < TargetCount; i++) t[i] = new InputSource[0];
+            t[0] = new[] { Button(South) };
+            t[JumpBack] = new[] { Button(East) };
+            t[1] = new[] { Button(LeftShoulder) };
+            t[4] = new[] { Button(Start) };
+            t[5] = new[] { Button(Back) };
+            t[6] = new[] { Button(Home) };
+            t[7] = new[] { Button(DpadUp), Pos(RightY) };
+            t[8] = new[] { Button(DpadDown), Neg(RightY) };
+            t[9] = new[] { Button(DpadLeft), Neg(RightX) };
+            t[10] = new[] { Button(DpadRight), Pos(RightX) };
+            t[11] = new[] { Pos(LeftY) }; t[12] = new[] { Neg(LeftY) }; t[13] = new[] { Neg(LeftX) }; t[14] = new[] { Pos(LeftX) };
+            t[15] = new[] { Button(LeftStick) };
+            t[16] = new[] { Pos(LeftTrigger) };
+            t[17] = new[] { Button(West), Button(North), Pos(RightTrigger) };
+            t[19] = new[] { Pos(RightY) }; t[20] = new[] { Neg(RightY) }; t[21] = new[] { Neg(RightX) }; t[22] = new[] { Pos(RightX) };
+            t[23] = new[] { Button(RightShoulder) };
             return t;
         }
 
@@ -300,11 +372,11 @@ namespace Nebula.Launcher
                 case SourceKind.Key: return FormatKey(source.Code);
                 case SourceKind.Mouse: return source.Code < MouseNames.Length ? MouseNames[source.Code] : "None";
                 case SourceKind.Button:
-                    return source.Code < ButtonCount ? (scheme == Xbox ? XboxButtons : SwitchButtons)[source.Code] : "None";
+                    return source.Code < ButtonCount ? ButtonNames(scheme)[source.Code] : "None";
                 case SourceKind.AxisPositive:
                 case SourceKind.AxisNegative:
-                    if (source.Code == LeftTrigger) return scheme == Xbox ? "LT" : "ZL";
-                    if (source.Code == RightTrigger) return scheme == Xbox ? "RT" : "ZR";
+                    if (source.Code == LeftTrigger) return TriggerName(scheme, true);
+                    if (source.Code == RightTrigger) return TriggerName(scheme, false);
                     if (source.Code >= StickAxes.Length) return "None";
                     return StickAxes[source.Code] + (source.Kind == SourceKind.AxisPositive ? "+" : "-");
             }
@@ -346,10 +418,11 @@ namespace Nebula.Launcher
                 { source = Key(n); return true; }
                 return false;
             }
-            var names = scheme == Xbox ? XboxButtons : SwitchButtons;
+            var names = ButtonNames(scheme);
             for (int i = 0; i < names.Length; i++) if (string.Equals(text, names[i], ic)) { source = Button(i); return true; }
-            if (string.Equals(text, scheme == Xbox ? "LT" : "ZL", ic)) { source = Pos(LeftTrigger); return true; }
-            if (string.Equals(text, scheme == Xbox ? "RT" : "ZR", ic)) { source = Pos(RightTrigger); return true; }
+            if (scheme == PlayStation && string.Equals(text, "Create", ic)) { source = Button(Back); return true; }
+            if (string.Equals(text, TriggerName(scheme, true), ic)) { source = Pos(LeftTrigger); return true; }
+            if (string.Equals(text, TriggerName(scheme, false), ic)) { source = Pos(RightTrigger); return true; }
             if (text.Length == 3 && (text[2] == '+' || text[2] == '-'))
                 for (int i = 0; i < StickAxes.Length; i++)
                     if (string.Equals(text.Substring(0, 2), StickAxes[i], ic)) { source = text[2] == '+' ? Pos(i) : Neg(i); return true; }
@@ -370,10 +443,7 @@ namespace Nebula.Launcher
                 case SourceKind.Key: return scheme == Keyboard && s.Code > 0 && s.Code < 256;
                 case SourceKind.Mouse: return scheme == Keyboard && s.Code < MouseNames.Length && !IsAnalog(target);
                 case SourceKind.Button:
-                    if (scheme == Keyboard || s.Code >= ButtonCount) return false;
-                    if (scheme == Xbox && (s.Code == Home || s.Code == Capture || s.Code >= GripLeft)) return false;
-                    if (scheme == SwitchPro && s.Code >= GripLeft) return false;
-                    return true;
+                    return s.Code >= 0 && s.Code < ButtonCount && (ButtonMask(scheme) & (1 << s.Code)) != 0;
                 case SourceKind.AxisPositive: return scheme != Keyboard && s.Code <= RightTrigger;
                 case SourceKind.AxisNegative: return scheme != Keyboard && s.Code <= RightY;
             }
@@ -531,308 +601,6 @@ namespace Nebula.Launcher
             File.WriteAllText(temp, string.Join("\n", lines) + "\n", new UTF8Encoding(false));
             if (File.Exists(SettingsPath)) File.Replace(temp, SettingsPath, null);
             else File.Move(temp, SettingsPath);
-        }
-    }
-
-    /// <summary>
-    /// Controller state for binding capture in the settings window: XInput
-    /// polling, and Switch Pro / Pro Controller 2 HID reports read on a
-    /// background thread (the Pro Controller 2 only reports once something has
-    /// sent it the vendor init command, e.g. the game).
-    /// </summary>
-    internal sealed class PadCaptureReader : IDisposable
-    {
-        public sealed class Sample
-        {
-            public bool Connected;
-            public int Buttons;
-            public readonly float[] Axes = new float[6];
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct XInputState
-        {
-            public uint Packet;
-            public ushort Buttons;
-            public byte LeftTrigger, RightTrigger;
-            public short LX, LY, RX, RY;
-        }
-        [DllImport("xinput1_4.dll", EntryPoint = "XInputGetState")] private static extern int XInputGetState(int index, out XInputState state);
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct SpDeviceInterfaceData { public int Size; public Guid Class; public int Flags; public IntPtr Reserved; }
-        [StructLayout(LayoutKind.Sequential)]
-        private struct HiddAttributes { public int Size; public ushort Vendor, Product, Version; }
-        [StructLayout(LayoutKind.Sequential)]
-        private struct HidpCaps
-        {
-            public ushort Usage, UsagePage, InputLength, OutputLength, FeatureLength;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 17)] public ushort[] Reserved;
-            public ushort A, B, C, D, E, F, G, H, I, J;
-        }
-        [DllImport("hid.dll")] private static extern void HidD_GetHidGuid(out Guid guid);
-        [DllImport("hid.dll")] private static extern bool HidD_GetAttributes(SafeFileHandle device, ref HiddAttributes attributes);
-        [DllImport("hid.dll")] private static extern bool HidD_GetPreparsedData(SafeFileHandle device, out IntPtr data);
-        [DllImport("hid.dll")] private static extern bool HidD_FreePreparsedData(IntPtr data);
-        [DllImport("hid.dll")] private static extern int HidP_GetCaps(IntPtr data, ref HidpCaps caps);
-        [DllImport("setupapi.dll", CharSet = CharSet.Unicode)] private static extern IntPtr SetupDiGetClassDevsW(ref Guid guid, IntPtr enumerator, IntPtr parent, int flags);
-        [DllImport("setupapi.dll")] private static extern bool SetupDiEnumDeviceInterfaces(IntPtr set, IntPtr info, ref Guid guid, int index, ref SpDeviceInterfaceData data);
-        [DllImport("setupapi.dll", CharSet = CharSet.Unicode)] private static extern bool SetupDiGetDeviceInterfaceDetailW(IntPtr set, ref SpDeviceInterfaceData data, IntPtr detail, int size, out int required, IntPtr info);
-        [DllImport("setupapi.dll")] private static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
-        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool ReadFile(SafeFileHandle file, byte[] buffer, int size, out int read, IntPtr overlapped);
-        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool WriteFile(SafeFileHandle file, byte[] buffer, int size, out int written, IntPtr overlapped);
-        [DllImport("kernel32.dll")] private static extern bool CancelIoEx(SafeFileHandle file, IntPtr overlapped);
-
-        private sealed class HidPad
-        {
-            public SafeFileHandle Handle;
-            public bool Pro2;
-            public int InputLength, OutputLength;
-            public Thread Reader;
-            public readonly Sample State = new Sample();
-        }
-
-        private readonly List<HidPad> pads = new List<HidPad>();
-        private volatile bool stopping;
-
-        public PadCaptureReader(bool switchPads)
-        {
-            if (switchPads) OpenSwitchPads();
-        }
-
-        public Sample Read(int scheme)
-        {
-            var sample = new Sample();
-            if (scheme == ControlsSettings.Xbox)
-            {
-                for (int i = 0; i < 4; i++)
-                {
-                    XInputState state;
-                    try { if (XInputGetState(i, out state) != 0) continue; }
-                    catch (DllNotFoundException) { break; }
-                    sample.Connected = true;
-                    sample.Buttons = state.Buttons;
-                    sample.Axes[0] = Norm(state.LX); sample.Axes[1] = Norm(state.LY);
-                    sample.Axes[2] = Norm(state.RX); sample.Axes[3] = Norm(state.RY);
-                    sample.Axes[4] = state.LeftTrigger / 255f; sample.Axes[5] = state.RightTrigger / 255f;
-                    return sample;
-                }
-                return sample;
-            }
-            lock (pads)
-            {
-                foreach (var pad in pads)
-                {
-                    if (pad.Pro2 != (scheme == ControlsSettings.SwitchPro2) || !pad.State.Connected) continue;
-                    sample.Connected = true;
-                    sample.Buttons = pad.State.Buttons;
-                    Array.Copy(pad.State.Axes, sample.Axes, 6);
-                    return sample;
-                }
-            }
-            return sample;
-        }
-
-        private static float Norm(short value) { return Math.Max(-1f, value / 32767f); }
-
-        /// <summary>First input that became active since `baseline` (runtime detect_pad_capture).</summary>
-        public static bool Detect(Sample baseline, Sample now, out InputSource source)
-        {
-            source = new InputSource();
-            if (!now.Connected) return false;
-            int pressed = now.Buttons & ~(baseline.Connected ? baseline.Buttons : 0);
-            for (int i = 0; i < ControlsSettings.ButtonCount; i++)
-                if ((pressed & (1 << i)) != 0) { source = new InputSource(SourceKind.Button, i); return true; }
-            for (int i = 0; i < 6; i++)
-            {
-                float before = baseline.Connected ? baseline.Axes[i] : 0f, value = now.Axes[i];
-                if (i >= 4)
-                {
-                    if (value >= 0.5f && before < 0.5f) { source = new InputSource(SourceKind.AxisPositive, i); return true; }
-                    continue;
-                }
-                if (value >= 0.6f && before < 0.6f) { source = new InputSource(SourceKind.AxisPositive, i); return true; }
-                if (value <= -0.6f && before > -0.6f) { source = new InputSource(SourceKind.AxisNegative, i); return true; }
-            }
-            return false;
-        }
-
-        private void OpenSwitchPads()
-        {
-            Guid hid;
-            HidD_GetHidGuid(out hid);
-            IntPtr set = SetupDiGetClassDevsW(ref hid, IntPtr.Zero, IntPtr.Zero, 0x12 /* PRESENT | DEVICEINTERFACE */);
-            if (set == new IntPtr(-1)) return;
-            try
-            {
-                var data = new SpDeviceInterfaceData { Size = Marshal.SizeOf(typeof(SpDeviceInterfaceData)) };
-                for (int index = 0; SetupDiEnumDeviceInterfaces(set, IntPtr.Zero, ref hid, index, ref data); index++)
-                {
-                    int required;
-                    SetupDiGetDeviceInterfaceDetailW(set, ref data, IntPtr.Zero, 0, out required, IntPtr.Zero);
-                    if (required <= 0) continue;
-                    IntPtr detail = Marshal.AllocHGlobal(required);
-                    string path;
-                    try
-                    {
-                        Marshal.WriteInt32(detail, IntPtr.Size == 8 ? 8 : 6);
-                        if (!SetupDiGetDeviceInterfaceDetailW(set, ref data, detail, required, out required, IntPtr.Zero)) continue;
-                        path = Marshal.PtrToStringUni(new IntPtr(detail.ToInt64() + 4));
-                    }
-                    finally { Marshal.FreeHGlobal(detail); }
-                    if (path == null || path.IndexOf("057e", StringComparison.OrdinalIgnoreCase) < 0) continue;
-                    TryOpen(path);
-                }
-            }
-            finally { SetupDiDestroyDeviceInfoList(set); }
-        }
-
-        private void TryOpen(string path)
-        {
-            var handle = CreateFileW(path, 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
-            if (handle.IsInvalid) return;
-            var attributes = new HiddAttributes { Size = Marshal.SizeOf(typeof(HiddAttributes)) };
-            if (!HidD_GetAttributes(handle, ref attributes) || attributes.Vendor != 0x057e ||
-                (attributes.Product != 0x2009 && attributes.Product != 0x2069))
-            {
-                handle.Dispose();
-                return;
-            }
-            var pad = new HidPad { Handle = handle, Pro2 = attributes.Product == 0x2069, InputLength = 64, OutputLength = 64 };
-            IntPtr preparsed;
-            if (HidD_GetPreparsedData(handle, out preparsed))
-            {
-                var caps = new HidpCaps { Reserved = new ushort[17] };
-                HidP_GetCaps(preparsed, ref caps);
-                HidD_FreePreparsedData(preparsed);
-                pad.InputLength = Math.Max(64, (int)caps.InputLength);
-                pad.OutputLength = Math.Max(2, (int)caps.OutputLength);
-            }
-            if (!pad.Pro2)
-            {
-                bool bluetooth = path.IndexOf("{00001124-0000-1000-8000-00805f9b34fb}", StringComparison.OrdinalIgnoreCase) >= 0;
-                if (!bluetooth) { Write(pad, new byte[] { 0x80, 0x02 }); Write(pad, new byte[] { 0x80, 0x04 }); }
-                // Subcommand 0x03: full report mode 0x30 (neutral rumble).
-                Write(pad, new byte[] { 0x01, 0x00, 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40, 0x03, 0x30 });
-            }
-            pad.Reader = new Thread(delegate() { ReadLoop(pad); }) { IsBackground = true };
-            lock (pads) pads.Add(pad);
-            pad.Reader.Start();
-        }
-
-        private static void Write(HidPad pad, byte[] data)
-        {
-            var buffer = new byte[pad.OutputLength];
-            Array.Copy(data, buffer, Math.Min(data.Length, buffer.Length));
-            int written;
-            WriteFile(pad.Handle, buffer, buffer.Length, out written, IntPtr.Zero);
-            Thread.Sleep(20);
-        }
-
-        private void ReadLoop(HidPad pad)
-        {
-            var buffer = new byte[pad.InputLength];
-            while (!stopping)
-            {
-                int read;
-                if (!ReadFile(pad.Handle, buffer, buffer.Length, out read, IntPtr.Zero)) break;
-                lock (pads) Decode(buffer, read, pad.State);
-            }
-        }
-
-        private static int U12Low(byte[] d, int i) { return d[i] | ((d[i + 1] & 0x0F) << 8); }
-        private static int U12High(byte[] d, int i) { return (d[i] >> 4) | (d[i + 1] << 4); }
-        private static float Stick(int raw) { return Math.Max(-1f, Math.Min(1f, (raw - 2048) / 1200f)); }
-
-        // Same bit assignments as switch_controller.cpp.
-        private static void Decode(byte[] r, int size, Sample s)
-        {
-            int b = 0;
-            if (size >= 13 && (r[0] == 0x30 || r[0] == 0x21))
-            {
-                byte right = r[3], shared = r[4], left = r[5];
-                if ((right & 0x01) != 0) b |= 1 << ControlsSettings.West;
-                if ((right & 0x02) != 0) b |= 1 << ControlsSettings.North;
-                if ((right & 0x04) != 0) b |= 1 << ControlsSettings.South;
-                if ((right & 0x08) != 0) b |= 1 << ControlsSettings.East;
-                if ((right & 0x40) != 0) b |= 1 << ControlsSettings.RightShoulder;
-                if ((shared & 0x01) != 0) b |= 1 << ControlsSettings.Back;
-                if ((shared & 0x02) != 0) b |= 1 << ControlsSettings.Start;
-                if ((shared & 0x04) != 0) b |= 1 << ControlsSettings.RightStick;
-                if ((shared & 0x08) != 0) b |= 1 << ControlsSettings.LeftStick;
-                if ((shared & 0x10) != 0) b |= 1 << ControlsSettings.Home;
-                if ((shared & 0x20) != 0) b |= 1 << ControlsSettings.Capture;
-                if ((left & 0x01) != 0) b |= 1 << ControlsSettings.DpadDown;
-                if ((left & 0x02) != 0) b |= 1 << ControlsSettings.DpadUp;
-                if ((left & 0x04) != 0) b |= 1 << ControlsSettings.DpadRight;
-                if ((left & 0x08) != 0) b |= 1 << ControlsSettings.DpadLeft;
-                if ((left & 0x40) != 0) b |= 1 << ControlsSettings.LeftShoulder;
-                s.Axes[0] = Stick(U12Low(r, 6)); s.Axes[1] = Stick(U12High(r, 7));
-                s.Axes[2] = Stick(U12Low(r, 9)); s.Axes[3] = Stick(U12High(r, 10));
-                s.Axes[4] = (left & 0x80) != 0 ? 1f : 0f; s.Axes[5] = (right & 0x80) != 0 ? 1f : 0f;
-            }
-            else if (size >= 12 && r[0] == 0x3F)
-            {
-                byte b0 = r[1], b1 = r[2];
-                int[] map0 = { ControlsSettings.South, ControlsSettings.East, ControlsSettings.West, ControlsSettings.North,
-                    ControlsSettings.LeftShoulder, ControlsSettings.RightShoulder };
-                for (int i = 0; i < 6; i++) if ((b0 & (1 << i)) != 0) b |= 1 << map0[i];
-                int[] map1 = { ControlsSettings.Back, ControlsSettings.Start, ControlsSettings.LeftStick, ControlsSettings.RightStick,
-                    ControlsSettings.Home, ControlsSettings.Capture };
-                for (int i = 0; i < 6; i++) if ((b1 & (1 << i)) != 0) b |= 1 << map1[i];
-                int[] hat = { 0x1, 0x9, 0x8, 0xA, 0x2, 0x6, 0x4, 0x5 }; // up, up-right, right, ... in dpad bits
-                if (r[3] < 8) b |= hat[r[3]];
-                for (int i = 0; i < 4; i++)
-                {
-                    float v = Math.Max(-1f, Math.Min(1f, ((r[4 + i * 2] | (r[5 + i * 2] << 8)) - 0x8000) / 20000f));
-                    s.Axes[i] = (i % 2) == 1 ? -v : v;
-                }
-                s.Axes[4] = (b0 & 0x40) != 0 ? 1f : 0f; s.Axes[5] = (b0 & 0x80) != 0 ? 1f : 0f;
-            }
-            else if (size >= 64 && r[0] == 0x05)
-            {
-                byte b5 = r[5], b6 = r[6], b7 = r[7], b8 = r[8];
-                if ((b5 & 0x01) != 0) b |= 1 << ControlsSettings.West;
-                if ((b5 & 0x02) != 0) b |= 1 << ControlsSettings.North;
-                if ((b5 & 0x04) != 0) b |= 1 << ControlsSettings.South;
-                if ((b5 & 0x08) != 0) b |= 1 << ControlsSettings.East;
-                if ((b5 & 0x40) != 0) b |= 1 << ControlsSettings.RightShoulder;
-                if ((b6 & 0x01) != 0) b |= 1 << ControlsSettings.Back;
-                if ((b6 & 0x02) != 0) b |= 1 << ControlsSettings.Start;
-                if ((b6 & 0x04) != 0) b |= 1 << ControlsSettings.RightStick;
-                if ((b6 & 0x08) != 0) b |= 1 << ControlsSettings.LeftStick;
-                if ((b6 & 0x10) != 0) b |= 1 << ControlsSettings.Home;
-                if ((b6 & 0x20) != 0) b |= 1 << ControlsSettings.Capture;
-                if ((b6 & 0x40) != 0) b |= 1 << ControlsSettings.Chat;
-                if ((b7 & 0x01) != 0) b |= 1 << ControlsSettings.DpadDown;
-                if ((b7 & 0x02) != 0) b |= 1 << ControlsSettings.DpadUp;
-                if ((b7 & 0x04) != 0) b |= 1 << ControlsSettings.DpadRight;
-                if ((b7 & 0x08) != 0) b |= 1 << ControlsSettings.DpadLeft;
-                if ((b7 & 0x40) != 0) b |= 1 << ControlsSettings.LeftShoulder;
-                if ((b8 & 0x01) != 0) b |= 1 << ControlsSettings.GripRight;
-                if ((b8 & 0x02) != 0) b |= 1 << ControlsSettings.GripLeft;
-                s.Axes[0] = Stick(U12Low(r, 11)); s.Axes[1] = Stick(U12High(r, 12));
-                s.Axes[2] = Stick(U12Low(r, 14)); s.Axes[3] = Stick(U12High(r, 15));
-                s.Axes[4] = (b7 & 0x80) != 0 ? 1f : 0f; s.Axes[5] = (b5 & 0x80) != 0 ? 1f : 0f;
-            }
-            else return;
-            s.Buttons = b;
-            s.Connected = true;
-        }
-
-        public void Dispose()
-        {
-            stopping = true;
-            lock (pads)
-            {
-                foreach (var pad in pads)
-                {
-                    CancelIoEx(pad.Handle, IntPtr.Zero);
-                    pad.Handle.Dispose();
-                }
-                pads.Clear();
-            }
         }
     }
 }
