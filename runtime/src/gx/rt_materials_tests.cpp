@@ -130,12 +130,12 @@ bool glow_apart_from_light() {
     RtMaterialTable table;
     table.read(file);
     const RtMaterial* core = find(table, 0xD1u);
-    bool ok = expect(core != nullptr && near(core->intensity, 1.0f) && near(core->glow, 0.3f),
+    bool ok = expect(core != nullptr && nearly(core->intensity, 1.0f) && nearly(core->glow, 0.3f),
                      "glow apart from the intensity");
     const RtMaterial* star = find(table, 0xD2u);
     ok &= expect(star != nullptr && star->glow < 0.0f, "no glow: the intensity's");
     const RtMaterial* big = find(table, 0xD3u);
-    ok &= expect(big != nullptr && near(big->glow, 16.0f), "glow clamps");
+    ok &= expect(big != nullptr && nearly(big->glow, 16.0f), "glow clamps");
     return ok;
 }
 
