@@ -138,11 +138,75 @@ namespace Nebula.Launcher
             Model(outDir);
             Roster();
             Reports();
+            Generic();
+        }
+
+        // Generic HID controllers: the same vectors as pad_controller_tests.cpp test_generic.
+        static void Generic()
+        {
+            Check(GenericHid.IsGameController(0x01, 0x05) && GenericHid.IsGameController(0x01, 0x04) && !GenericHid.IsGameController(0x01, 0x02),
+                  "game pad and joystick collections are generic controllers, mice are not");
+            Check(GenericHid.ClaimedElsewhere(0x045e, "hid#vid_045e&pid_02ff#7") && GenericHid.ClaimedElsewhere(0x0e6f, "hid#vid_0e6f&pid_02a1&IG_00#8") &&
+                  GenericHid.ClaimedElsewhere(0x054c, "x") && !GenericHid.ClaimedElsewhere(0x0079, "hid#vid_0079&pid_0006#7"),
+                  "Microsoft, XInput interfaces and the supported vendors are read elsewhere");
+            Check(GenericHid.ButtonBit(1) == ControlsSettings.South && GenericHid.ButtonBit(2) == ControlsSettings.East &&
+                  GenericHid.ButtonBit(9) == ControlsSettings.Back && GenericHid.ButtonBit(10) == ControlsSettings.Start &&
+                  GenericHid.ButtonBit(0) == -1 && GenericHid.ButtonBit(20) == -1, "button numbers to unified bits");
+            Check(GenericHid.AxisOf(0x01, 0x35) == GenericHid.Rz && GenericHid.AxisOf(0x02, 0xC5) == GenericHid.Brake &&
+                  GenericHid.AxisOf(0x02, 0x30) == -1, "axis usages");
+
+            var layout = new GenericLayout();
+            foreach (int axis in new[] { GenericHid.X, GenericHid.Y, GenericHid.Z, GenericHid.Rz })
+                layout.Axes[axis] = new GenericRange { Present = true, Min = 0, Max = 255, Bits = 8 };
+            layout.Hat = new GenericRange { Present = true, Min = 0, Max = 7, Bits = 4 };
+            var raw = new GenericRaw();
+            raw.Axes[GenericHid.X] = 128; raw.Axes[GenericHid.Y] = 128; raw.Axes[GenericHid.Z] = 128; raw.Axes[GenericHid.Rz] = 128;
+            raw.Hat = 8;
+            var s = new PadSample();
+            GenericHid.Map(layout, raw, s);
+            Check(s.Connected && s.Buttons == 0 && Math.Abs(s.Axes[0]) < 0.01f && Math.Abs(s.Axes[3]) < 0.01f && s.Axes[4] == 0f, "neutral generic pad");
+            raw.Axes[GenericHid.X] = 255; raw.Axes[GenericHid.Y] = 0; raw.Axes[GenericHid.Z] = 0; raw.Axes[GenericHid.Rz] = 255;
+            raw.Hat = 1;
+            raw.Buttons = (1u << 0) | (1u << 6) | (1u << 11);
+            GenericHid.Map(layout, raw, s);
+            Check(Math.Abs(s.Axes[0] - 1f) < 1e-3f && Math.Abs(s.Axes[1] - 1f) < 1e-3f && Math.Abs(s.Axes[2] + 1f) < 1e-3f && Math.Abs(s.Axes[3] + 1f) < 1e-3f,
+                  "X/Y left stick up positive, Z/Rz right stick");
+            Check(s.Buttons == (Bit(ControlsSettings.DpadUp) | Bit(ControlsSettings.DpadRight) | Bit(ControlsSettings.South) |
+                                Bit(ControlsSettings.GripLeft) | Bit(ControlsSettings.RightStick)), "hat diagonal and buttons 1, 7, 12");
+
+            var xboxLike = new GenericLayout();
+            foreach (int axis in new[] { GenericHid.X, GenericHid.Y, GenericHid.Rx, GenericHid.Ry })
+                xboxLike.Axes[axis] = new GenericRange { Present = true, Min = -32768, Max = 32767, Bits = 16 };
+            xboxLike.Axes[GenericHid.Z] = new GenericRange { Present = true, Min = 0, Max = 1023, Bits = 10 };
+            var signedRaw = new GenericRaw();
+            signedRaw.Axes[GenericHid.Rx] = 0x8000u; signedRaw.Axes[GenericHid.Ry] = 0x7FFFu; signedRaw.Axes[GenericHid.Z] = 1023u;
+            GenericHid.Map(xboxLike, signedRaw, s);
+            Check(Math.Abs(s.Axes[2] + 1f) < 1e-3f && Math.Abs(s.Axes[3] + 1f) < 1e-3f && Math.Abs(s.Axes[4] - 1f) < 1e-3f && s.Axes[5] == 0f,
+                  "signed Rx/Ry right stick, Z left trigger");
+            Check(GenericHid.LogicalValue(new GenericRange { Present = true, Min = -128, Max = 127, Bits = 8 }, 0xFFu) == -1 &&
+                  GenericHid.LogicalValue(new GenericRange { Present = true, Min = 0, Max = 255, Bits = 8 }, 0xFFu) == 255, "sign extension");
+            var fourWay = new GenericLayout();
+            fourWay.Hat = new GenericRange { Present = true, Min = 1, Max = 4, Bits = 4 };
+            var hatRaw = new GenericRaw { Hat = 3 };
+            GenericHid.Map(fourWay, hatRaw, s);
+            Check(s.Buttons == Bit(ControlsSettings.DpadDown), "a four-position hat from 1: 3 is down");
+
+            Check(ControlsSettings.SchemeIds[ControlsSettings.Generic] == "generic" && !ControlsSettings.HasMotion(ControlsSettings.Generic), "generic scheme");
+            Check(Bound(ControlsSettings.Generic, 0) == "Button1" && Bound(ControlsSettings.Generic, ControlsSettings.JumpBack) == "Button2" &&
+                  Bound(ControlsSettings.Generic, 1) == "Button5" && Bound(ControlsSettings.Generic, 16) == "LT, Button7" &&
+                  Bound(ControlsSettings.Generic, 17) == "Button3, Button4, RT, Button8" && Bound(ControlsSettings.Generic, 7) == "DpadUp" &&
+                  Bound(ControlsSettings.Generic, 23) == "Button12", "generic defaults");
+            var tuning = ControlsSettings.DefaultTuning(ControlsSettings.Generic);
+            Check(tuning.StickDeadzone == 0.15f && !tuning.GyroPointer && tuning.PointerHideSeconds == 4.0f, "generic tuning");
+
+            var list = DeviceList.Build(new[] { new ControllerInfo { Scheme = ControlsSettings.Generic, Slot = 0, Model = "USB Gamepad", Link = ControllerLink.Usb } }, null);
+            Check(list.Count == 2 && list[1].Label == "USB Gamepad (USB)", "a generic controller is listed by its product name");
         }
 
         static void Model(string outDir)
         {
-            Check(ControlsSettings.SchemeCount == 6 && ControlsSettings.SchemeIds[4] == "playstation" && ControlsSettings.SchemeIds[5] == "steam", "six schemes");
+            Check(ControlsSettings.SchemeCount == 7 && ControlsSettings.SchemeIds[4] == "playstation" && ControlsSettings.SchemeIds[5] == "steam" &&
+                  ControlsSettings.SchemeIds[6] == "generic", "seven schemes");
             Check(ControlsSettings.HasMotion(ControlsSettings.PlayStation) && ControlsSettings.HasMotion(ControlsSettings.Steam) && !ControlsSettings.HasMotion(ControlsSettings.Xbox), "PlayStation and Steam have motion");
             Check(Bound(ControlsSettings.PlayStation, 0) == "Cross" && Bound(ControlsSettings.PlayStation, ControlsSettings.JumpBack) == "Circle" &&
                   Bound(ControlsSettings.PlayStation, 1) == "L1" && Bound(ControlsSettings.PlayStation, 16) == "L2" &&

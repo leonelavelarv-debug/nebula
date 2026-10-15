@@ -41,7 +41,7 @@ namespace Nebula.Launcher
     /// </summary>
     internal sealed class ControlsSettings
     {
-        public const int SchemeCount = 6, TargetCount = 25, Slots = 4;
+        public const int SchemeCount = 7, TargetCount = 25, Slots = 4;
         public const int JumpBack = 24;
         // runtime_settings.ini controls_version (input_bindings.h kControlsVersion).
         public const int ControlsVersion = 5;
@@ -51,9 +51,9 @@ namespace Nebula.Launcher
         public const float Version4PointerHideSeconds = 2.0f;
         public const int Version4Rumble = 100;
         public const int ModeAuto = 0, ModeKeyboardMouse = 1, ModeController = 2, ModeRealWiimote = 3;
-        public const int Keyboard = 0, Xbox = 1, SwitchPro = 2, SwitchPro2 = 3, PlayStation = 4, Steam = 5;
-        public static readonly string[] SchemeIds = { "keyboard", "xbox", "switch_pro", "switch_pro2", "playstation", "steam" };
-        public static readonly string[] SchemeLabels = { "Keyboard and mouse", "Xbox controller", "Switch Pro Controller", "Switch 2 Pro Controller", "PlayStation controller", "Steam Controller" };
+        public const int Keyboard = 0, Xbox = 1, SwitchPro = 2, SwitchPro2 = 3, PlayStation = 4, Steam = 5, Generic = 6;
+        public static readonly string[] SchemeIds = { "keyboard", "xbox", "switch_pro", "switch_pro2", "playstation", "steam", "generic" };
+        public static readonly string[] SchemeLabels = { "Keyboard and mouse", "Xbox controller", "Switch Pro Controller", "Switch 2 Pro Controller", "PlayStation controller", "Steam Controller", "Generic controller" };
         public static readonly string[] TargetIds = {
             "a", "b", "one", "two", "plus", "minus", "home", "dpad_up", "dpad_down", "dpad_left", "dpad_right",
             "stick_up", "stick_down", "stick_left", "stick_right", "c", "z", "shake", "nunchuk_shake",
@@ -93,6 +93,10 @@ namespace Nebula.Launcher
             "L1", "R1", "PS", "Touchpad", "Cross", "Circle", "Square", "Triangle", "LeftPaddle", "RightPaddle", "Mute", "GL2", "GR2", "LPad", "RPad" };
         private static readonly string[] SteamButtons = { "DpadUp", "DpadDown", "DpadLeft", "DpadRight", "Menu", "View", "LS", "RS",
             "LB", "RB", "Steam", "QAM", "A", "B", "X", "Y", "L4", "R4", "C", "L5", "R5", "LPad", "RPad" };
+        // Generic controllers by HID button number (runtime generic_hid.h button_bit).
+        private static readonly string[] GenericButtons = { "DpadUp", "DpadDown", "DpadLeft", "DpadRight", "Button10", "Button9", "Button11", "Button12",
+            "Button5", "Button6", "Button13", "Button14", "Button1", "Button2", "Button3", "Button4", "Button7", "Button8",
+            "Button15", "Button16", "Button17", "Button18", "Button19" };
         private static readonly string[] StickAxes = { "LX", "LY", "RX", "RY" };
         private static readonly string[] MouseNames = { "MouseLeft", "MouseRight", "MouseMiddle", "Mouse4", "Mouse5" };
         private static readonly KeyValuePair<int, string>[] NamedKeys = {
@@ -127,6 +131,7 @@ namespace Nebula.Launcher
             {
                 case PlayStation: return PlayStationButtons;
                 case Steam: return SteamButtons;
+                case Generic: return GenericButtons;
                 case Xbox: return XboxButtons;
                 default: return SwitchButtons;
             }
@@ -137,7 +142,8 @@ namespace Nebula.Launcher
             switch (scheme)
             {
                 case Xbox:
-                case Steam: return left ? "LT" : "RT";
+                case Steam:
+                case Generic: return left ? "LT" : "RT";
                 case PlayStation: return left ? "L2" : "R2";
                 default: return left ? "ZL" : "ZR";
             }
@@ -155,6 +161,7 @@ namespace Nebula.Launcher
                 case SwitchPro2: return baseBits | homeCapture | face | grips | (1 << Chat);
                 case PlayStation: return baseBits | homeCapture | face | grips | (1 << Chat);
                 case Steam: return baseBits | homeCapture | face | grips | (1 << GripLeft2) | (1 << GripRight2) | (1 << LeftPad) | (1 << RightPad);
+                case Generic: return (1 << ButtonCount) - 1;
             }
             return 0;
         }
@@ -169,6 +176,7 @@ namespace Nebula.Launcher
         public static InputSource[][] LegacyTable(int scheme)
         {
             if (IsGyroPad(scheme)) return GyroPadTable();
+            if (scheme == Generic) return GenericTable();
             var t = new InputSource[TargetCount][];
             for (int i = 0; i < TargetCount; i++) t[i] = new InputSource[0];
             if (scheme == Keyboard)
@@ -215,7 +223,7 @@ namespace Nebula.Launcher
         public static InputSource[][] Version2Table(int scheme)
         {
             var t = LegacyTable(scheme);
-            if (scheme == Keyboard || IsGyroPad(scheme)) return t;
+            if (scheme == Keyboard || scheme == Generic || IsGyroPad(scheme)) return t;
             bool xbox = scheme == Xbox;
             t[0] = new[] { Button(xbox ? South : East) };
             t[JumpBack] = new[] { Button(xbox ? East : South) };
@@ -243,7 +251,7 @@ namespace Nebula.Launcher
         public static InputSource[][] Version3Table(int scheme)
         {
             var t = Version2Table(scheme);
-            if (scheme == Keyboard || IsGyroPad(scheme)) return t;
+            if (scheme == Keyboard || scheme == Generic || IsGyroPad(scheme)) return t;
             t[1] = new[] { Button(LeftShoulder) };
             t[16] = new[] { Pos(LeftTrigger), Pos(RightTrigger) };
             t[15] = new[] { Button(LeftStick) };
@@ -260,7 +268,7 @@ namespace Nebula.Launcher
         public static InputSource[][] DefaultTable(int scheme)
         {
             var t = Version3Table(scheme);
-            if (scheme == Keyboard || IsGyroPad(scheme)) return t;
+            if (scheme == Keyboard || scheme == Generic || IsGyroPad(scheme)) return t;
             t[16] = new[] { Pos(LeftTrigger) };
             t[17] = scheme == Xbox
                 ? new[] { Button(West), Button(North), Button(RightShoulder), Pos(RightTrigger) }
@@ -295,6 +303,31 @@ namespace Nebula.Launcher
             return t;
         }
 
+        /// <summary>
+        /// Generic controllers: the Xbox shape on the HID button numbers most pads share (1 jumps,
+        /// 2 backs out of menus, 5 Star Bits, 7/8 the triggers when they are buttons). The scheme is
+        /// newer than every migration step: all versions share these.
+        /// </summary>
+        private static InputSource[][] GenericTable()
+        {
+            var t = new InputSource[TargetCount][];
+            for (int i = 0; i < TargetCount; i++) t[i] = new InputSource[0];
+            t[0] = new[] { Button(South) };
+            t[JumpBack] = new[] { Button(East) };
+            t[1] = new[] { Button(LeftShoulder) };
+            t[4] = new[] { Button(Start) };
+            t[5] = new[] { Button(Back) };
+            t[6] = new[] { Button(Home) };
+            t[7] = new[] { Button(DpadUp) }; t[8] = new[] { Button(DpadDown) }; t[9] = new[] { Button(DpadLeft) }; t[10] = new[] { Button(DpadRight) };
+            t[11] = new[] { Pos(LeftY) }; t[12] = new[] { Neg(LeftY) }; t[13] = new[] { Neg(LeftX) }; t[14] = new[] { Pos(LeftX) };
+            t[15] = new[] { Button(LeftStick) };
+            t[16] = new[] { Pos(LeftTrigger), Button(GripLeft) };
+            t[17] = new[] { Button(West), Button(North), Pos(RightTrigger), Button(GripRight) };
+            t[19] = new[] { Pos(RightY) }; t[20] = new[] { Neg(RightY) }; t[21] = new[] { Neg(RightX) }; t[22] = new[] { Pos(RightX) };
+            t[23] = new[] { Button(RightStick) };
+            return t;
+        }
+
         public static SchemeTuning LegacyTuning(int scheme)
         {
             var t = new SchemeTuning();
@@ -311,6 +344,14 @@ namespace Nebula.Launcher
                 t.PointerDeadzone = 0.12f;
                 t.PointerSpeed = 2.4f;
                 t.Motion = 1;
+                t.PointerHideSeconds = 4.0f;
+            }
+            else if (scheme == Generic)
+            {
+                // Uncalibrated sticks: a wider centre than the calibrated pads.
+                t.StickDeadzone = 0.15f;
+                t.PointerDeadzone = 0.15f;
+                t.PointerSpeed = 2.4f;
                 t.PointerHideSeconds = 4.0f;
             }
             return t;

@@ -167,7 +167,7 @@ namespace Nebula.Launcher
         }
     }
 
-    /// <summary>The controllers attached now: XInput pads and the supported HID controllers.</summary>
+    /// <summary>The controllers attached now: XInput pads, the supported HID controllers and generic HID game controllers.</summary>
     internal static class ControllerProbe
     {
         /// <summary>Stands in for the attached controllers (tests).</summary>
@@ -187,7 +187,12 @@ namespace Nebula.Launcher
             {
                 int scheme, model;
                 string name;
-                if (!Products.Find(device.Vendor, device.Product, out scheme, out name, out model)) continue;
+                if (!Products.Find(device.Vendor, device.Product, out scheme, out name, out model))
+                {
+                    if (device.ProductName == null || GenericHid.ClaimedElsewhere(device.Vendor, device.Path)) continue;
+                    scheme = ControlsSettings.Generic;
+                    name = device.ProductName;
+                }
                 if (Products.IsPuck(device.Product) && (device.Interface < 2 || device.Interface > 5)) continue;
                 list.Add(new ControllerInfo
                 {

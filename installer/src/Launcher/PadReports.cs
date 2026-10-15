@@ -20,6 +20,129 @@ namespace Nebula.Launcher
         }
     }
 
+    /// <summary>One value usage as a generic controller describes it (runtime generic_hid.h ValueRange).</summary>
+    internal struct GenericRange
+    {
+        public bool Present;
+        public int Min, Max, Bits;
+    }
+
+    /// <summary>The axes (GenericHid axis order), hat and buttons of a generic controller's input reports.</summary>
+    internal sealed class GenericLayout
+    {
+        public readonly GenericRange[] Axes = new GenericRange[GenericHid.AxisCount];
+        public GenericRange Hat;
+        public int Buttons;
+    }
+
+    /// <summary>The raw values last read from a generic controller; bit n-1 of Buttons is button n.</summary>
+    internal sealed class GenericRaw
+    {
+        public readonly uint[] Axes = new uint[GenericHid.AxisCount];
+        public uint Hat, Buttons;
+    }
+
+    /// <summary>
+    /// Generic HID game controllers: Joystick or Game Pad collections no other path reads, mapped
+    /// onto the unified pad as the runtime's generic_hid.cpp maps them.
+    /// </summary>
+    internal static class GenericHid
+    {
+        public const int PageGenericDesktop = 0x01, PageSimulation = 0x02, PageButton = 0x09;
+        public const int UsageHat = 0x39, MaxButtons = 32, MappedButtons = 19, AxisCount = 8;
+        // X, Y, Z, Rx, Ry, Rz (Generic Desktop), Accelerator, Brake (Simulation Controls).
+        public const int X = 0, Y = 1, Z = 2, Rx = 3, Ry = 4, Rz = 5, Accelerator = 6, Brake = 7;
+        private static readonly int[] Usages = { 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0xC4, 0xC5 };
+        private static readonly int[] ButtonBits = {
+            ControlsSettings.South, ControlsSettings.East, ControlsSettings.West, ControlsSettings.North,
+            ControlsSettings.LeftShoulder, ControlsSettings.RightShoulder, ControlsSettings.GripLeft, ControlsSettings.GripRight,
+            ControlsSettings.Back, ControlsSettings.Start, ControlsSettings.LeftStick, ControlsSettings.RightStick,
+            ControlsSettings.Home, ControlsSettings.Capture, ControlsSettings.Chat, ControlsSettings.GripLeft2,
+            ControlsSettings.GripRight2, ControlsSettings.LeftPad, ControlsSettings.RightPad };
+
+        public static bool IsGameController(int usagePage, int usage) { return usagePage == PageGenericDesktop && (usage == 0x04 || usage == 0x05); }
+
+        /// <summary>Microsoft (XInput), Nintendo, Sony and Valve controllers and XInput interfaces ("IG_") are read elsewhere.</summary>
+        public static bool ClaimedElsewhere(int vendor, string path)
+        {
+            if (vendor == 0x045e || vendor == 0x057e || vendor == 0x054c || vendor == 0x28de) return true;
+            return path != null && path.IndexOf("ig_", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>The unified bit of 1-based button `number`, -1 when it has none.</summary>
+        public static int ButtonBit(int number) { return number >= 1 && number <= MappedButtons ? ButtonBits[number - 1] : -1; }
+
+        public static int AxisOf(int page, int usage)
+        {
+            for (int i = 0; i < AxisCount; i++)
+                if (Usages[i] == usage && page == (i >= Accelerator ? PageSimulation : PageGenericDesktop)) return i;
+            return -1;
+        }
+
+        public static ushort AxisPage(int axis) { return (ushort)(axis >= Accelerator ? PageSimulation : PageGenericDesktop); }
+        public static ushort AxisUsage(int axis) { return (ushort)Usages[axis]; }
+
+        /// <summary>A field as a signed logical value (sign-extended when the range is signed).</summary>
+        public static int LogicalValue(GenericRange range, uint raw)
+        {
+            if (range.Min < 0 && range.Bits > 0 && range.Bits < 32)
+            {
+                uint sign = 1u << (range.Bits - 1);
+                raw &= (sign << 1) - 1u;
+                return (int)(raw ^ sign) - (int)sign;
+            }
+            return (int)raw;
+        }
+
+        private static float Centred(GenericRange range, uint raw)
+        {
+            if (!range.Present || range.Max <= range.Min) return 0f;
+            double span = (double)range.Max - range.Min, value = (double)LogicalValue(range, raw) - range.Min;
+            return Math.Max(-1f, Math.Min(1f, (float)(value / span * 2.0 - 1.0)));
+        }
+
+        private static float Pulled(GenericRange range, uint raw)
+        {
+            if (!range.Present || range.Max <= range.Min) return 0f;
+            double span = (double)range.Max - range.Min, value = (double)LogicalValue(range, raw) - range.Min;
+            return Math.Max(0f, Math.Min(1f, (float)(value / span)));
+        }
+
+        /// <summary>
+        /// Sticks -1..1 (up positive), triggers 0..1, buttons and the hat as the d-pad. The right stick is
+        /// Z/Rz when the device has both, else Rx/Ry; triggers come from the pair it leaves free, then
+        /// Brake/Accelerator.
+        /// </summary>
+        public static void Map(GenericLayout layout, GenericRaw raw, PadSample s)
+        {
+            int b = 0;
+            for (int number = 1; number <= MappedButtons; number++)
+                if ((raw.Buttons & (1u << (number - 1))) != 0) b |= 1 << ButtonBit(number);
+            bool zPair = layout.Axes[Z].Present && layout.Axes[Rz].Present;
+            int rightX = zPair ? Z : Rx, rightY = zPair ? Rz : Ry, leftTrigger = zPair ? Rx : Z, rightTrigger = zPair ? Ry : Rz;
+            s.Axes[0] = Centred(layout.Axes[X], raw.Axes[X]);
+            s.Axes[1] = -Centred(layout.Axes[Y], raw.Axes[Y]);
+            s.Axes[2] = Centred(layout.Axes[rightX], raw.Axes[rightX]);
+            s.Axes[3] = -Centred(layout.Axes[rightY], raw.Axes[rightY]);
+            s.Axes[4] = layout.Axes[leftTrigger].Present ? Pulled(layout.Axes[leftTrigger], raw.Axes[leftTrigger]) : Pulled(layout.Axes[Brake], raw.Axes[Brake]);
+            s.Axes[5] = layout.Axes[rightTrigger].Present ? Pulled(layout.Axes[rightTrigger], raw.Axes[rightTrigger]) : Pulled(layout.Axes[Accelerator], raw.Axes[Accelerator]);
+            if (layout.Hat.Present && layout.Hat.Max > layout.Hat.Min)
+            {
+                long at = (long)LogicalValue(layout.Hat, raw.Hat) - layout.Hat.Min, count = (long)layout.Hat.Max - layout.Hat.Min + 1;
+                if (at >= 0 && at < count && (count == 8 || count == 4))
+                {
+                    int direction = (int)(count == 4 ? at * 2 : at);
+                    int up = 1 << ControlsSettings.DpadUp, down = 1 << ControlsSettings.DpadDown;
+                    int left = 1 << ControlsSettings.DpadLeft, right = 1 << ControlsSettings.DpadRight;
+                    int[] hat = { up, up | right, right, down | right, down, down | left, left, up | left };
+                    b |= hat[direction];
+                }
+            }
+            s.Buttons = b;
+            s.Connected = true;
+        }
+    }
+
     /// <summary>
     /// Input report decoding for binding capture: buttons, sticks and triggers only. Layouts as the
     /// runtime's switch_controller.cpp, playstation_controller.cpp and steam_controller.cpp.

@@ -22,6 +22,11 @@ namespace Nebula.Launcher
             public int InputLength, OutputLength;
             public bool Bluetooth;
             public readonly PadSample State = new PadSample();
+            // Generic controllers: the HID parser's data, the value layout and the last values.
+            public IntPtr Preparsed;
+            public readonly GenericLayout Layout = new GenericLayout();
+            public readonly GenericRaw Raw = new GenericRaw();
+            public readonly ushort[] Usages = new ushort[GenericHid.MaxButtons];
         }
 
         private readonly List<HidPad> pads = new List<HidPad>();
@@ -121,6 +126,7 @@ namespace Nebula.Launcher
             if (handle == null) return;
             var pad = new HidPad { Info = info, Handle = handle, Bluetooth = info.Link == ControllerLink.Bluetooth };
             HidDevices.ReportLengths(handle, out pad.InputLength, out pad.OutputLength);
+            if (info.Scheme == ControlsSettings.Generic) pad.Preparsed = HidDevices.OpenGeneric(handle, pad.Layout);
             lock (pads) pads.Add(pad);
             new Thread(delegate() { ReadLoop(pad); }) { IsBackground = true }.Start();
         }
@@ -140,6 +146,10 @@ namespace Nebula.Launcher
             {
                 case ControlsSettings.PlayStation: return PadReports.DecodePlayStation(pad.Info.PlayStationModel, pad.Bluetooth, buffer, size, sample);
                 case ControlsSettings.Steam: return PadReports.DecodeSteam(buffer, size, sample);
+                case ControlsSettings.Generic:
+                    if (!HidDevices.ReadGeneric(pad.Preparsed, pad.Layout, buffer, size, pad.Raw, pad.Usages)) return false;
+                    GenericHid.Map(pad.Layout, pad.Raw, sample);
+                    return true;
                 default: return PadReports.DecodeSwitch(buffer, size, sample);
             }
         }
@@ -161,6 +171,9 @@ namespace Nebula.Launcher
                 }
                 if (sample.HasInput) Interlocked.Exchange(ref active, KeyOf(new DeviceKey(pad.Info.Scheme, pad.Info.Slot)));
             }
+            // The read thread owns the parser data: Decode never runs after this.
+            HidDevices.FreeGeneric(pad.Preparsed);
+            pad.Preparsed = IntPtr.Zero;
         }
 
         public void Dispose()
