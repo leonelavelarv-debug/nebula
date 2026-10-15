@@ -33,6 +33,7 @@ struct EnhancedLightingTuning {
     float env_graze = 0.80f;    // gain added at grazing angles, Schlick (1 - N.V)^5
     float point = 0.8f;         // the scene's point lights' strength
     float point_cap = 1.5f;     // most they add to an unlit surface, times its own colour
+    float emissive = 0.4f;      // light sources the material table names glow brighter, times their colour
     std::uint32_t hash = 0u;    // nonzero when GALAXY_ENHANCED_LIGHTING_TUNE changes a value
 };
 
@@ -46,7 +47,7 @@ struct EnhancedLightingTuning {
 struct RtMaterial;
 // The material table's roughness and metalness for an enhanced draw's uber header (kEnhancedTable*;
 // matte classes roughness 1; 0 without an entry or without either value), and kEnhancedLightSource
-// for a light source the scene's point lights hold.
+// for a light source (point or area emission).
 [[nodiscard]] std::uint32_t enhanced_table_material(const RtMaterial* material) noexcept;
 [[nodiscard]] std::uint32_t enhanced_lighting_material(const VertexShaderKey& vs, const PixelShaderKey& ps,
                                                        bool point_lit = false) noexcept;

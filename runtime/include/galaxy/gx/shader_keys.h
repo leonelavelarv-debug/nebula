@@ -148,7 +148,8 @@ inline constexpr std::uint32_t kEnhancedRtLighting = 1u << 17u;
 inline constexpr unsigned kEnhancedTableRoughShift = 20u;
 inline constexpr unsigned kEnhancedTableMetalShift = 26u;
 inline constexpr std::uint32_t kEnhancedTableKnown = 1u << 30u;
-// Bit 31: the draw is a light source the scene's point lights hold (its own light leaves it).
+// Bit 31: the draw is a light source the material table names: it glows brighter and takes no
+// point light (its own is among them).
 inline constexpr std::uint32_t kEnhancedLightSource = 1u << 31u;
 inline constexpr std::uint32_t kEnhancedView = 1u << 18u;
 inline constexpr std::uint32_t kEnhancedViewChannel = 1u << 19u;

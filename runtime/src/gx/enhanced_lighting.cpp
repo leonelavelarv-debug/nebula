@@ -32,6 +32,7 @@ constexpr TuningField kTuningFields[] = {
     {"env_graze", &EnhancedLightingTuning::env_graze},
     {"point", &EnhancedLightingTuning::point},
     {"point_cap", &EnhancedLightingTuning::point_cap},
+    {"emissive", &EnhancedLightingTuning::emissive},
 };
 
 EnhancedLightingTuning parse_tuning() {
@@ -82,7 +83,7 @@ std::uint32_t enhanced_table_material(const RtMaterial* material) noexcept {
         return 0u;
     }
     const std::uint32_t source =
-        material->emission == RtEmission::Point && material->intensity > 0.0f && !material->no_light
+        material->emission != RtEmission::None && material->intensity > 0.0f && !material->no_light
             ? kEnhancedLightSource
             : 0u;
     if (material->roughness < 0.0f && material->metallic < 0.0f && !material->matte) {

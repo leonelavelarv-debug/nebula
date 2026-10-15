@@ -801,13 +801,15 @@ void enh_key_highlight(inout EnhShade e, float3 P) {
     }
 }
 
-// The point lights' gain on an unlit surface and the highlights, added to the TEV result in linear
-// light. A metal's F0 is its own colour raised to a peak of at least kEnhMetalF0, so metals baked
-// dull still reflect their light in their own hue. `view`: the highlights alone (diagnostics).
+// The point lights' gain on an unlit surface (a light source's glow on its own: uber header bit
+// 31) and the highlights, added to the TEV result in linear light. A metal's F0 is its own colour
+// raised to a peak of at least kEnhMetalF0, so metals baked dull still reflect their light in their
+// own hue. `view`: the highlights alone (diagnostics).
 float3 enh_finish(float3 frag, EnhShade e, bool view) {
     float3 c = enh_lin(frag);
-    if (any(e.gain > 0.0)) {
-        c = enh_shoulder(c * (1.0 + e.gain));
+    const float3 gain = (uber_ps_header.w & 0x80000000u) != 0u ? kEnhEmissive : e.gain;
+    if (any(gain > 0.0)) {
+        c = enh_shoulder(c * (1.0 + gain));
     }
     const float peak = max(max(c.r, c.g), max(c.b, 1e-4));
     const float3 f0 = saturate(c * (max(peak, kEnhMetalF0) / peak));
@@ -1560,9 +1562,10 @@ std::string ShaderGenerator::generate_ps(const PixelShaderKey& key) const {
              "static const float kEnhMetalRough = %.9g;\n"
              "static const float kEnhMetalF0 = %.9g;\n"
              "static const float kEnhEnvBase = %.9g;\n"
-             "static const float kEnhEnvGraze = %.9g;\n",
+             "static const float kEnhEnvGraze = %.9g;\n"
+             "static const float kEnhEmissive = %.9g;\n",
              t.ramp, t.hemi, t.rim, t.knee, t.sheen, t.sheen_rough, t.metal, t.metal_rough, t.metal_f0, t.env_base,
-             t.env_graze);
+             t.env_graze, t.emissive);
         s << kEnhancedLighting;
         if (enh_points) {
             emit(s, "static const float kEnhPoint = %.9g;\nstatic const float kEnhPointCap = %.9g;\n", t.point,
