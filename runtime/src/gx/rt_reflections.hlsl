@@ -846,6 +846,14 @@ float4 draw_material(uint surface_class, uint draw, out float roughness)
     }
     if (r16 != 0xFFFFu) {
         roughness = float(r16) / 65534.0f;
+    }
+    // The game paints its environment-mapped metals as polished chrome: their reflection and the lights'
+    // highlights stay that sharp (rf3 4103: at the table's 0.40 the highlights spread over whole disk sides,
+    // their luminance 0.66 over the sheen).
+    if (surface_class == kMetalClass && params.w >= 0.5f) {
+        roughness = min(roughness, 0.2f);
+    }
+    if (r16 != 0xFFFFu || surface_class == kMetalClass) {
         params.x = max(roughness * roughness, 1e-3f);
         params.y = saturate((g_rough_cutoff - roughness) / 0.2f);
     }
