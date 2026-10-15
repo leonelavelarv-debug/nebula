@@ -274,7 +274,8 @@ public:
     // `scene_srv`: the frame with the game's water drawn (a copy), which the water composite low-passes.
     void composite_water(ID3D12GraphicsCommandList* list, D3D12_CPU_DESCRIPTOR_HANDLE target,
                          D3D12_GPU_DESCRIPTOR_HANDLE depth_srv, std::uint32_t width, std::uint32_t height, int slot,
-                         bool reproject, D3D12_GPU_DESCRIPTOR_HANDLE scene_srv = {});
+                         bool reproject, D3D12_GPU_DESCRIPTOR_HANDLE scene_srv = {},
+                         D3D12_GPU_DESCRIPTOR_HANDLE opaque_srv = {});
     // After the composite (same views): the picture before the translucent phases; with `game_srv`
     // (the composite's source: the game's own opaque picture) the exposure's measurement.
     void snapshot_glow_base(ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_HANDLE color_depth_table,
@@ -531,10 +532,12 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> post_blur_pso_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> post_shafts_pso_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> post_focus_pso_;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> post_lum_pso_;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> post_finish_root_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> post_finish_pso_;
-    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 6> post_buffers_{};   // scene, bright, tmp, bloom, shafts, state
-    std::array<D3D12_RESOURCE_STATES, 6> post_states_{};
+    // scene, bright, tmp, bloom, shafts, state, region luminance, its blur's temporary
+    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 8> post_buffers_{};
+    std::array<D3D12_RESOURCE_STATES, 8> post_states_{};
     std::uint64_t post_pixels_ = 0u;
     std::uint64_t post_quarter_ = 0u;
     std::array<std::uint32_t, 40> post_constants_{};
@@ -578,6 +581,9 @@ private:
     };
     static_assert(sizeof(AuthoredLight) == 32u);
     std::vector<AuthoredLight> authored_;
+    // Per glow draw (glow_draws_) for GlowEmitCS, in AuthoredLight's layout: its triangles, the material
+    // table's colour and intensity for its texture where the table names it (flags kGlowTable).
+    std::vector<AuthoredLight> glow_lights_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> authored_emit_pso_;
     float authored_power_ = 40000.0f;   // GALAXY_RT_AUTHORED_POWER: a Luma's light (intensity 1)
     std::uint64_t authored_frames_ = 0u;
@@ -595,6 +601,9 @@ private:
     bool emit_log_pending_ = false;
     std::uint64_t emit_log_frame_ = 0u;
     std::array<float, 3> emit_log_eye_{};
+    std::array<float, 6> emit_log_sun_{};   // sun light rgb, sky weight, keyed, strength
+    // The logged scene's material-table point lights, glow draws and the glow draws the table names.
+    std::array<std::uint32_t, 3> emit_log_draws_{};
     std::array<D3D12_RESOURCE_STATES, 2> light_z_state_{};
     std::array<D3D12_RESOURCE_STATES, 2> light_history_state_{};
     std::array<D3D12_RESOURCE_STATES, kLightSlots> light_final_state_{};
@@ -724,18 +733,20 @@ private:
     float post_bloom_ = 0.0f;
     float post_threshold_ = 0.9f;   // GALAXY_RT_POST_THRESHOLD: luminance where bloom starts
     float post_shafts_ = 1.0f;      // GALAXY_RT_POST_SHAFTS
-    float post_dof_ = 3.0f;         // GALAXY_RT_POST_DOF: largest far blur (EFB pixels at 1x; 0 none)
+    float post_dof_ = 0.0f;         // GALAXY_RT_POST_DOF: largest far blur (EFB pixels at 1x; 0 none)
     float post_grade_ = 1.0f;       // GALAXY_RT_POST_GRADE
     float post_rim_ = 0.0f;         // GALAXY_RT_POST_RIM: rim light at silhouettes (outlined everything)
     float relief_ = 3.0f;           // GALAXY_RT_RELIEF: height (eye units) of full texture brightness
+    float post_local_bright_ = 0.75f;  // GALAXY_RT_LOCAL_BRIGHT: contrast scale of regions above mid grey
+    float post_local_dark_ = 0.92f;    // GALAXY_RT_LOCAL_DARK: of regions below it (1: no local exposure)
     float post_haze_ = 0.12f;       // GALAXY_RT_POST_HAZE: distance haze's largest share (bright skies)
     float post_haze_distance_ = 20000.0f;  // GALAXY_RT_POST_HAZE_DISTANCE: where it reaches 63 % of it
-    float post_vignette_ = 0.18f;   // GALAXY_RT_POST_VIGNETTE: darkening towards the corners
+    float post_vignette_ = 0.1f;    // GALAXY_RT_POST_VIGNETTE: darkening towards the corners
     bool post_view_ = false;        // GALAXY_RT_POST_VIEW: the finished luminance in false colour
     bool gi_ = true;                // GALAXY_RT_GI=0: no sky occlusion or bounce (shadows and lights stay)
     float core_radius_ = 400.0f;    // GALAXY_RT_CORE_RADIUS: the star core's radius at scale 1 (first guess;
                                     // the finish measures it from depth)
-    float core_light_ = 2.5f;       // GALAXY_RT_CORE_LIGHT: its light (a point light; grows with it)
+    float core_light_ = 0.8f;       // GALAXY_RT_CORE_LIGHT: its light (a point light; grows with it)
     float bloom_strength_ = 1.4f;   // GALAXY_RT_BLOOM: the glows' bloom (0: none)
     float bloom_threshold_ = 0.15f; // GALAXY_RT_BLOOM_THRESHOLD: glow luminance that starts to bloom
     // GALAXY_RT_EXPOSURE_DAY / _NIGHT: the mean lighting the exposure holds under a bright / black
@@ -749,8 +760,8 @@ private:
     float emission_ = 40.0f;        // GALAXY_RT_EMISSION: a glow's light per unit it adds to the picture
                                     // and unit of eye-space area (0: no glow lights)
     float point_size_ = 600.0f;     // GALAXY_RT_POINT_SIZE: radius of the geometry around one
-    float sun_light_ = 1.25f;       // GALAXY_RT_SUN_LIGHT: the key light's strength
-    float sky_light_ = 1.0f;
+    float sun_light_ = 1.5f;        // GALAXY_RT_SUN_LIGHT: the key light's strength
+    float sky_light_ = 0.7f;
     bool lighting_enabled_ = true;
     bool ab_ = false;               // GALAXY_RT_AB
     bool ab_original_ = false;

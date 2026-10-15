@@ -6601,6 +6601,10 @@ void GxBackend::on_host_marker(std::uint8_t kind, std::uint16_t aux, std::uint32
     if (kind == motion::kMarkerNameObj) {
         rt_object_ = a;
         rt_object_fake_shadow_ = renderer_.rt_lighting() && rt_fake_shadow_object(a);
+    } else if (kind == motion::kMarkerShapePacket) {
+        // A model from a draw buffer (its shape packet), not the shadow drawer before it: the shadow
+        // drawers draw with GX directly (measured: Gold Leaf's Chomps were hidden with their shadows).
+        rt_object_fake_shadow_ = false;
     } else if (kind == motion::kMarkerEmitter || kind == motion::kMarkerParticle) {
         rt_object_ = 0u;
         rt_object_fake_shadow_ = false;
@@ -7227,6 +7231,11 @@ bool GxBackend::begin_rt_batch(const DrawCall& call, RtDrawInfo& info) {
     // are never traced geometry or water (glows still light, and so do the table's emitting ones).
     if (const RtMaterial* material = rt_material(current_rt_material_); material != nullptr) {
         if (material->particle && material->emission == RtEmission::None && !glow) {
+            return false;
+        }
+        // Sky domes and backdrops drawn among the scene (after its depth clear): never traced, or every
+        // ray towards the sun meets them (measured: Dusty Dune's DesertSky left the desert unlit).
+        if (material->sky && !glow) {
             return false;
         }
         if (material->surface_class != 0xFFu) {

@@ -106,6 +106,10 @@ static const uint kEmitNoLight = 8u;    // never a light
 // g_draws records (SceneRayTracer::draw_colors_): ambient, GX light 0 colour, emission, intensity,
 // roughness and metalness, material colour, flags, spare.
 static const uint kDrawStride = 32u;
+// g_draws word 6: the table gives the light source's own glow (in place of its intensity), unorm16 of
+// glow / kDrawGlowScale in the high half.
+static const uint kDrawTableGlow = 2u;
+static const float kDrawGlowScale = 16.0f;
 // The lighting multiplies the game's colour by at most this; the composite rolls it off on a film
 // shoulder from kLitKnee (apply_light).
 static const float kMaxLight = 8.0f;
@@ -606,7 +610,7 @@ void SkyStateCS()
         const float day = c_sums.Load(36u) != 0u ? saturate(asfloat(c_sums.Load(32u)) / c_daylight) : 1.0f;
         const float target = lerp(c_exposure_night, c_exposure_day, day);
         const float exposure = c_sums.Load(52u) != 0u ? asfloat(c_sums.Load(48u)) : 1.0f;
-        const float goal = clamp(ratio, 0.97f * target, 1.12f * target);
+        const float goal = clamp(ratio, lerp(0.97f, 0.9f, day) * target, 1.12f * target);
         const float next = clamp(exposure * lerp(1.0f, goal / max(ratio, 0.05f), 0.1f), 0.35f, 2.5f);
         c_sums.Store2(48u, uint2(asuint(next), 1u));
     }
@@ -690,7 +694,8 @@ void CaptureCS(uint3 id : SV_DispatchThreadID)
         // stored colour.
         const float peak = max(color.r, max(color.g, color.b));
         const float glow = smoothstep(0.72f, 1.0f, peak);
-        color *= 1.0f + c_emissive * glow * glow;
+        const float day = c_sums.Load(36u) != 0u ? saturate(asfloat(c_sums.Load(32u)) / c_daylight) : 1.0f;
+        color *= 1.0f + c_emissive * (1.0f - day) * glow * glow;
     }
     c_picture[index] = uint2(pack_r11g11b10(color), asuint(z));
     // Averages of the sky and of the scene (8-bit units, glow clipped); the EFB outside the
@@ -743,7 +748,7 @@ cbuffer RtEmit : register(b0)
 };
 Texture2D<float4> e_color : register(t0);
 Texture2D<float> e_depth_tex : register(t1);
-ByteAddressBuffer e_draws : register(t2);             // the glow draws (RtDraw)
+ByteAddressBuffer e_draws : register(t2);             // per draw: its triangles and the table's light
 ByteAddressBuffer e_triangles : register(t3);         // their eye-space triangles (36 bytes)
 StructuredBuffer<uint> e_added : register(t4);        // per sample: light the glows added
 RWByteAddressBuffer e_found : register(u0);           // count; per glow light (kEmitStride) position,
@@ -763,11 +768,18 @@ groupshared float4 s_glow_a[64];
 groupshared float4 s_glow_b[64];
 groupshared float s_glow_area[64];
 
+// e_draws records of the glow draws (SceneRayTracer::glow_lights_, 32 bytes): first triangle, count, the
+// table's colour (RGBA8), its intensity; spare, pulse, flags, spare. Flags: the light scales by the
+// intensity; it takes the table's colour.
+static const uint kGlowTableIntensity = 4u;
+static const uint kGlowTableColor = 8u;
+
 // One group per glow draw.
 [numthreads(64, 1, 1)]
 void GlowEmitCS(uint3 group : SV_GroupID, uint gi : SV_GroupIndex)
 {
-    const uint2 range = e_draws.Load2(group.x * 32u + 16u);   // first triangle, count
+    const uint4 entry = e_draws.Load4(group.x * 32u);
+    const uint2 range = entry.xy;   // first triangle, count
     float4 a = float4(0.0f, 0.0f, 0.0f, 0.0f);   // power rgb, weight (luminance x area)
     float4 b = float4(0.0f, 0.0f, 0.0f, 0.0f);   // weighted centre, weighted |centre|^2
     float area_sum = 0.0f;
@@ -783,9 +795,16 @@ void GlowEmitCS(uint3 group : SV_GroupID, uint gi : SV_GroupIndex)
             const int2 s = int2(floor(q / float(e_factor)));
             if (all(s >= 0) && all(s < int2(e_sample_size))) {
                 const float3 added = unpack_r11g11b10(e_added[uint(s.y) * e_sample_size.x + uint(s.x)]);
-                const float w = luminance(added) * area;
-                if (luminance(added) > 0.02f) {
-                    a += float4(added * area, w);
+                const float l = luminance(added);
+                if (l > 0.02f) {
+                    // Over a bright background the added light loses the channels the background had
+                    // already filled (white fire over orange lava measures blue): where the picture
+                    // reaches white its colour is the one shown.
+                    const float3 shown = e_color.Load(int3(clamp(int2(q), int2(0, 0), int2(e_target_size) - 1), 0)).rgb;
+                    const float filled = smoothstep(0.8f, 1.0f, max(shown.r, max(shown.g, shown.b)));
+                    const float3 hue = lerp(added / l, shown / max(luminance(shown), 1e-3f), filled);
+                    const float w = l * area;
+                    a += float4(hue * w, w);
                     b += float4(c * w, dot(c, c) * w);
                     area_sum += area;
                 }
@@ -810,7 +829,18 @@ void GlowEmitCS(uint3 group : SV_GroupID, uint gi : SV_GroupIndex)
         const float spread = sqrt(max(s_glow_b[0].w / w - dot(centre, centre), 0.0f));
         const float radius = max(spread, 0.5f * sqrt(s_glow_area[0]));
         // A glow's texture covers about a quarter of its quad.
-        const float3 power = s_glow_a[0].rgb * (0.25f * e_gain);
+        float3 power = s_glow_a[0].rgb * (0.25f * e_gain);
+        const uint flags = e_draws.Load(group.x * 32u + 24u);
+        if ((flags & kGlowTableColor) != 0u) {
+            // The table's colour at the luminance the picture shows (fire is orange, not the white its
+            // sprites clip to).
+            const float3 tint = float3(float(entry.z >> 24u), float((entry.z >> 16u) & 0xFFu),
+                                       float((entry.z >> 8u) & 0xFFu)) / 255.0f;
+            power = tint / max(luminance(tint), 1e-3f) * luminance(power);
+        }
+        if ((flags & kGlowTableIntensity) != 0u) {
+            power *= asfloat(entry.w);
+        }
         // The largest glows are atmospheres and halos around planets and the sky, not lights.
         if (luminance(power) >= 4.0f && radius <= kEmitLargest) {
             uint index;
@@ -1897,10 +1927,14 @@ void SpatialBCS(uint3 id : SV_DispatchThreadID)
     if (g_picture_sums.Load(36u) != 0u) {
         ambient *= lerp(g_ambient.x, 1.0f, saturate(asfloat(g_picture_sums.Load(32u)) / g_ambient.y));
     }
-    // Unlit and de-lit surfaces hold the game's light at its average over direction: the traced sky
-    // and sun are taken relative to theirs over a lit surface (the sky whole, the sun at a mean facing
-    // of 0.55): sunlit faces above 1, shade below, the whole near the game's level.
-    const float norm = max(g_sun_light.w + 0.55f * luminance(g_sun_light.rgb), 0.25f);
+    // Unlit and de-lit surfaces: the game painted them for full light. Under a bright sky a face
+    // square to the sun with the sky open shows its colour as drawn and shade falls to the sky's
+    // share (key to fill about 3:1, the sun carries the day); under a dark sky the light is taken
+    // against a mean facing of 0.55 (lamps and glows carry the night).
+    const float day_sky = g_picture_sums.Load(36u) != 0u
+                              ? saturate(asfloat(g_picture_sums.Load(32u)) / max(g_ambient.y, 1e-3f))
+                              : 1.0f;
+    const float norm = max(g_sun_light.w + lerp(0.55f, 1.0f, day_sky) * luminance(g_sun_light.rgb), 0.25f);
     float3 lighting = (ambient * light.sky + sun) / norm + points;
     // With the sky open: what the picture capture keeps (no feedback through the sky and bounce).
     float3 open = (ambient + sun) / norm + points;
@@ -1991,10 +2025,15 @@ void SpatialBCS(uint3 id : SV_DispatchThreadID)
     // (point lights). The composite's shoulder takes them towards white-hot; the capture passes
     // what it rolls off to the bloom.
     if (tri != 0u) {
-        const uint2 emission = g_draws.Load2(min(draw_flags >> 16u, max(g_draw_count, 1u) - 1u) * kDrawStride + 8u);
+        const uint record = min(draw_flags >> 16u, max(g_draw_count, 1u) - 1u) * kDrawStride;
+        const uint2 emission = g_draws.Load2(record + 8u);
         const uint kind = emission.x & 3u;
         if ((emission.x & kEmitNamed) != 0u && kind != 0u && (emission.x & kEmitNoLight) == 0u) {
-            const float intensity = asfloat(emission.y);
+            // Its own surface's brightness: the table's glow, else its light's intensity.
+            const uint table_flags = g_draws.Load(record + 24u);
+            const float intensity = (table_flags & kDrawTableGlow) != 0u
+                                        ? float(table_flags >> 16u) / 65535.0f * kDrawGlowScale
+                                        : asfloat(emission.y);
             if (kind != kEmitArea) {
                 halo = g_self.y * min(intensity, 3.0f);
             }

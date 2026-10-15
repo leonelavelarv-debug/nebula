@@ -1646,6 +1646,9 @@ StructuredBuffer<uint> m_tiles : register(t3);
 StructuredBuffer<uint2> m_under : register(t4);
 // The frame as the game drew it with its water (a copy after the water pass; the water composite only).
 Texture2D<float4> m_scene : register(t5);
+// The frame just before the translucent phases (a copy after the lighting and reflections composite): the
+// seabed and what stands in the water, without the water. Read when m_water2.y > 0.
+Texture2D<float4> m_opaque : register(t6);
 
 struct CompositeOut
 {
@@ -1730,7 +1733,13 @@ Blend blend_samples(float2 pixel, float3 p, bool water)
             const float f0 = lerp(surface_class == kMetalClass ? kDielectricF0 : c.y, class_params(kMetalClass).y, metal);
             // Samples too rough to reflect (ReflectTraceCS: highlights only) take no reflected light,
             // only their glint.
-            const float k = rough >= 0.62f ? 0.0f : fresnel(f0, max(rough * rough, 1e-3f), dot(n, v)) * sample_weight;
+            // Opaque dielectrics reflect half as much at grazing angles as Schlick has it (the bright sky
+            // outlined objects); metal, water and glass keep it.
+            const bool clear = surface_class >= 4u || metal > 0.5f;
+            const float graze = clear ? 1.0f : 0.5f;
+            const float alpha_k = max(rough * rough, 1e-3f);
+            const float k = rough >= 0.62f ? 0.0f
+                          : (f0 + (fresnel(f0, alpha_k, dot(n, v)) - f0) * graze) * sample_weight;
             const float3 light = min(unpack_r11g11b10(sample.x), 1.0f);
             b.sum += light * (k * bw);
             // How much of the surface's own colour the reflection takes away: all of it at cover 1
@@ -2062,21 +2071,46 @@ CompositeOut WaterCompositePS(float4 position : SV_Position)
                                         dot(float3(to_world[0].z, to_world[1].z, to_world[2].z), shift_world));
         const float2 wobble = clamp(eye_to_pixel(m_projection, m_viewport, p + shift_eye) - pixel, -24.0f, 24.0f);
         const float px_per_unit = 0.5f * m_viewport.w * abs(m_projection.z) / max(-p.z, 1.0f);
-        const float radius = clamp(40.0f * px_per_unit, 1.5f, 28.0f);
+        const float radius = clamp(40.0f * px_per_unit, 5.0f, 28.0f);
         const float2 lo = m_viewport.xy;
         const float2 hi = m_viewport.xy + m_viewport.zw - 1.0f;
-        float3 water = m_scene.Load(int3(int2(clamp(position.xy + wobble, lo, hi)), 0)).rgb;
-        float taps = 1.0f;
-        [unroll] for (uint k = 0u; k < 12u; ++k) {
-            const float a = float(k) * 2.39996f;
-            const float2 o = float2(cos(a), sin(a)) * (radius * sqrt((float(k) + 0.5f) / 12.0f)) + wobble;
-            const float tz = water_z(pixel + o);
-            if (tz != 0.0f && abs(tz - p.z) <= abs(p.z) * 0.08f + 20.0f) {
-                water += m_scene.Load(int3(int2(clamp(position.xy + o, lo, hi)), 0)).rgb;
-                taps += 1.0f;
+        float3 water;
+        if (m_water2.y > 0.0f) {
+            // The water layer the game drew (the frame with it less the frame before it) low-passed by a
+            // bilateral filter (its tiled texture goes, its colour and gradient stay), over the seabed as it
+            // lies (sharp), moved by the waves' refraction where the moved point is water too.
+            const int2 at = int2(clamp(position.xy, lo, hi));
+            const float3 layer_c = m_scene.Load(int3(at, 0)).rgb - m_opaque.Load(int3(at, 0)).rgb;
+            float3 layer = layer_c;
+            float taps = 1.0f;
+            [unroll] for (uint k = 0u; k < 16u; ++k) {
+                const float a = float(k) * 2.39996f;
+                const int2 q = int2(clamp(position.xy + float2(cos(a), sin(a)) * (radius * sqrt((float(k) + 0.5f) / 16.0f)), lo, hi));
+                const float3 c = m_scene.Load(int3(q, 0)).rgb - m_opaque.Load(int3(q, 0)).rgb;
+                const float3 d = c - layer_c;
+                const float w = exp(-dot(d, d) / 0.02f);
+                layer += c * w;
+                taps += w;
             }
+            layer /= taps;
+            const bool moved = water_z(pixel + wobble) != 0.0f;
+            const float3 seabed = m_opaque.Load(int3(int2(clamp(position.xy + (moved ? wobble : 0.0f), lo, hi)), 0)).rgb;
+            water = max(seabed + layer, 0.0f);
+        } else {
+            const float3 centre = m_scene.Load(int3(int2(clamp(position.xy + wobble, lo, hi)), 0)).rgb;
+            water = centre;
+            float taps = 1.0f;
+            [unroll] for (uint k = 0u; k < 16u; ++k) {
+                const float a = float(k) * 2.39996f;
+                const float2 o = float2(cos(a), sin(a)) * (radius * sqrt((float(k) + 0.5f) / 16.0f)) + wobble;
+                const float3 c = m_scene.Load(int3(int2(clamp(position.xy + o, lo, hi)), 0)).rgb;
+                const float3 d = c - centre;
+                const float w = exp(-dot(d, d) / 0.02f);
+                water += c * w;
+                taps += w;
+            }
+            water /= taps;
         }
-        water /= taps;
         // Shallows: the sunlight the waves focus on the seabed (its own caustics, moving).
         const float shallow = floor_z != 0.0f ? exp(-path / 120.0f) : 0.0f;
         if (shallow > 0.0f && m_water2.w > 0.0f) {
@@ -2090,7 +2124,7 @@ CompositeOut WaterCompositePS(float4 position : SV_Position)
             const float foam = shore * smoothstep(0.45f, 0.7f, lace) * m_water2.z;
             water = lerp(water, max(luminance(water), 0.75f).xxx * float3(1.0f, 1.0f, 1.02f), saturate(foam));
         }
-        const float cover = m_water2.y * share;
+        const float cover = abs(m_water2.y) * share;
         under_add = water * cover;
         under_keep = (1.0f - cover).xxx;
     }
@@ -2182,12 +2216,13 @@ CompositeOut UnderwaterPS(float4 position : SV_Position)
         add += sun * sum * (span / 8.0f) * (shafts * 2e-4f * phase);
     }
     // The water between the camera and what the pixel shows: its light fades with the depth of water
-    // it crosses and the light the water scatters (its teal) takes its place: murky with distance, the
-    // near seabed readable (0.22 of the lake body's absorption; 0.35 was a little too dark).
+    // it crosses and the light the water scatters takes its place: clear for the first 600 units
+    // (the player sees what they do), a light blue-teal veil over the far distance (measured: 250
+    // units and 0.0008 per unit left Beach Bowl's lagoon murky).
     {
-        const float span = sky ? 4000.0f : length(p);
-        const float3 t = exp(-m_water.rgb * span * 0.18f);
-        const float3 scatter = (sun * 0.4f + 0.15f) * float3(0.09f, 0.5f, 0.56f);
+        const float span = max((sky ? 4000.0f : length(p)) - 600.0f, 0.0f);
+        const float3 t = exp(-float3(0.00032f, 0.00016f, 0.00012f) * span);
+        const float3 scatter = (sun * 0.4f + 0.25f) * float3(0.16f, 0.58f, 0.72f);
         add = add * t + scatter * (1.0f - t);
         keep *= t;
     }
