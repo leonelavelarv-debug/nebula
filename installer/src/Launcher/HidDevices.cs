@@ -30,6 +30,8 @@ namespace Nebula.Launcher
         [StructLayout(LayoutKind.Sequential)]
         private struct SpDeviceInterfaceData { public int Size; public Guid Class; public int Flags; public IntPtr Reserved; }
         [StructLayout(LayoutKind.Sequential)]
+        private struct SpDevinfoData { public int Size; public Guid Class; public int DevInst; public IntPtr Reserved; }
+        [StructLayout(LayoutKind.Sequential)]
         private struct HiddAttributes { public int Size; public ushort Vendor, Product, Version; }
         [StructLayout(LayoutKind.Sequential)]
         private struct HidpCaps
@@ -55,6 +57,8 @@ namespace Nebula.Launcher
         [DllImport("setupapi.dll", CharSet = CharSet.Unicode)] private static extern IntPtr SetupDiGetClassDevsW(ref Guid guid, IntPtr enumerator, IntPtr parent, int flags);
         [DllImport("setupapi.dll")] private static extern bool SetupDiEnumDeviceInterfaces(IntPtr set, IntPtr info, ref Guid guid, int index, ref SpDeviceInterfaceData data);
         [DllImport("setupapi.dll", CharSet = CharSet.Unicode)] private static extern bool SetupDiGetDeviceInterfaceDetailW(IntPtr set, ref SpDeviceInterfaceData data, IntPtr detail, int size, out int required, IntPtr info);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode)] private static extern bool SetupDiGetDeviceInterfaceDetailW(IntPtr set, ref SpDeviceInterfaceData data, IntPtr detail, int size, out int required, ref SpDevinfoData info);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode)] private static extern bool SetupDiGetDeviceRegistryPropertyW(IntPtr set, ref SpDevinfoData info, int property, IntPtr type, byte[] buffer, int size, IntPtr required);
         [DllImport("setupapi.dll")] private static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool ReadFile(SafeFileHandle file, byte[] buffer, int size, out int read, IntPtr overlapped);
@@ -119,14 +123,20 @@ namespace Nebula.Launcher
                     if (required <= 0) continue;
                     IntPtr detail = Marshal.AllocHGlobal(required);
                     string path;
+                    var devinfo = new SpDevinfoData { Size = Marshal.SizeOf(typeof(SpDevinfoData)) };
                     try
                     {
                         Marshal.WriteInt32(detail, IntPtr.Size == 8 ? 8 : 6);
-                        if (!SetupDiGetDeviceInterfaceDetailW(set, ref data, detail, required, out required, IntPtr.Zero)) continue;
+                        if (!SetupDiGetDeviceInterfaceDetailW(set, ref data, detail, required, out required, ref devinfo)) continue;
                         path = Marshal.PtrToStringUni(new IntPtr(detail.ToInt64() + 4));
                     }
                     finally { Marshal.FreeHGlobal(detail); }
                     if (path == null) continue;
+                    // Only the vendors with their own decoders and game collections are opened (runtime enumerate_hid_pads).
+                    bool knownVendor = path.IndexOf("057e", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                       path.IndexOf("054c", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                       path.IndexOf("28de", StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (!knownVendor && !GameCollection(set, ref devinfo)) continue;
                     using (var probe = CreateFileW(path, 0, 3, IntPtr.Zero, 3, 0, IntPtr.Zero))
                     {
                         if (probe.IsInvalid) continue;
@@ -147,6 +157,20 @@ namespace Nebula.Launcher
             }
             finally { SetupDiDestroyDeviceInfoList(set); }
             return found;
+        }
+
+        /// <summary>The compatible ids name a joystick or game pad collection ("HID_DEVICE_SYSTEM_GAME", "HID_DEVICE_UP:0001_U:0005").</summary>
+        private static bool GameCollection(IntPtr set, ref SpDevinfoData info)
+        {
+            var buffer = new byte[2048];
+            if (!SetupDiGetDeviceRegistryPropertyW(set, ref info, 2 /* SPDRP_COMPATIBLEIDS */, IntPtr.Zero, buffer, buffer.Length - 4, IntPtr.Zero)) return false;
+            foreach (string id in System.Text.Encoding.Unicode.GetString(buffer).Split('\0'))
+            {
+                if (id.IndexOf("HID_DEVICE_SYSTEM_GAME", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    id.IndexOf("HID_DEVICE_UP:0001_U:0004", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    id.IndexOf("HID_DEVICE_UP:0001_U:0005", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            }
+            return false;
         }
 
         /// <summary>The device opened for synchronous reads and writes; null if it cannot be opened.</summary>
