@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -410,6 +411,7 @@ struct PipelineCachePersistenceTestAccess {
         std::filesystem::create_directories(dir);
         cache.cache_dir_ = dir;
     }
+    static void import_seed(PipelineCache& cache) { cache.import_fresh_cache_seed(); }
     static PsoKey key(unsigned id) {
         PsoKey result{};
         result.vs_hash = 0x110000u + id;
@@ -880,6 +882,54 @@ bool stale_repair_preserves_other_writer(const std::filesystem::path& root, bool
     return passed;
 }
 
+// A seed replaces a user cache of another cache version (the loader would discard it and compile
+// every shader again) and leaves a current one alone.
+bool seed_replaces_stale_cache(const std::filesystem::path& root) {
+    const auto seed_dir = root / "seed";
+    PipelineCache seed;
+    Access::set_directory(seed, seed_dir);
+    Access::seed(seed, true, 1u);
+    Access::seed(seed, false, 1u);
+    seed.flush_disk();
+
+    const auto stale_dir = root / "stale";
+    std::filesystem::create_directories(stale_dir);
+    const std::uint32_t stale_header[4] = {0x43535847u, 24u, 0u, 0u};
+    for (const bool shader : {true, false}) {
+        std::ofstream file(cache_file(stale_dir, shader), std::ios::binary);
+        file.write(reinterpret_cast<const char*>(stale_header), sizeof(stale_header));
+    }
+    const auto current_dir = root / "current";
+    PipelineCache other;
+    Access::set_directory(other, current_dir);
+    Access::seed(other, true, 2u);
+    Access::seed(other, false, 2u);
+    other.flush_disk();
+
+    if (_wputenv_s(L"GALAXY_SHADER_SEED_DIRECTORY", seed_dir.c_str()) != 0) {
+        throw std::runtime_error("cannot set GALAXY_SHADER_SEED_DIRECTORY");
+    }
+    PipelineCache stale;
+    Access::set_directory(stale, stale_dir);
+    Access::import_seed(stale);
+    Access::load(stale, true);
+    Access::load(stale, false);
+    PipelineCache current;
+    Access::set_directory(current, current_dir);
+    Access::import_seed(current);
+    Access::load(current, true);
+    Access::load(current, false);
+    (void)_wputenv_s(L"GALAXY_SHADER_SEED_DIRECTORY", L"");
+
+    bool passed = expect(read_bytes(cache_file(stale_dir, true)) == read_bytes(cache_file(seed_dir, true)) &&
+        read_bytes(cache_file(stale_dir, false)) == read_bytes(cache_file(seed_dir, false)) &&
+        Access::contains(stale, true, 1u) && Access::contains(stale, false, 1u),
+        "a stale user cache is replaced by the seed and loads its records");
+    passed &= expect(Access::contains(current, true, 2u) && !Access::contains(current, true, 1u),
+        "a current user cache is kept");
+    return passed;
+}
+
 bool shutdown_repair_retry(const std::filesystem::path& root, bool shader, bool add_new) {
     const auto dir = root / "shared";
     PipelineCache seed;
@@ -1251,6 +1301,7 @@ int main() {
             passed &= failure_retry(files.root / std::to_string(case_index++), shader, Failure::Open, true);
             passed &= new_file_failed_write_retry(files.root / std::to_string(case_index++), shader);
         }
+        passed &= seed_replaces_stale_cache(files.root / std::to_string(case_index++));
         galaxy::gx::set_pipeline_cache_persistence_test_fault(kNoWriteFault, false);
         galaxy::gx::set_pipeline_cache_persistence_test_read_fault(kNoWriteFault, false);
         galaxy::gx::set_pipeline_cache_persistence_test_load_fault(0u, kNoWriteFault, 0u);

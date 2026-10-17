@@ -1734,8 +1734,9 @@ bool replace_record_cache(
 // Optional seed import (GALAXY_SHADER_SEED_DIRECTORY=<dir>).
 //
 // <dir> holds a shaders.bin and psos.bin pair written with the current cache versions.
-// It is imported only into a fresh user cache (neither user file present), byte for byte,
-// after every record passes the same checks the loaders apply. It is not read through
+// It is imported only into a fresh user cache (neither user file present) or a stale one (a
+// shaders.bin of another cache version, which the loader would discard and rebuild by compiling
+// every shader again), byte for byte, after every record passes the same checks the loaders apply. It is not read through
 // load_disk_cache() or load_pso_key_cache(): those set repair state for the user's files,
 // which does not apply to a read-only source. The regular loaders validate the copy again.
 //
@@ -1746,10 +1747,11 @@ bool replace_record_cache(
 // Commit protocol. Every step is non-fatal; any failure falls back to compile-on-miss.
 //   1. Open both seed files with write sharing denied, so validation and copy see the same bytes.
 //   2. Take the writer lease on BOTH user files (non-blocking; busy means skip).
-//   3. Re-check under the leases that neither user file exists.
+//   3. Re-check under the leases that neither user file exists, or that the cache is still stale.
 //   4. Copy each seed file into its own CREATE_NEW temp file beside the target; flush; close.
 //   5. Publish shaders.bin first, then psos.bin, with MoveFileExW and no REPLACE_EXISTING.
 //      The move fails if the target appeared, so a concurrent winner is never overwritten.
+//      A stale cache is replaced (REPLACE_EXISTING) under the leases instead.
 // A failure between the two publishes leaves a valid shaders.bin and no psos.bin. An ordinary
 // run is in that state after it learns shaders but has not saved PSO keys yet; flush_disk()
 // creates psos.bin later. A committed shaders.bin is never deleted. Only temp files this call
@@ -1899,10 +1901,11 @@ public:
         return ok && closed;
     }
 
-    // Create-new publish: fails if `target` exists.
-    bool publish(const std::filesystem::path& target) {
+    // Create-new publish: fails if `target` exists, unless `replace` (a stale cache file).
+    bool publish(const std::filesystem::path& target, bool replace = false) {
         if (created_ && !published_ &&
-            MoveFileExW(path_.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)) {
+            MoveFileExW(path_.c_str(), target.c_str(),
+                        MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0u))) {
             published_ = true;
         }
         return published_;
@@ -1922,6 +1925,19 @@ private:
     bool published_ = false;
 };
 
+// A user shaders.bin the current loader would discard whole: another cache's magic or version.
+// psos.bin follows it (its version derives from the shader cache's), so it alone decides.
+bool user_cache_stale(const std::filesystem::path& user_shaders) {
+    FILE* f = _wfsopen(user_shaders.c_str(), L"rb", _SH_DENYNO);
+    if (f == nullptr) {
+        return false;
+    }
+    std::uint32_t header[2]{};
+    const bool read = std::fread(header, sizeof(header), 1, f) == 1;
+    std::fclose(f);
+    return read && (header[0] != kShaderCacheMagic || header[1] != kShaderCacheVersion);
+}
+
 // Returns a short static outcome string for the single log line.
 const char* import_seed_pair(
     const std::filesystem::path& seed_dir,
@@ -1933,7 +1949,8 @@ const char* import_seed_pair(
     if (ec) return "user-cache-unreadable";
     const bool psos_exist = std::filesystem::exists(user_psos, ec);
     if (ec) return "user-cache-unreadable";
-    if (shaders_exist || psos_exist) return "not-fresh";
+    const bool stale = shaders_exist && user_cache_stale(user_shaders);
+    if ((shaders_exist || psos_exist) && !stale) return "not-fresh";
 
     FILE* seed_shaders = _wfsopen(
         (seed_dir / L"shaders.bin").c_str(), L"rb", _SH_DENYWR);
@@ -1964,7 +1981,7 @@ const char* import_seed_pair(
     if (ec) return "user-cache-unreadable";
     const bool psos_now = std::filesystem::exists(user_psos, ec);
     if (ec) return "user-cache-unreadable";
-    if (shaders_now || psos_now) return "not-fresh-after-lock";
+    if (stale ? !user_cache_stale(user_shaders) : (shaders_now || psos_now)) return "not-fresh-after-lock";
 
     SeedTempFile shaders_temp, psos_temp;
     if (!shaders_temp.create(user_shaders) || !psos_temp.create(user_psos)) {
@@ -1974,9 +1991,9 @@ const char* import_seed_pair(
         !psos_temp.fill_and_close(seed_psos, psos_size)) {
         return "temp-write-failed";
     }
-    if (!shaders_temp.publish(user_shaders)) return "publish-failed";
-    if (!psos_temp.publish(user_psos)) return "imported-shaders-only";
-    return "imported";
+    if (!shaders_temp.publish(user_shaders, stale)) return "publish-failed";
+    if (!psos_temp.publish(user_psos, stale)) return "imported-shaders-only";
+    return stale ? "replaced-stale" : "imported";
 }
 }  // namespace
 

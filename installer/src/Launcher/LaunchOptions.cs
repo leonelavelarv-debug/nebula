@@ -41,6 +41,10 @@ namespace Nebula.Launcher
             env["GALAXY_STREAMLINE_DIR"] = GraphicsSettings.StreamlineDir;
             env["GALAXY_NATIVE_THP_VIDEO_DECODE"] = "1";
             env["GALAXY_DUSK_DSP_HLE"] = "0";
+            // A shader cache seed beside the runtime fills an empty cache or replaces one another
+            // version wrote, so the first start after an update does not compile every shader.
+            string seed = Path.Combine(app, "shadercache-seed", "RMGE01");
+            if (File.Exists(Path.Combine(seed, "shaders.bin"))) env["GALAXY_SHADER_SEED_DIRECTORY"] = seed;
             ApplyRecording(start, recording);
             return start;
         }
