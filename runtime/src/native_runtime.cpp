@@ -2355,6 +2355,8 @@ struct RuntimeState {
     bool host_pause_candidate_valid{};
     bool host_pause_recovery_active{};
     std::uint64_t host_pause_recoveries{};
+    // AI DMA services late by a buffer; the first kLoggedAiDmaLateProbes are logged.
+    std::uint64_t ai_dma_late_probes{};
     std::uint64_t cached_cpu_time_100ns{};
     std::uint64_t cached_cpu_time_qpc{};
     // Flag-based interrupt return: the RFI service records the
@@ -18235,7 +18237,10 @@ bool dispatch_ai_dma_interrupts(
             context,
             service_is_late_by_one_buffer);
     }
-    if (service_is_late_by_one_buffer) {
+    // A game that falls behind real time misses every buffer: one line each would put a blocking
+    // console or pipe write on this thread for each of them.
+    constexpr std::uint64_t kLoggedAiDmaLateProbes = 32u;
+    if (service_is_late_by_one_buffer && ++state.ai_dma_late_probes <= kLoggedAiDmaLateProbes) {
         // This record is emitted only on the pre-existing fatal path.  It
         // makes the host-suspension recovery rejection auditable without
         // adding hot-path tracing or weakening the hard AI DMA deadline.
@@ -33678,6 +33683,7 @@ int wmain(int argc, wchar_t** argv) {
                       << (state.host_pause_candidate_valid ? 1 : 0)
                       << " ai-repayments=" << state.ai_dma_host_pause_repayments
                       << " ai-repaid-ticks=" << state.ai_dma_host_pause_repaid_ticks
+                      << " ai-late-probes=" << state.ai_dma_late_probes
                       << '\n';
             dump_decrementer_deadline_audit(state, std::cerr, "shutdown");
             dump_nested_interrupt_audit(state, std::cerr, "shutdown");
