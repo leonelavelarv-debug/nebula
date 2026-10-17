@@ -22,6 +22,7 @@
 #include <dxgi1_6.h>
 #include <dwmapi.h>
 #include <immintrin.h>
+#include <psapi.h>
 #pragma warning(pop)
 
 #include <algorithm>
@@ -5283,6 +5284,30 @@ bool RendererD3D12::initialize(int window_width, int window_height, unsigned efb
                     IID_PPV_ARGS(&timestamp_readback_)),
                 "Create timestamp readback");
         }
+        char pass_profile[8]{};
+        std::size_t pass_profile_length = 0u;
+        if (getenv_s(&pass_profile_length, pass_profile, sizeof(pass_profile), "GALAXY_GPU_PASS_PROFILE") == 0 &&
+            pass_profile_length > 1u && pass_profile[0] != '0') {
+            D3D12_QUERY_HEAP_DESC qhd{};
+            qhd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+            qhd.Count = kFramesInFlight * kGpuPassMarks;
+            d3d_check(device_->CreateQueryHeap(&qhd, IID_PPV_ARGS(&pass_query_heap_)),
+                      "Create pass timestamp heap");
+            D3D12_HEAP_PROPERTIES hp{};
+            hp.Type = D3D12_HEAP_TYPE_READBACK;
+            D3D12_RESOURCE_DESC rd{};
+            rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            rd.Width = kFramesInFlight * kGpuPassMarks * sizeof(std::uint64_t);
+            rd.Height = 1;
+            rd.DepthOrArraySize = 1;
+            rd.MipLevels = 1;
+            rd.SampleDesc.Count = 1;
+            rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            d3d_check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                                       D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                       IID_PPV_ARGS(&pass_readback_)),
+                      "Create pass timestamp readback");
+        }
 
         // Swap chain.
         DXGI_SWAP_CHAIN_DESC1 scd{};
@@ -6578,6 +6603,7 @@ void RendererD3D12::begin_frame(bool present_swap_chain) {
         }
     }
 
+    read_gpu_passes();
     read_scene_aa_timing();
     ray_tracer_.begin_frame(frame_index_);
 
@@ -6601,6 +6627,9 @@ void RendererD3D12::begin_frame(bool present_swap_chain) {
             timestamp_query_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
             frame_slot_ * 2u);
     }
+    pass_marks_[frame_slot_] = 0u;
+    current_pass_ = GpuPass::Present;
+    mark_gpu_pass(gpu_draw_pass_);
 
     if (ring_mode_ == RingMode::Interp) {
         // One segment per game frame: the frames (chunks) of a game frame
@@ -7133,7 +7162,37 @@ void RendererD3D12::present_to_swap_chain() {
             message
                 << " gpu-samples=" << telemetry_gpu_samples_
                 << " gpu-total-ms=" << telemetry_gpu_ms_
-                << " gpu-scope=completed-renderer-command-lists"
+                << " gpu-scope=completed-renderer-command-lists";
+            if (pass_query_heap_) {
+                message << " gpu-pass-ms(draw/efb-copy/xfb-copy/present)=" << telemetry_pass_ms_[0] << '/'
+                        << telemetry_pass_ms_[1] << '/' << telemetry_pass_ms_[2] << '/'
+                        << telemetry_pass_ms_[3] << " gpu-phase-ms(0-9)=";
+                for (unsigned phase = 0u; phase < 10u; ++phase) {
+                    message << (phase != 0u ? "/" : "")
+                            << telemetry_pass_ms_[static_cast<unsigned>(GpuPass::Phase0) + phase];
+                }
+                telemetry_pass_ms_ = {};
+            }
+            if (adapter3_) {
+                // Video memory against the OS budget: past the local budget, resources live in system
+                // memory and the GPU reads them over the bus.
+                DXGI_QUERY_VIDEO_MEMORY_INFO local{};
+                DXGI_QUERY_VIDEO_MEMORY_INFO nonlocal{};
+                if (SUCCEEDED(adapter3_->QueryVideoMemoryInfo(0u, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)) &&
+                    SUCCEEDED(adapter3_->QueryVideoMemoryInfo(0u, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonlocal))) {
+                    message << " vram-mb(local-use/budget/nonlocal-use/budget)=" << (local.CurrentUsage >> 20u) << '/'
+                            << (local.Budget >> 20u) << '/' << (nonlocal.CurrentUsage >> 20u) << '/'
+                            << (nonlocal.Budget >> 20u);
+                }
+            }
+            PROCESS_MEMORY_COUNTERS_EX process_memory{};
+            if (K32GetProcessMemoryInfo(GetCurrentProcess(),
+                                        reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&process_memory),
+                                        sizeof(process_memory))) {
+                message << " process-mb(working-set/private)=" << (process_memory.WorkingSetSize >> 20u) << '/'
+                        << (process_memory.PrivateUsage >> 20u);
+            }
+            message
                 << " no-xfb-presents="
                 << telemetry_no_xfb_present_count_
                 << " backbuffer-clears="
@@ -7182,6 +7241,58 @@ void RendererD3D12::present_to_swap_chain() {
     }
 }
 
+void RendererD3D12::set_gpu_draw_phase(std::uint8_t phase) {
+    const GpuPass pass = phase < kGpuPassKinds - static_cast<unsigned>(GpuPass::Phase0)
+        ? static_cast<GpuPass>(static_cast<unsigned>(GpuPass::Phase0) + phase)
+        : GpuPass::Draw;
+    const bool drawing = current_pass_ == gpu_draw_pass_;
+    gpu_draw_pass_ = pass;
+    if (drawing) {
+        mark_gpu_pass(pass);
+    }
+}
+
+void RendererD3D12::mark_gpu_pass(GpuPass pass) {
+    if (!pass_query_heap_ || pass == current_pass_ || ring_mode_ != RingMode::Normal) {
+        return;
+    }
+    unsigned& marks = pass_marks_[frame_slot_];
+    // The last entry is the list's end.
+    if (marks + 1u >= kGpuPassMarks) {
+        return;
+    }
+    command_list_->EndQuery(pass_query_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                            frame_slot_ * kGpuPassMarks + marks);
+    pass_kinds_[frame_slot_][marks] = pass;
+    ++marks;
+    current_pass_ = pass;
+}
+
+// Render thread, after the slot's fence: its list's pass intervals.
+void RendererD3D12::read_gpu_passes() {
+    const unsigned count = pass_resolved_[frame_slot_];
+    pass_resolved_[frame_slot_] = 0u;
+    if (!pass_readback_ || count < 2u || timestamp_frequency_ == 0u) {
+        return;
+    }
+    const SIZE_T offset = static_cast<SIZE_T>(frame_slot_) * kGpuPassMarks * sizeof(std::uint64_t);
+    const D3D12_RANGE read_range{offset, offset + count * sizeof(std::uint64_t)};
+    void* mapped = nullptr;
+    if (FAILED(pass_readback_->Map(0, &read_range, &mapped))) {
+        return;
+    }
+    const auto* ticks = reinterpret_cast<const std::uint64_t*>(static_cast<const std::byte*>(mapped) + offset);
+    const double ms_per_tick = 1000.0 / static_cast<double>(timestamp_frequency_);
+    for (unsigned i = 0; i + 1u < count; ++i) {
+        if (ticks[i + 1u] >= ticks[i]) {
+            telemetry_pass_ms_[static_cast<unsigned>(pass_kinds_[frame_slot_][i])] +=
+                static_cast<double>(ticks[i + 1u] - ticks[i]) * ms_per_tick;
+        }
+    }
+    const D3D12_RANGE no_write{0, 0};
+    pass_readback_->Unmap(0, &no_write);
+}
+
 std::uint64_t RendererD3D12::end_frame(
     bool present_swap_chain,
     SubmissionCallback on_submitted,
@@ -7207,6 +7318,16 @@ std::uint64_t RendererD3D12::end_frame(
             timestamp_query_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
             frame_slot_ * 2u, 2u, timestamp_readback_.Get(),
             static_cast<UINT64>(frame_slot_) * 2u * sizeof(std::uint64_t));
+    }
+    if (pass_query_heap_ && pass_marks_[frame_slot_] != 0u) {
+        const unsigned base = frame_slot_ * kGpuPassMarks;
+        const unsigned count = pass_marks_[frame_slot_] + 1u;
+        command_list_->EndQuery(pass_query_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                                base + pass_marks_[frame_slot_]);
+        command_list_->ResolveQueryData(pass_query_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, base, count,
+                                        pass_readback_.Get(),
+                                        static_cast<UINT64>(base) * sizeof(std::uint64_t));
+        pass_resolved_[frame_slot_] = count;
     }
     const HRESULT close_hr = command_list_->Close();
     if (FAILED(close_hr)) {
@@ -11773,6 +11894,11 @@ void RendererD3D12::record_conversion_blit(
 }
 
 void RendererD3D12::copy_efb_to_xfb(const EfbCopyParams& params, XfbTexture& dest) {
+    mark_gpu_pass(GpuPass::XfbCopy);
+    struct PassEnd {
+        RendererD3D12& renderer;
+        ~PassEnd() { renderer.mark_gpu_pass(renderer.gpu_draw_pass_); }
+    } pass_end{*this};
     // The caller publishes a new XFB serial only after this returns. A
     // missing target must fail closed rather than masquerade as a new frame.
     if (!dest.texture) {
@@ -11857,6 +11983,11 @@ void RendererD3D12::copy_efb_to_xfb(const EfbCopyParams& params, XfbTexture& des
 
 bool RendererD3D12::copy_efb_to_texture(
     const EfbCopyParams& params, TextureCache& textures, bool is_depth_copy) {
+    mark_gpu_pass(GpuPass::EfbCopy);
+    struct PassEnd {
+        RendererD3D12& renderer;
+        ~PassEnd() { renderer.mark_gpu_pass(renderer.gpu_draw_pass_); }
+    } pass_end{*this};
     // SMG composites its visible frame from EFB->texture captures (the scene
     // is drawn, copied out at 640x456, and the final pass samples the
     // capture), so this path is required for any 3D pixel to reach the
@@ -14179,6 +14310,7 @@ bool RendererD3D12::present(
     const bool can_blit =
         source != nullptr && source->texture && blit_pipeline_ &&
         s_blit_root_sig;
+    mark_gpu_pass(GpuPass::Present);
     if (!can_blit) {
         ++telemetry_no_xfb_present_count_;
         throw std::runtime_error(

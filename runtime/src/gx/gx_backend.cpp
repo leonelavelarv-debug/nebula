@@ -7907,6 +7907,10 @@ void GxBackend::note_rt_phase(std::uint8_t phase) {
         return;
     }
     rt_phase_ = phase;
+    if (renderer_.gpu_pass_profile()) [[unlikely]] {
+        flush_pending_draw_batch();
+        renderer_.set_gpu_draw_phase(phase);
+    }
     using motion::ScenePhase;
     if (phase == static_cast<std::uint8_t>(ScenePhase::Xlu) ||
         phase == static_cast<std::uint8_t>(ScenePhase::ListXlu) ||
@@ -7953,6 +7957,9 @@ void GxBackend::on_fifo_marker(FifoMarker marker, const std::array<float, 12>* v
         end_side_layer();
     }
     scene_phase_ = marker == FifoMarker::SceneBegin;
+    if (renderer_.gpu_pass_profile()) [[unlikely]] {
+        renderer_.set_gpu_draw_phase(0xFFu);
+    }
     if (marker == FifoMarker::SceneBegin) {
         rt_mirror_pass_ = false;
         renderer_.set_scene_view(view);

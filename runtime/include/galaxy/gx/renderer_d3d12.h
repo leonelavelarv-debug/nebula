@@ -773,6 +773,9 @@ public:
     // semantics. `is_depth_copy` is true when the PE pixel format is Z24 at copy time
     // (Dolphin BPStructs BPMEM_TRIGGER_EFB_COPY).
     void copy_efb_to_xfb(const EfbCopyParams& params, XfbTexture& dest);
+    // GALAXY_GPU_PASS_PROFILE: the scene phase of the draws that follow (0xFF: none).
+    [[nodiscard]] bool gpu_pass_profile() const noexcept { return pass_query_heap_ != nullptr; }
+    void set_gpu_draw_phase(std::uint8_t phase);
     [[nodiscard]] bool copy_efb_to_texture(
         const EfbCopyParams& params,
         TextureCache& textures,
@@ -1066,6 +1069,22 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> timestamp_readback_;
     std::array<bool, kFramesInFlight> timestamp_pending_{};
     std::uint64_t timestamp_frequency_ = 0;
+    // GALAXY_GPU_PASS_PROFILE=1: GPU time of each frame list split by pass kind, from timestamps
+    // written where the kind changes; reported with [present-stats] as gpu-pass-ms. Draws inside a
+    // 3D scene count by the game's scene phase (4 + phase) when draw identities report it.
+    enum class GpuPass : std::uint8_t { Draw, EfbCopy, XfbCopy, Present, Phase0 };
+    static constexpr unsigned kGpuPassKinds = 14u;
+    static constexpr unsigned kGpuPassMarks = 128u;
+    void mark_gpu_pass(GpuPass pass);
+    void read_gpu_passes();
+    GpuPass gpu_draw_pass_ = GpuPass::Draw;
+    Microsoft::WRL::ComPtr<ID3D12QueryHeap> pass_query_heap_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> pass_readback_;
+    std::array<std::array<GpuPass, kGpuPassMarks>, kFramesInFlight> pass_kinds_{};
+    std::array<unsigned, kFramesInFlight> pass_marks_{};
+    std::array<unsigned, kFramesInFlight> pass_resolved_{};
+    std::array<double, kGpuPassKinds> telemetry_pass_ms_{};
+    GpuPass current_pass_ = GpuPass::Draw;
 
     // EFB.
     Microsoft::WRL::ComPtr<ID3D12Resource> efb_color_;
