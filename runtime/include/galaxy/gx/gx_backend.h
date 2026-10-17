@@ -62,6 +62,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <thread>
 #include <type_traits>
@@ -1467,6 +1468,8 @@ private:
         std::uint64_t resident_epoch = 0;
         std::uint32_t resident_offset = 0;  // in vertices
         std::uint32_t resident_units = 0;
+        // Video-memory block: copied at the end of the chunk that filled it, drawn from the next.
+        std::uint64_t resident_ready_chunk = 0;
         std::vector<VertexDecodeGuestRange> guest_array_reads;
         // Disjoint coarse masks prove that no dependency can overlap a dirty
         // range. All collisions still use the original exact range checks.
@@ -1540,6 +1543,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> resident_vertex_buffer_;
     std::byte* resident_vertex_mapped_ = nullptr;
     D3D12_GPU_VIRTUAL_ADDRESS resident_vertex_gpu_ = 0;
+    // Discrete GPUs: the buffer is in video memory and filled by copies from the vertex ring.
+    // In an upload heap every replay of a cached run made the GPU read it over the bus.
+    bool resident_vertex_video_memory_ = false;
     ID3D12Device* resident_vertex_device_ = nullptr;
     bool resident_vertex_buffer_failed_ = false;
     std::uint64_t frame_resident_vertex_hits_ = 0;
@@ -1551,7 +1557,10 @@ private:
     void release_decoded_entry_residency(DecodedPacketRunCacheEntry& entry) noexcept;
     // Gives `entry` a resident block holding its vertices; false when disabled,
     // out of space or the buffer could not be created (the ring path is used).
-    [[nodiscard]] bool make_decoded_entry_resident(DecodedPacketRunCacheEntry& entry);
+    // A video-memory block filled now is not drawable until the next chunk: false,
+    // with `staged_ring_offset` the vertex-ring copy this chunk draws from.
+    [[nodiscard]] bool make_decoded_entry_resident(DecodedPacketRunCacheEntry& entry,
+                                                   std::optional<std::size_t>& staged_ring_offset);
     // Render-owner cache-off packet staging, bounded by the existing 8MiB cap.
     std::vector<GxVertexOut> decoded_packet_vertex_scratch_;
     bool stop_render_thread_ = false;

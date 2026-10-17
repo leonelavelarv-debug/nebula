@@ -130,6 +130,10 @@ static std::atomic<bool> s_exclusive_fullscreen_active{false};
 static RECT s_windowed_rect{};
 // The last internal resolution refused for the video-memory budget (0: none).
 static std::atomic<unsigned> s_efb_scale_rejected{0u};
+// A video-memory resident vertex buffer between its copies: vertex input and ray-tracing geometry.
+constexpr D3D12_RESOURCE_STATES kResidentVertexReadState = static_cast<D3D12_RESOURCE_STATES>(
+    static_cast<int>(D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER) |
+    static_cast<int>(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
 
 static unsigned efb_scale_filling(UINT width, UINT height) {
     if (width == 0u || height == 0u) {
@@ -5256,6 +5260,12 @@ bool RendererD3D12::initialize(int window_width, int window_height, unsigned efb
             queue_->GetTimestampFrequency(&timestamp_frequency_),
             "GetTimestampFrequency");
         QueryPerformanceFrequency(&qpc_frequency_);
+        {
+            D3D12_FEATURE_DATA_ARCHITECTURE1 architecture{};
+            unified_memory_ = SUCCEEDED(device_->CheckFeatureSupport(
+                                  D3D12_FEATURE_ARCHITECTURE1, &architecture, sizeof(architecture))) &&
+                              architecture.UMA != FALSE;
+        }
 
         if (gpu_timestamps_enabled()) {
             D3D12_QUERY_HEAP_DESC qhd{};
@@ -6630,6 +6640,16 @@ void RendererD3D12::begin_frame(bool present_swap_chain) {
     pass_marks_[frame_slot_] = 0u;
     current_pass_ = GpuPass::Present;
     mark_gpu_pass(gpu_draw_pass_);
+    if (resident_vertex_destination_ != nullptr) {
+        D3D12_RESOURCE_BARRIER to_read{};
+        to_read.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        to_read.Transition.pResource = resident_vertex_destination_;
+        to_read.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        to_read.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        to_read.Transition.StateAfter = kResidentVertexReadState;
+        command_list_->ResourceBarrier(1, &to_read);
+    }
+    resident_vertex_read_state_ = resident_vertex_destination_ != nullptr;
 
     if (ring_mode_ == RingMode::Interp) {
         // One segment per game frame: the frames (chunks) of a game frame
@@ -7293,6 +7313,31 @@ void RendererD3D12::read_gpu_passes() {
     pass_readback_->Unmap(0, &no_write);
 }
 
+// After the list's draws: they read the buffer, so the copies wait for them, and no draw of this
+// list reads a block the copies fill.
+void RendererD3D12::record_resident_vertex_copies() {
+    if (resident_vertex_copies_.empty() || resident_vertex_destination_ == nullptr) {
+        resident_vertex_copies_.clear();
+        return;
+    }
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = resident_vertex_destination_;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore =
+        resident_vertex_read_state_ ? kResidentVertexReadState : D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    command_list_->ResourceBarrier(1, &barrier);
+    for (const ResidentVertexCopy& copy : resident_vertex_copies_) {
+        command_list_->CopyBufferRegion(resident_vertex_destination_, copy.destination_offset,
+                                        vertex_ring_.resource(), copy.ring_offset, copy.bytes);
+    }
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = kResidentVertexReadState;
+    command_list_->ResourceBarrier(1, &barrier);
+    resident_vertex_copies_.clear();
+}
+
 std::uint64_t RendererD3D12::end_frame(
     bool present_swap_chain,
     SubmissionCallback on_submitted,
@@ -7310,6 +7355,7 @@ std::uint64_t RendererD3D12::end_frame(
         ray_tracer_.flush_late(command_list_.Get(), rt_sources(), &RendererD3D12::rt_allocate, this);
         bound_pipeline_ = nullptr;
     }
+    record_resident_vertex_copies();
     if (timestamp_query_heap_ && timestamp_readback_) {
         command_list_->EndQuery(
             timestamp_query_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,

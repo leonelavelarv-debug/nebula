@@ -664,6 +664,19 @@ public:
         resident_vertex_base_ = base;
         resident_vertex_bytes_ = bytes;
     }
+    // The device's memory architecture (D3D12_FEATURE_ARCHITECTURE1): the GPU reads system
+    // memory as its own (integrated GPUs).
+    [[nodiscard]] bool unified_memory_architecture() const noexcept { return unified_memory_; }
+    // A resident vertex buffer in video memory, filled by copies from the vertex ring that the
+    // frame's command list records at its end (null: an upload-heap buffer written directly).
+    void set_resident_vertex_copy_destination(ID3D12Resource* buffer) noexcept {
+        resident_vertex_destination_ = buffer;
+        resident_vertex_copies_.clear();
+    }
+    void queue_resident_vertex_copy(std::uint64_t destination_offset, std::size_t ring_offset,
+                                    std::size_t bytes) {
+        resident_vertex_copies_.push_back({destination_offset, ring_offset, bytes});
+    }
     // Swap-chain presents per second over the last second (any source).
     [[nodiscard]] double measured_present_hz() const noexcept {
         return measured_present_hz_.load(std::memory_order_relaxed);
@@ -1319,6 +1332,17 @@ private:
     [[nodiscard]] bool temporal_inputs_match(const TemporalUpscaleInputs& in) const;
     D3D12_GPU_VIRTUAL_ADDRESS resident_vertex_base_ = 0;
     std::uint64_t resident_vertex_bytes_ = 0;
+    bool unified_memory_ = false;
+    struct ResidentVertexCopy {
+        std::uint64_t destination_offset = 0;
+        std::size_t ring_offset = 0;
+        std::size_t bytes = 0;
+    };
+    ID3D12Resource* resident_vertex_destination_ = nullptr;
+    // This list moved the buffer to its read state at its start (a buffer created mid-list is COMMON).
+    bool resident_vertex_read_state_ = false;
+    std::vector<ResidentVertexCopy> resident_vertex_copies_;
+    void record_resident_vertex_copies();
     static constexpr std::uint32_t kMaxBlendPairs = 8192u;
     // Never a pair's verdict (stays zero, which passes): stripe draws, paired
     // per particle, blend without the geometry check.

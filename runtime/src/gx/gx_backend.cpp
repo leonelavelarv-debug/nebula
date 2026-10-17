@@ -5275,8 +5275,14 @@ bool GxBackend::ensure_resident_vertex_buffer() {
     // A different device means the old one was shut down (drained) first.
     release_resident_vertex_buffer();
     resident_vertex_device_ = device;
+    // GALAXY_GX_RESIDENT_VERTICES_VIDEO_MEMORY=0/1 overrides the choice by memory architecture.
+    static const std::uint64_t video_memory_override =
+        read_env_u64("GALAXY_GX_RESIDENT_VERTICES_VIDEO_MEMORY", 2u);
+    resident_vertex_video_memory_ = video_memory_override == 2u
+        ? !renderer_.unified_memory_architecture()
+        : video_memory_override != 0u;
     D3D12_HEAP_PROPERTIES hp{};
-    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    hp.Type = resident_vertex_video_memory_ ? D3D12_HEAP_TYPE_DEFAULT : D3D12_HEAP_TYPE_UPLOAD;
     D3D12_RESOURCE_DESC rd{};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     rd.Width = static_cast<UINT64>(kResidentDecodedVertexCapacity) *
@@ -5292,9 +5298,11 @@ bool GxBackend::ensure_resident_vertex_buffer() {
     const D3D12_RANGE no_read{0, 0};
     if (FAILED(device->CreateCommittedResource(
             &hp, D3D12_HEAP_FLAG_NONE, &rd,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            IID_PPV_ARGS(&buffer))) ||
-        FAILED(buffer->Map(0, &no_read, &mapped)) || mapped == nullptr) {
+            resident_vertex_video_memory_ ? D3D12_RESOURCE_STATE_COMMON
+                                          : D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr, IID_PPV_ARGS(&buffer))) ||
+        (!resident_vertex_video_memory_ &&
+         (FAILED(buffer->Map(0, &no_read, &mapped)) || mapped == nullptr))) {
         // Not fatal: every hit keeps using the per-frame ring upload.
         resident_vertex_buffer_failed_ = true;
         std::cerr << "[gx-resident-vertices] buffer creation failed; "
@@ -5307,6 +5315,10 @@ bool GxBackend::ensure_resident_vertex_buffer() {
     resident_vertex_gpu_ = resident_vertex_buffer_->GetGPUVirtualAddress();
     resident_vertices_.reset(kResidentDecodedVertexCapacity, kFramesInFlight);
     renderer_.set_resident_vertices(resident_vertex_gpu_, resident_vertex_buffer_->GetDesc().Width);
+    renderer_.set_resident_vertex_copy_destination(
+        resident_vertex_video_memory_ ? resident_vertex_buffer_.Get() : nullptr);
+    std::cerr << "[gx-resident-vertices] memory=" << (resident_vertex_video_memory_ ? "video" : "upload")
+              << " bytes=" << rd.Width << '\n';
     return true;
 }
 
@@ -5314,6 +5326,7 @@ void GxBackend::release_resident_vertex_buffer() noexcept {
     // Callers guarantee the GPU no longer reads the buffer (session reset
     // before renderer initialization, or shutdown after drain_gpu()). The
     // arena reset bumps its epoch, so every entry's block becomes invalid.
+    renderer_.set_resident_vertex_copy_destination(nullptr);
     resident_vertex_buffer_.Reset();
     resident_vertex_mapped_ = nullptr;
     resident_vertex_gpu_ = 0;
@@ -5337,7 +5350,9 @@ void GxBackend::release_decoded_entry_residency(
     entry.resident_units = 0u;
 }
 
-bool GxBackend::make_decoded_entry_resident(DecodedPacketRunCacheEntry& entry) {
+bool GxBackend::make_decoded_entry_resident(DecodedPacketRunCacheEntry& entry,
+                                            std::optional<std::size_t>& staged_ring_offset) {
+    staged_ring_offset.reset();
     if (!resident_decoded_vertices_enabled() || entry.vertices.empty() ||
         entry.vertices.size() >
             static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
@@ -5349,11 +5364,27 @@ bool GxBackend::make_decoded_entry_resident(DecodedPacketRunCacheEntry& entry) {
     const auto units = static_cast<std::uint32_t>(entry.vertices.size());
     if (entry.resident_epoch == resident_vertices_.epoch() &&
         entry.resident_units == units) {
-        return true;
+        // A video-memory block filled in this chunk is copied at its end.
+        return !resident_vertex_video_memory_ || frame_index_ >= entry.resident_ready_chunk;
     }
     entry.resident_epoch = 0u;
     const std::optional<std::uint32_t> offset = resident_vertices_.allocate(units);
     if (!offset.has_value()) {
+        return false;
+    }
+    if (resident_vertex_video_memory_) {
+        // This chunk draws from the ring copy, which the end of its command list copies into the
+        // block; later chunks draw from video memory.
+        const std::size_t bytes = static_cast<std::size_t>(units) * sizeof(GxVertexOut);
+        const UploadRing::Allocation staged = renderer_.vertex_ring().allocate(bytes, 16u);
+        std::memcpy(staged.cpu, entry.vertices.data(), bytes);
+        renderer_.queue_resident_vertex_copy(
+            static_cast<std::uint64_t>(*offset) * sizeof(GxVertexOut), staged.offset, bytes);
+        entry.resident_epoch = resident_vertices_.epoch();
+        entry.resident_offset = *offset;
+        entry.resident_units = units;
+        entry.resident_ready_chunk = frame_index_ + 1u;
+        staged_ring_offset = staged.offset;
         return false;
     }
     // Written once; the block is never rewritten while it belongs to this
@@ -14399,7 +14430,8 @@ bool GxBackend::on_cached_packet_draw_run(
                 // no vertex bytes move. Only another resident run that ends
                 // exactly where this block starts can share its batch.
                 DecodedPacketRunCacheEntry& entry = it->second;
-                const bool resident = make_decoded_entry_resident(entry);
+                std::optional<std::size_t> staged_ring_offset;
+                const bool resident = make_decoded_entry_resident(entry, staged_ring_offset);
                 const std::size_t resident_byte_offset =
                     static_cast<std::size_t>(entry.resident_offset) *
                     sizeof(GxVertexOut);
@@ -14431,6 +14463,18 @@ bool GxBackend::on_cached_packet_draw_run(
                     ++frame_resident_vertex_hits_;
                     frame_resident_vertex_bytes_ +=
                         entry.vertices.size() * sizeof(GxVertexOut);
+                } else if (staged_ring_offset.has_value()) {
+                    prim = vertex_loader_.upload_cached_packet_run_indices(
+                        *staged_ring_offset,
+                        static_cast<std::uint32_t>(entry.vertices.size()),
+                        base_offset,
+                        packets,
+                        primitive,
+                        renderer_.index_ring(),
+                        index_batch_base,
+                        append_to_pending && cached_draw_run_primitive_indexed_,
+                        entry.total_indices,
+                        precomputed_indices);
                 } else {
                     prim = vertex_loader_.upload_cached_packet_run_vertices(
                         entry.vertices,
