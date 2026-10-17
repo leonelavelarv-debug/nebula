@@ -5263,6 +5263,13 @@ bool RendererD3D12::initialize(int window_width, int window_height, unsigned efb
                     D3D12_MESSAGE_CALLBACK_FLAG_NONE,
                     nullptr,
                     &cookie);
+                // Says which validation a session ran with: no [D3D12-LIVE-ERR] line means
+                // none was reported, not that the layer was off.
+                std::cerr << "[Renderer] D3D12 debug layer level=" << d3d_debug_level
+                          << " live-messages=" << (cookie != 0u ? 1 : 0) << '\n';
+            } else {
+                std::cerr << "[Renderer] D3D12 debug layer level=" << d3d_debug_level
+                          << " live-messages=0 (no ID3D12InfoQueue1)\n";
             }
         }
 
