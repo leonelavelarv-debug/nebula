@@ -25,12 +25,45 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
 namespace galaxy::gx {
 
 static constexpr std::uint32_t kMaxCachedDisplayListBytes = 4u * 1024u * 1024u;
+
+std::optional<DisplayListValidation> configured_display_list_validation() noexcept {
+    static const std::optional<DisplayListValidation> mode =
+        []() -> std::optional<DisplayListValidation> {
+        char value[16]{};
+#if defined(_WIN32)
+        std::size_t length = 0;
+        if (getenv_s(&length, value, sizeof(value), "GALAXY_GX_DL_VALIDATE") != 0 ||
+            length <= 1u) {
+            return std::nullopt;
+        }
+#else
+        const char* text = std::getenv("GALAXY_GX_DL_VALIDATE");
+        if (text == nullptr) {
+            return std::nullopt;
+        }
+        std::snprintf(value, sizeof(value), "%s", text);
+#endif
+        const std::string_view name{value};
+        if (name == "run" || name == "1") {
+            return DisplayListValidation::OncePerRun;
+        }
+        if (name == "flush" || name == "2") {
+            return DisplayListValidation::FlushTracked;
+        }
+        if (name == "audit" || name == "3") {
+            return DisplayListValidation::Audit;
+        }
+        return DisplayListValidation::EveryCall;
+    }();
+    return mode;
+}
 
 struct FifoTraceRange {
     bool enabled{false};
@@ -717,6 +750,9 @@ void FifoParser::run(
     bool frozen_regions) {
     const FrozenRegionScope region_scope(*this, memory, frozen_regions);
     ++frame_index_;
+    if (validation_ == DisplayListValidation::Audit) [[unlikely]] {
+        expire_stale_display_lists();
+    }
 
     FifoCursor cursor;
     cursor.data        = fifo;
@@ -741,6 +777,9 @@ std::size_t FifoParser::run_available(
     bool frozen_regions) {
     const FrozenRegionScope region_scope(*this, memory, frozen_regions);
     ++frame_index_;
+    if (validation_ == DisplayListValidation::Audit) [[unlikely]] {
+        expire_stale_display_lists();
+    }
 
     FifoCursor cursor;
     cursor.data = fifo;
@@ -810,8 +849,7 @@ FifoParser::CachedDisplayList* FifoParser::find_cached_display_list(
             cached.byte_size != byte_size) {
             return nullptr;
         }
-        if (cached.bytes.size() != bytes.size() ||
-            !std::equal(bytes.begin(), bytes.end(), cached.bytes.begin())) {
+        if (!display_list_bytes_current(cached, bytes)) {
             invalidate_display_list_cache_index(index);
             return nullptr;
         }
@@ -849,6 +887,125 @@ FifoParser::CachedDisplayList* FifoParser::find_cached_display_list(
     }
 
     return nullptr;
+}
+
+bool FifoParser::display_list_bytes_current(
+    CachedDisplayList& cached,
+    std::span<const std::byte> bytes) {
+    const auto equal = [&] {
+        return cached.bytes.size() == bytes.size() &&
+            std::equal(bytes.begin(), bytes.end(), cached.bytes.begin());
+    };
+    switch (validation_) {
+    case DisplayListValidation::EveryCall:
+        return equal();
+    case DisplayListValidation::OncePerRun:
+        if (cached.compared_run == frame_index_) {
+            return true;
+        }
+        if (!equal()) {
+            return false;
+        }
+        cached.compared_run = frame_index_;
+        return true;
+    case DisplayListValidation::FlushTracked:
+        if (++flush_backstop_tick_ % 64u != 0u || equal()) {
+            return true;
+        }
+        if (++validation_stats_.backstop_stale <= 32u) {
+            std::fprintf(
+                stderr,
+                "[dl-validate] parser=%s mode=flush stale addr=0x%08X size=%u run=%llu\n",
+                validation_label_, cached.guest_addr, cached.byte_size,
+                static_cast<unsigned long long>(frame_index_));
+        }
+        return false;
+    case DisplayListValidation::Audit:
+        break;
+    }
+    // Audit: the compare decides, as in EveryCall.
+    ++validation_stats_.replays;
+    validation_stats_.replay_bytes += bytes.size();
+    const bool first_in_run = cached.compared_run != frame_index_;
+    if (first_in_run) {
+        ++validation_stats_.run_first_replays;
+        validation_stats_.run_first_bytes += bytes.size();
+    }
+    if (equal()) {
+        cached.compared_run = frame_index_;
+        return true;
+    }
+    if (!first_in_run) {
+        ++validation_stats_.run_stale;
+    }
+    // A valid entry overlaps no published write since it last matched (dirty-range
+    // invalidation is on in this mode), so FlushTracked would have replayed it.
+    ++validation_stats_.flush_stale;
+    note_stale_display_list(cached);
+    return false;
+}
+
+void FifoParser::note_stale_display_list(const CachedDisplayList& cached) {
+    if (stale_display_list_count_ == stale_display_lists_.size()) {
+        // Full: the oldest entry has waited longest for a covering publication.
+        ++validation_stats_.unpublished;
+        std::move(
+            stale_display_lists_.begin() + 1,
+            stale_display_lists_.end(),
+            stale_display_lists_.begin());
+        --stale_display_list_count_;
+    }
+    stale_display_lists_[stale_display_list_count_++] =
+        StaleDisplayList{cached.guest_addr, cached.byte_size, frame_index_};
+}
+
+void FifoParser::retire_stale_display_lists(
+    std::uint32_t guest_addr,
+    std::uint32_t size) {
+    for (std::size_t i = 0; i < stale_display_list_count_;) {
+        const StaleDisplayList& stale = stale_display_lists_[i];
+        if (ranges_overlap(guest_addr, size, stale.guest_addr, stale.byte_size)) {
+            ++validation_stats_.published_late;
+            stale_display_lists_[i] = stale_display_lists_[--stale_display_list_count_];
+        } else {
+            ++i;
+        }
+    }
+}
+
+void FifoParser::expire_stale_display_lists() {
+    // A write the game publishes (DCFlushRange before its GXCallDisplayList) reaches a later
+    // chunk's dirty ranges within a few runs; one still uncovered after this many never will.
+    constexpr std::uint64_t kPublicationWindowRuns = 64u;
+    for (std::size_t i = 0; i < stale_display_list_count_;) {
+        if (frame_index_ - stale_display_lists_[i].run > kPublicationWindowRuns) {
+            ++validation_stats_.unpublished;
+            stale_display_lists_[i] = stale_display_lists_[--stale_display_list_count_];
+        } else {
+            ++i;
+        }
+    }
+    if (frame_index_ - validation_stats_.reported_run < 3600u) {
+        return;
+    }
+    validation_stats_.reported_run = frame_index_;
+    const DisplayListValidationStats& stats = validation_stats_;
+    std::fprintf(
+        stderr,
+        "[dl-validate] parser=%s mode=audit runs=%llu replays=%llu replay-mb=%.1f "
+        "run-first-replays=%llu run-first-mb=%.1f run-stale=%llu flush-stale=%llu "
+        "published-late=%llu unpublished=%llu pending=%zu\n",
+        validation_label_,
+        static_cast<unsigned long long>(frame_index_),
+        static_cast<unsigned long long>(stats.replays),
+        static_cast<double>(stats.replay_bytes) / 1048576.0,
+        static_cast<unsigned long long>(stats.run_first_replays),
+        static_cast<double>(stats.run_first_bytes) / 1048576.0,
+        static_cast<unsigned long long>(stats.run_stale),
+        static_cast<unsigned long long>(stats.flush_stale),
+        static_cast<unsigned long long>(stats.published_late),
+        static_cast<unsigned long long>(stats.unpublished),
+        stale_display_list_count_);
 }
 
 void FifoParser::erase_display_list_cache_index_from_maps(
@@ -1136,6 +1293,7 @@ void FifoParser::store_cached_display_list(
     target->last_page =
         display_list_cache_last_page(canonical_addr, byte_size);
     target->last_used = ++display_list_cache_tick_;
+    target->compared_run = frame_index_;
     target->bytes = std::move(recording.bytes);
     target->commands = std::move(recording.commands);
     target->cp_dependencies = std::move(recording.cp_dependencies);
@@ -1374,9 +1532,14 @@ std::size_t FifoParser::invalidate_display_list_cache_range(
     const std::uint64_t first_page = display_list_cache_page(canonical_addr);
     const std::uint64_t last_page =
         display_list_cache_last_page(canonical_addr, size);
+    if (validation_ == DisplayListValidation::Audit &&
+        stale_display_list_count_ != 0u) [[unlikely]] {
+        retire_stale_display_lists(canonical_addr, size);
+    }
 
-    std::array<bool, 2048> visited{};
-    std::vector<std::size_t> candidates;
+    std::array<bool, kDisplayListCacheCapacity> visited{};
+    std::vector<std::size_t>& candidates = invalidate_candidates_;
+    candidates.clear();
     for (std::uint64_t page = first_page; page <= last_page; ++page) {
         const auto it = display_list_cache_page_map_.find(page);
         if (it == display_list_cache_page_map_.end()) {
@@ -2135,11 +2298,7 @@ void FifoParser::run_window(
                         cached.guest_addr == canonical_guest_addr &&
                         cached.byte_size == byte_size) {
                         const bool bytes_match =
-                            cached.bytes.size() == dl_window.size() &&
-                            std::equal(
-                                dl_window.begin(),
-                                dl_window.end(),
-                                cached.bytes.begin());
+                            display_list_bytes_current(cached, dl_window);
                         if (bytes_match && display_list_dependencies_match(cached, state)) {
                             if (profile != nullptr) {
                                 ++profile->call_dl_cache_hits;

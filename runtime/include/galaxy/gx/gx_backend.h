@@ -111,8 +111,12 @@ public:
     std::size_t invalidate_display_list_cache_range(
         std::uint32_t guest_addr,
         std::uint32_t size);
+    // Whether its display-list cache relies on each chunk's published writes, which then must
+    // reach invalidate_display_list_cache_range before the chunk is classified.
+    [[nodiscard]] bool tracks_published_writes() const noexcept;
 
 private:
+    void configure_parser();
     [[nodiscard]] std::size_t draw_payload_size(
         std::uint8_t vtxfmt,
         std::uint16_t vertex_count) const override;

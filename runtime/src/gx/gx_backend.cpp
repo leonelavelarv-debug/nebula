@@ -778,6 +778,12 @@ bool pe_preclassify_enabled() {
 
 bool display_list_dirty_invalidate_enabled() {
     static const bool enabled = [] {
+        // Validation that trusts or audits the published writes needs them applied.
+        const auto validation = configured_display_list_validation();
+        if (validation == DisplayListValidation::FlushTracked ||
+            validation == DisplayListValidation::Audit) {
+            return true;
+        }
         char value[16]{};
         std::size_t length = 0;
         if (getenv_s(
@@ -2925,7 +2931,7 @@ static_assert(
 
 FramePeEventClassifier::FramePeEventClassifier(bool event_only)
     : event_only_(event_only) {
-    parser_.set_event_classification_only(event_only_);
+    configure_parser();
     static const bool verify = [] {
         char value[16]{};
         std::size_t length = 0;
@@ -2947,7 +2953,7 @@ void FramePeEventClassifier::reset() {
     }
     state_ = GxState{};
     parser_ = FifoParser{};
-    parser_.set_event_classification_only(event_only_);
+    configure_parser();
     parser_.set_dump_dir("generated");
     pending_fifo_.clear();
 }
@@ -3013,6 +3019,25 @@ void FramePeEventClassifier::classify(
                       << " mismatches=" << verify_mismatches_ << '\n';
         }
     }
+}
+
+void FramePeEventClassifier::configure_parser() {
+    parser_.set_event_classification_only(event_only_);
+    parser_.set_validation_label(event_only_ ? "classifier" : "classifier-verify");
+    // The classifier parses each chunk on the simulation thread directly after draining the writes
+    // published since the previous chunk (dcbf/dcbst lines, DMA, device writes): a cached list that
+    // no published write overlapped holds what the GPU would read, so its bytes need no compare.
+    // The verifier stays the exact reference.
+    if (event_only_) {
+        parser_.set_display_list_validation(
+            configured_display_list_validation().value_or(DisplayListValidation::FlushTracked));
+    }
+}
+
+bool FramePeEventClassifier::tracks_published_writes() const noexcept {
+    const DisplayListValidation validation = parser_.display_list_validation();
+    return validation == DisplayListValidation::FlushTracked ||
+        validation == DisplayListValidation::Audit;
 }
 
 std::size_t FramePeEventClassifier::invalidate_display_list_cache_range(
@@ -3159,17 +3184,20 @@ void GxBackend::reset_fifo_session_state() {
     // starts from an empty cache with exact byte accounting.
     parser_ = FifoParser{};
     parser_.set_dump_dir("generated");
+    parser_.set_validation_label("render");
     pending_fifo_.clear();
 
     event_state_ = GxState{};
     event_parser_ = FifoParser{};
     event_parser_.set_dump_dir("generated");
+    event_parser_.set_validation_label("events");
     event_pending_fifo_.clear();
 
     dependency_state_ = GxState{};
     dependency_state_.mark_all_dirty();
     dependency_parser_ = FifoParser{};
     dependency_parser_.set_dump_dir("generated");
+    dependency_parser_.set_validation_label("dependency");
     dependency_pending_fifo_.clear();
     for (DependencyRangeCacheEntry& entry : dependency_range_cache_) {
         entry = DependencyRangeCacheEntry{};
@@ -5648,7 +5676,9 @@ FramePeCompletionToken GxBackend::render_frame(
             invalidate_dirty_display_list_ranges(
                 event_parser_,
                 drained_dirty_ranges);
-            if (display_list_dirty_invalidate_enabled() && !worker_snapshot) {
+            if ((display_list_dirty_invalidate_enabled() ||
+                 pe_event_classifier_.tracks_published_writes()) &&
+                !worker_snapshot) {
                 for (const GuestWriteRange& range : drained_dirty_ranges) {
                     (void)pe_event_classifier_
                         .invalidate_display_list_cache_range(
@@ -5834,7 +5864,9 @@ FramePeCompletionToken GxBackend::render_frame(
     // invalidate_dependency_range_cache above invalidates the CPU-owned dependency parser. Worker
     // mode does so in its ordered prepass.
     if (timing.pe_events_gpu_fence) {
-        if (display_list_dirty_invalidate_enabled() && !worker_snapshot) {
+        if ((display_list_dirty_invalidate_enabled() ||
+             pe_event_classifier_.tracks_published_writes()) &&
+            !worker_snapshot) {
             for (const GuestWriteRange& range : chunk.dirty_ranges) {
                 (void)pe_event_classifier_
                     .invalidate_display_list_cache_range(
@@ -10412,7 +10444,8 @@ void GxBackend::prepare_worker_memory_snapshot(FrameChunk& chunk) {
     // live CALL_DL bytes there could publish an event-free receipt for a
     // different view. Classification and rendering consume the sealed bytes.
     if (get_gx_timing_config().pe_events_gpu_fence) {
-        if (display_list_dirty_invalidate_enabled()) {
+        if (display_list_dirty_invalidate_enabled() ||
+            pe_event_classifier_.tracks_published_writes()) {
             for (const GuestWriteRange& range : chunk.dirty_ranges) {
                 (void)pe_event_classifier_.invalidate_display_list_cache_range(
                     range.guest_addr, range.size);

@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <array>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -53,6 +54,23 @@ inline constexpr std::size_t kHostMarkerBytes = 12u;
 }  // namespace op
 
 inline constexpr int kMaxDisplayListDepth = 4;
+
+// How a cached CALL_DL replay confirms that guest memory still holds the bytes the entry was
+// recorded from (GALAXY_GX_DL_VALIDATE: 0, run, flush, audit; unset, each parser's default).
+enum class DisplayListValidation : std::uint8_t {
+    // Byte compare on every replay.
+    EveryCall,
+    // Byte compare on an entry's first replay in each parser run. One run reads one capture,
+    // and the game does not rewrite a list the GPU may still be reading.
+    OncePerRun,
+    // No compare: each chunk's published guest writes (dcbf/dcbst lines, DMA, device writes)
+    // invalidate the entries they overlap. Every 64th replay still compares.
+    FlushTracked,
+    // EveryCall, counting the replays for which OncePerRun or FlushTracked would have replayed
+    // bytes guest memory no longer holds ([dl-validate] lines).
+    Audit,
+};
+[[nodiscard]] std::optional<DisplayListValidation> configured_display_list_validation() noexcept;
 
 // Fatal parse error.  Carries the stream offset and offending opcode so the
 // .gxdump writer and the log line can pinpoint the failure.
@@ -478,6 +496,15 @@ public:
     // Directory for .gxdump failure artifacts (default: current directory).
     void set_dump_dir(std::string dump_dir);
 
+    // Names this parser in [dl-validate] lines.
+    void set_validation_label(const char* label) { validation_label_ = label; }
+    void set_display_list_validation(DisplayListValidation validation) noexcept {
+        validation_ = validation;
+    }
+    [[nodiscard]] DisplayListValidation display_list_validation() const noexcept {
+        return validation_;
+    }
+
     // Optional per-run profiler. The parser never owns this pointer; callers
     // set it only while gathering diagnostics.
     //
@@ -572,6 +599,8 @@ private:
         std::uint64_t first_page = 0;
         std::uint64_t last_page = 0;
         std::uint64_t last_used = 0;
+        // The parser run in which guest memory last held `bytes` (recorded or compared).
+        std::uint64_t compared_run = 0;
         std::vector<std::byte> bytes;
         std::vector<CachedDisplayListCommand> commands;
         std::vector<std::pair<std::uint8_t, std::uint32_t>> cp_dependencies;
@@ -631,6 +660,13 @@ private:
         std::uint32_t byte_size,
         const GxState& state,
         std::span<const std::byte> bytes);
+    // Whether `bytes` (the list's guest memory now) still equals the entry, under validation_.
+    [[nodiscard]] bool display_list_bytes_current(
+        CachedDisplayList& cached,
+        std::span<const std::byte> bytes);
+    void note_stale_display_list(const CachedDisplayList& cached);
+    void retire_stale_display_lists(std::uint32_t guest_addr, std::uint32_t size);
+    void expire_stale_display_lists();
 
     void store_cached_display_list(
         std::uint32_t guest_addr,
@@ -711,6 +747,37 @@ private:
         DisplayListCacheKeyHash> display_list_cache_map_{};
     std::unordered_map<std::uint64_t, std::vector<std::size_t>>
         display_list_cache_page_map_{};
+    std::vector<std::size_t> invalidate_candidates_{};
+
+    DisplayListValidation validation_ =
+        configured_display_list_validation().value_or(DisplayListValidation::EveryCall);
+    const char* validation_label_ = "parser";
+    std::uint64_t flush_backstop_tick_ = 0;
+    struct DisplayListValidationStats {
+        std::uint64_t replays = 0;
+        std::uint64_t replay_bytes = 0;
+        // First replays of an entry in a run: the compares OncePerRun makes.
+        std::uint64_t run_first_replays = 0;
+        std::uint64_t run_first_bytes = 0;
+        // Stale replays OncePerRun would have made (the bytes changed during the run).
+        std::uint64_t run_stale = 0;
+        // Stale replays FlushTracked would have made, split by whether a later chunk's
+        // published writes covered the change (published_late) or none did (unpublished).
+        std::uint64_t flush_stale = 0;
+        std::uint64_t published_late = 0;
+        std::uint64_t unpublished = 0;
+        std::uint64_t backstop_stale = 0;
+        std::uint64_t reported_run = 0;
+    };
+    DisplayListValidationStats validation_stats_{};
+    // Audit: stale entries waiting for a published write that covers them.
+    struct StaleDisplayList {
+        std::uint32_t guest_addr = 0;
+        std::uint32_t byte_size = 0;
+        std::uint64_t run = 0;
+    };
+    std::array<StaleDisplayList, 64> stale_display_lists_{};
+    std::size_t stale_display_list_count_ = 0;
 
     [[nodiscard]] std::uint64_t display_list_cache_budget_bytes() const;
     // Sums the retained capacity of one cached entry. Pure observation: it must
