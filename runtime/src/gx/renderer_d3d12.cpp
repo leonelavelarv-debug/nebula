@@ -40,6 +40,7 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <limits>
@@ -2996,6 +2997,7 @@ static constexpr char kClearPs[] =
 //   filt      = integer filter upper/middle/lower (1/64 units), clamp_y min
 //   filt2     = clamp_y max, decoded EFB-copy format (15 = XFB), scaled
 //               one-logical-row filter offset, EFB-peek reduction width
+//               (negative: a whole field of peeks, one per logical pixel)
 static constexpr char kConvPs[] = R"HLSL(
 cbuffer C : register(b0) {
     float4 src_xform;
@@ -3053,23 +3055,26 @@ float4 main(V v) : SV_Target {
     srctex.GetDimensions(dims.x, dims.y);
     float2 inv = 1.0 / dims;
     float2 sp = src_xform.xy + v.pos.xy * src_xform.zw;
-    uint reduction_width = filt2.w < 0.0 ? 1u : uint(filt2.w + 0.5);
+    const bool field = filt2.w < 0.0;
+    uint reduction_width = max(uint(abs(filt2.w) + 0.5), field ? 1u : 0u);
     uint4 texcol_raw;
-    if (reduction_width != 0u || filt2.w < 0.0) {
+    if (reduction_width != 0u) {
+        // A field read answers, at each destination pixel, the peek of that
+        // logical pixel: the CPU geometry policy of compute_efb_peek_sampling_geometry
+        // evaluated at the pixel's center.
+        const float2 center = (floor(v.pos.xy) + 0.5) * src_xform.zw;
         if (modes.z != 0.0) {
             // Depth peeks are point reads. src_xform.xy is the exact physical
             // texel selected by the CPU geometry policy; Load prevents the
             // multi-texel blend that linear sampling produced at scaled EFB sizes.
-            // A field read (from the EFB origin) takes the texel under each
-            // logical pixel's center, which a fractional scale needs as well.
             texcol_raw = pack_depth(
-                srctex.Load(int3(
-                    filt2.w < 0.0 ? int2((floor(v.pos.xy) + 0.5) * src_xform.zw)
-                                 : int2(src_xform.xy), 0)).r);
+                srctex.Load(int3(field ? int2(center) : int2(src_xform.xy), 0)).r);
         } else {
             // Color peeks reduce the complete scaled logical-pixel block.
             float4 sum = 0.0;
-            int2 origin = int2(src_xform.xy);
+            int2 origin = field
+                ? int2(floor(center - 0.5 * float(reduction_width)))
+                : int2(src_xform.xy);
             [loop] for (uint py = 0u; py < reduction_width; ++py) {
                 [loop] for (uint px = 0u; px < reduction_width; ++px) {
                     sum += srctex.Load(int3(origin + int2(px, py), 0));
@@ -3260,6 +3265,15 @@ EfbConversionShaderConstants make_efb_conversion_constants(
         filter_row_offset,
         static_cast<float>(reduction_width),
     }};
+}
+
+EfbConversionShaderConstants make_efb_peek_field_conversion_constants(
+    EfbAxes axes,
+    EfbPeekKind kind) noexcept {
+    const EfbPeekSamplingGeometry sampling = compute_efb_peek_sampling_geometry(0u, 0u, axes);
+    EfbConversionShaderConstants constants = make_efb_peek_conversion_constants(sampling, kind);
+    constants.values[15] = -static_cast<float>(std::max(1u, sampling.color_reduction_width));
+    return constants;
 }
 
 EfbConversionShaderConstants make_efb_peek_conversion_constants(
@@ -12599,11 +12613,8 @@ bool RendererD3D12::record_pointer_depth_capture_in_frame() {
     command_list_->RSSetScissorRects(1, &scissor);
     command_list_->SetGraphicsRootSignature(s_conv_root_sig.Get());
     command_list_->SetPipelineState(conv_pipeline_.Get());
-    const EfbPeekSamplingGeometry sampling =
-        compute_efb_peek_sampling_geometry(0u, 0u, efb_axes_);
-    EfbConversionShaderConstants constants =
-        make_efb_peek_conversion_constants(sampling, EfbPeekKind::Depth);
-    constants.values[15] = -1.0f;
+    const EfbConversionShaderConstants constants =
+        make_efb_peek_field_conversion_constants(efb_axes_, EfbPeekKind::Depth);
     command_list_->SetGraphicsRoot32BitConstants(0, 16, constants.values.data(), 0);
     command_list_->SetGraphicsRootDescriptorTable(1, conv_efb_depth_srv_);
     command_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -12829,11 +12840,8 @@ std::uint64_t RendererD3D12::submit_async_peek_field(EfbPeekKind kind, std::size
     list->RSSetScissorRects(1, &scissor);
     list->SetGraphicsRootSignature(s_conv_root_sig.Get());
     list->SetPipelineState(conv_pipeline_.Get());
-    const EfbPeekSamplingGeometry sampling =
-        compute_efb_peek_sampling_geometry(0u, 0u, efb_axes_);
-    EfbConversionShaderConstants constants =
-        make_efb_peek_conversion_constants(sampling, kind);
-    constants.values[15] = -1.0f;
+    const EfbConversionShaderConstants constants =
+        make_efb_peek_field_conversion_constants(efb_axes_, kind);
     list->SetGraphicsRoot32BitConstants(0, 16, constants.values.data(), 0);
     list->SetGraphicsRootDescriptorTable(
         1, is_depth ? conv_efb_depth_srv_ : conv_efb_color_srv_);
@@ -12909,9 +12917,8 @@ bool RendererD3D12::record_async_peek_field_in_frame(EfbPeekKind kind, std::size
     command_list_->RSSetScissorRects(1, &scissor);
     command_list_->SetGraphicsRootSignature(s_conv_root_sig.Get());
     command_list_->SetPipelineState(conv_pipeline_.Get());
-    const EfbPeekSamplingGeometry sampling = compute_efb_peek_sampling_geometry(0u, 0u, efb_axes_);
-    EfbConversionShaderConstants constants = make_efb_peek_conversion_constants(sampling, kind);
-    constants.values[15] = -1.0f;
+    const EfbConversionShaderConstants constants =
+        make_efb_peek_field_conversion_constants(efb_axes_, kind);
     command_list_->SetGraphicsRoot32BitConstants(0, 16, constants.values.data(), 0);
     command_list_->SetGraphicsRootDescriptorTable(1, is_depth ? conv_efb_depth_srv_ : conv_efb_color_srv_);
     command_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -12933,6 +12940,9 @@ bool RendererD3D12::record_async_peek_field_in_frame(EfbPeekKind kind, std::size
     dst_copy.PlacedFootprint.Footprint.Depth = 1;
     dst_copy.PlacedFootprint.Footprint.RowPitch = row_pitch;
     command_list_->CopyTextureRegion(&dst_copy, 0, 0, 0, &src_copy, nullptr);
+    if (!is_depth) {
+        record_color_field_check(slot);
+    }
 
     // Restore the GX drawing state exactly as record_conversion_blit does.
     command_list_->SetGraphicsRootSignature(root_signature_.Get());
@@ -12940,6 +12950,175 @@ bool RendererD3D12::record_async_peek_field_in_frame(EfbPeekKind kind, std::size
     bind_efb(nullptr);
     field.in_frame = true;
     return true;
+}
+
+void RendererD3D12::record_color_field_check(std::size_t slot) {
+    static const std::uint64_t every = [] {
+        char value[32]{};
+        std::size_t length = 0;
+        return getenv_s(&length, value, sizeof(value), "GALAXY_TRACE_COLOR_FIELD") == 0 &&
+                length > 1u
+            ? std::strtoull(value, nullptr, 10)
+            : 0ull;
+    }();
+    if (every == 0u || color_field_check_.pending ||
+        color_field_check_.fields++ % every != 0u) {
+        return;
+    }
+    const UINT w = efb_width();
+    const UINT h = efb_height();
+    const UINT row_pitch =
+        (w * 4u + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) &
+        ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
+    const UINT64 bytes = static_cast<UINT64>(row_pitch) * h;
+    if (!color_field_check_readback_ || color_field_check_readback_->GetDesc().Width < bytes) {
+        color_field_check_readback_.Reset();
+        D3D12_HEAP_PROPERTIES hp{};
+        hp.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC rd{};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width = bytes;
+        rd.Height = 1;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels = 1;
+        rd.SampleDesc.Count = 1;
+        rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        if (FAILED(device_->CreateCommittedResource(
+                &hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                IID_PPV_ARGS(&color_field_check_readback_)))) {
+            return;
+        }
+    }
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = efb_color_.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    command_list_->ResourceBarrier(1, &barrier);
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource = efb_color_.Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = color_field_check_readback_.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint.Footprint.Format = kEfbColorFormat;
+    dst.PlacedFootprint.Footprint.Width = w;
+    dst.PlacedFootprint.Footprint.Height = h;
+    dst.PlacedFootprint.Footprint.Depth = 1;
+    dst.PlacedFootprint.Footprint.RowPitch = row_pitch;
+    command_list_->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+    command_list_->ResourceBarrier(1, &barrier);
+    const std::uint64_t fields = color_field_check_.fields;
+    const std::uint64_t reports = color_field_check_.reports;
+    color_field_check_ =
+        ColorFieldCheck{true, slot, frame_index_, w, h, row_pitch, efb_axes_, fields, reports};
+}
+
+void RendererD3D12::report_color_field_check(
+    std::size_t slot, std::span<const std::uint32_t> marks) {
+    ColorFieldCheck& check = color_field_check_;
+    if (!check.pending || check.slot != slot) {
+        return;
+    }
+    check.pending = false;
+    const std::uint8_t* field = async_peek_field_rgba(EfbPeekKind::Color, slot);
+    void* mapped = nullptr;
+    const D3D12_RANGE range{0, static_cast<SIZE_T>(check.row_pitch) * check.height};
+    if (field == nullptr || FAILED(color_field_check_readback_->Map(0, &range, &mapped))) {
+        return;
+    }
+    const auto* efb = static_cast<const std::uint8_t*>(mapped);
+    const auto texel = [&](int x, int y) -> const std::uint8_t* {
+        // Load outside the texture reads zero, as on the GPU.
+        static constexpr std::uint8_t kZero[4]{};
+        return x < 0 || y < 0 || x >= static_cast<int>(check.width) ||
+                y >= static_cast<int>(check.height)
+            ? kZero
+            : efb + static_cast<std::size_t>(y) * check.row_pitch + static_cast<std::size_t>(x) * 4u;
+    };
+    const auto pack = [](const std::uint8_t* rgba) {
+        return std::uint32_t{rgba[3]} << 24u | std::uint32_t{rgba[0]} << 16u |
+            std::uint32_t{rgba[1]} << 8u | rgba[2];
+    };
+    // GXPeekARGB of logical pixel (x, y) from the copy, as the conversion shader computes a
+    // single peek: the mean of the logical pixel's block of whole texels.
+    const auto peek = [&](unsigned x, unsigned y) {
+        const EfbPeekSamplingGeometry g = compute_efb_peek_sampling_geometry(
+            static_cast<std::uint16_t>(x), static_cast<std::uint16_t>(y), check.axes);
+        const int n = static_cast<int>(std::max(1u, g.color_reduction_width));
+        std::array<float, 4> sum{};
+        for (int py = 0; py < n; ++py) {
+            for (int px = 0; px < n; ++px) {
+                const std::uint8_t* t =
+                    texel(static_cast<int>(g.src_x) + px, static_cast<int>(g.src_y) + py);
+                for (unsigned c = 0u; c < 4u; ++c) {
+                    sum[c] += static_cast<float>(t[c]) / 255.0f;
+                }
+            }
+        }
+        std::array<std::uint8_t, 4> out{};
+        for (unsigned c = 0u; c < 4u; ++c) {
+            out[c] = static_cast<std::uint8_t>(std::lround(
+                std::clamp(sum[c] / static_cast<float>(n * n), 0.0f, 1.0f) * 255.0f));
+        }
+        return pack(out.data());
+    };
+    const auto close = [](std::uint32_t a, std::uint32_t b) {
+        for (unsigned shift = 0u; shift < 32u; shift += 8u) {
+            const int da = static_cast<int>((a >> shift) & 0xffu);
+            const int db = static_cast<int>((b >> shift) & 0xffu);
+            if (std::abs(da - db) > 1) {
+                return false;
+            }
+        }
+        return true;
+    };
+    // Before the per-pixel field every pixel answered the one texel at the field origin.
+    const EfbPeekSamplingGeometry origin = compute_efb_peek_sampling_geometry(0u, 0u, check.axes);
+    const std::uint32_t origin_value = pack(
+        texel(std::max(0, static_cast<int>(origin.src_x)), std::max(0, static_cast<int>(origin.src_y))));
+    std::uint32_t mismatched = 0u;
+    std::uint32_t origin_wrong = 0u;
+    for (unsigned y = 0u; y < kEfbHeight; ++y) {
+        for (unsigned x = 0u; x < kEfbWidth; ++x) {
+            const std::uint32_t expected = peek(x, y);
+            const std::uint32_t got =
+                pack(field + (static_cast<std::size_t>(y) * kEfbWidth + x) * 4u);
+            mismatched += close(got, expected) ? 0u : 1u;
+            origin_wrong += close(origin_value, expected) ? 0u : 1u;
+        }
+    }
+    std::ostringstream line;
+    line << "[color-field-check] n=" << ++check.reports << " frame=" << check.frame
+         << " efb=" << check.width << 'x' << check.height << " axes=" << check.axes.x << ','
+         << check.axes.y << " pixels=" << kEfbWidth * kEfbHeight << " mismatched=" << mismatched
+         << " origin-value-wrong=" << origin_wrong << std::hex << std::setfill('0');
+    std::array<std::uint32_t, 8> shown{};
+    std::size_t shown_count = 0u;
+    for (const std::uint32_t mark : marks) {
+        if (shown_count == shown.size() ||
+            std::find(shown.begin(), shown.begin() + shown_count, mark) !=
+                shown.begin() + shown_count) {
+            continue;
+        }
+        shown[shown_count++] = mark;
+        const unsigned x = mark & 0xffffu;
+        const unsigned y = mark >> 16u;
+        if (x >= kEfbWidth || y >= kEfbHeight) {
+            continue;
+        }
+        line << std::dec << " mark=" << x << ',' << y << std::hex
+             << " field=" << std::setw(8)
+             << pack(field + (static_cast<std::size_t>(y) * kEfbWidth + x) * 4u)
+             << " efb=" << std::setw(8) << peek(x, y) << " origin=" << std::setw(8)
+             << origin_value;
+    }
+    line << '\n';
+    const D3D12_RANGE no_write{0, 0};
+    color_field_check_readback_->Unmap(0, &no_write);
+    std::cerr << line.str();
 }
 
 bool RendererD3D12::try_complete_async_peek_field(EfbPeekKind kind) {
@@ -13025,11 +13204,10 @@ bool RendererD3D12::read_efb_pixels(
     peek_command_list_->SetGraphicsRootSignature(s_conv_root_sig.Get());
     peek_command_list_->SetPipelineState(conv_pipeline_.Get());
 
-    const EfbPeekSamplingGeometry sampling =
-        compute_efb_peek_sampling_geometry(x, y, efb_axes_);
-    EfbConversionShaderConstants constants =
-        make_efb_peek_conversion_constants(sampling, kind);
-    if (field) constants.values[15] = -1.0f;
+    const EfbConversionShaderConstants constants = field
+        ? make_efb_peek_field_conversion_constants(efb_axes_, kind)
+        : make_efb_peek_conversion_constants(
+              compute_efb_peek_sampling_geometry(x, y, efb_axes_), kind);
     peek_command_list_->SetGraphicsRoot32BitConstants(
         0, 16, constants.values.data(), 0);
     peek_command_list_->SetGraphicsRootDescriptorTable(1,

@@ -1371,6 +1371,10 @@ private:
         return index == 0u ? EfbPeekKind::Depth : EfbPeekKind::Color;
     }
     std::array<AsyncPeekFieldState, 2> async_peek_{};
+    // GALAXY_TRACE_COLOR_FIELD: the latest colour peeks the simulation served from the field,
+    // (y << 16 | x) + 1, for the render thread's [color-field-check] line.
+    std::array<std::atomic<std::uint32_t>, 8> color_peek_marks_{};
+    std::atomic<std::uint32_t> color_peek_mark_next_{0};
     FramePeCompletionContract frame_pe_completions_;
     std::size_t render_chunks_in_flight_ = 0;
     std::size_t present_chunks_in_flight_ = 0;

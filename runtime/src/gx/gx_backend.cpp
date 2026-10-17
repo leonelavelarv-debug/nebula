@@ -10115,6 +10115,14 @@ bool GxBackend::peek_efb_published(
         (std::uint32_t{pixel[1]} << 8u) | pixel[2];
     value = kind == EfbPeekKind::Depth ? rgb : (std::uint32_t{pixel[3]} << 24u) | rgb;
     state.published_answers.fetch_add(1u, std::memory_order_relaxed);
+    static const bool trace_color_field = read_env_u64("GALAXY_TRACE_COLOR_FIELD", 0u) != 0u;
+    if (trace_color_field && kind == EfbPeekKind::Color) [[unlikely]] {
+        const std::uint32_t index =
+            color_peek_mark_next_.fetch_add(1u, std::memory_order_relaxed) %
+            static_cast<std::uint32_t>(color_peek_marks_.size());
+        color_peek_marks_[index].store(
+            ((std::uint32_t{y} << 16u) | x) + 1u, std::memory_order_relaxed);
+    }
     return true;
 }
 
@@ -10133,6 +10141,20 @@ void GxBackend::poll_async_peek_fields() {
             state.pending_slot = -1;
             ++state.completed;
             state.published.store(slot, std::memory_order_release);
+            if (kind == EfbPeekKind::Color &&
+                renderer_.color_field_check_pending(static_cast<std::size_t>(slot))) [[unlikely]] {
+                std::array<std::uint32_t, 8> marks{};
+                std::size_t count = 0u;
+                for (const std::atomic<std::uint32_t>& mark : color_peek_marks_) {
+                    const std::uint32_t value = mark.load(std::memory_order_relaxed);
+                    if (value != 0u) {
+                        marks[count++] = value - 1u;
+                    }
+                }
+                renderer_.report_color_field_check(
+                    static_cast<std::size_t>(slot),
+                    std::span<const std::uint32_t>(marks.data(), count));
+            }
         }
     }
 }

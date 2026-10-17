@@ -217,6 +217,13 @@ struct EfbConversionShaderConstants {
     const EfbPeekSamplingGeometry& sampling,
     EfbPeekKind kind) noexcept;
 
+// The payload for a whole field of peeks (async peek fields, the pointer depth
+// field): destination pixel (x, y) holds the GXPeek answer for logical pixel
+// (x, y), read with the same geometry a single peek there uses.
+[[nodiscard]] EfbConversionShaderConstants make_efb_peek_field_conversion_constants(
+    EfbAxes axes,
+    EfbPeekKind kind) noexcept;
+
 [[nodiscard]] D3D12_SAMPLER_DESC build_sampler_desc_from_key(
     std::uint32_t key,
     const RenderConfig& cfg) noexcept;
@@ -857,6 +864,14 @@ public:
     [[nodiscard]] bool try_complete_async_peek_field(EfbPeekKind kind);
     [[nodiscard]] const std::uint8_t* async_peek_field_rgba(
         EfbPeekKind kind, std::size_t slot) const noexcept;
+    // GALAXY_TRACE_COLOR_FIELD=N (diagnostics): every Nth colour field recorded in a frame
+    // also copies the EFB it read. Once that field completes, report_color_field_check
+    // compares it with GXPeekARGB answers computed from the copy and prints one
+    // [color-field-check] line, with the field and EFB values at `marks` (y << 16 | x).
+    [[nodiscard]] bool color_field_check_pending(std::size_t slot) const noexcept {
+        return color_field_check_.pending && color_field_check_.slot == slot;
+    }
+    void report_color_field_check(std::size_t slot, std::span<const std::uint32_t> marks);
     [[nodiscard]] bool async_peek_field_pending(EfbPeekKind kind) const noexcept {
         const AsyncPeekField& field = async_peek_fields_[async_peek_field_index(kind)];
         return field.fence != 0u || field.in_frame;
@@ -1946,6 +1961,19 @@ private:
     };
     // [0] depth, [1] color (async_peek_field_index).
     std::array<AsyncPeekField, 2> async_peek_fields_{};
+    void record_color_field_check(std::size_t slot);
+    Microsoft::WRL::ComPtr<ID3D12Resource> color_field_check_readback_;
+    struct ColorFieldCheck {
+        bool pending = false;
+        std::size_t slot = 0;
+        std::uint64_t frame = 0;
+        UINT width = 0;
+        UINT height = 0;
+        UINT row_pitch = 0;
+        EfbAxes axes{};
+        std::uint64_t fields = 0;
+        std::uint64_t reports = 0;
+    } color_field_check_{};
     bool ensure_async_peek_field_resources(AsyncPeekField& field, EfbPeekKind kind);
     bool read_efb_pixels(std::uint16_t x, std::uint16_t y, EfbPeekKind kind,
         std::uint32_t& value, std::span<std::uint32_t> depth_pixels,

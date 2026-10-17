@@ -1156,17 +1156,30 @@ V main(uint id : SV_VertexID) {
 
     std::vector<Pixel> run_depth_field(
         const std::vector<std::uint32_t>& z24_pixels, unsigned width,
-        unsigned height, unsigned scale, unsigned logical_size) {
+        unsigned height, galaxy::gx::EfbAxes axes, unsigned logical_size) {
         std::vector<std::uint8_t> bytes(z24_pixels.size() * sizeof(float));
         for (std::size_t i=0; i<z24_pixels.size(); ++i) {
             const float depth=1.0f-static_cast<float>(z24_pixels[i])/16777216.0f;
             std::memcpy(bytes.data()+i*sizeof(float), &depth, sizeof(depth));
         }
-        auto constants=galaxy::gx::make_efb_peek_conversion_constants(
-            galaxy::gx::compute_efb_peek_sampling_geometry(0,0,scale),
-            galaxy::gx::EfbPeekKind::Depth);
-        constants.values[15]=-1.0f;
-        return run_bytes(DXGI_FORMAT_R32_FLOAT,bytes,width,height,logical_size,constants);
+        return run_bytes(DXGI_FORMAT_R32_FLOAT,bytes,width,height,logical_size,
+            galaxy::gx::make_efb_peek_field_conversion_constants(
+                axes, galaxy::gx::EfbPeekKind::Depth));
+    }
+
+    std::vector<Pixel> run_color_field(
+        const std::vector<Pixel>& pixels, unsigned width, unsigned height,
+        galaxy::gx::EfbAxes axes, unsigned logical_size) {
+        std::vector<std::uint8_t> bytes(pixels.size() * 4u);
+        for (std::size_t i = 0u; i < pixels.size(); ++i) {
+            bytes[i * 4u + 0u] = pixels[i].r;
+            bytes[i * 4u + 1u] = pixels[i].g;
+            bytes[i * 4u + 2u] = pixels[i].b;
+            bytes[i * 4u + 3u] = pixels[i].a;
+        }
+        return run_bytes(DXGI_FORMAT_R8G8B8A8_UNORM, bytes, width, height, logical_size,
+            galaxy::gx::make_efb_peek_field_conversion_constants(
+                axes, galaxy::gx::EfbPeekKind::Color));
     }
 
     bool test_descriptor_ring_allocation_identity() {
@@ -3214,7 +3227,8 @@ bool test_warp_against_oracle() {
                 }
             }
 
-            const auto field=harness.run_depth_field(depth_grid,width,height,scale,2u);
+            const auto field=harness.run_depth_field(
+                depth_grid,width,height,galaxy::gx::EfbAxes::uniform(scale),2u);
             for (std::size_t i=0; i<kPeekDepths.size(); ++i) {
                 passed &= expect_pixel(field.at(i),packed_depth(kPeekDepths[i]),
                     "whole pointer depth field preserves exact GXPeekZ pixel and z24");
@@ -3251,6 +3265,63 @@ bool test_warp_against_oracle() {
                     color_block, scale, scale, color_sampling),
                 kColorMean,
                 color_label);
+        }
+
+        // A whole field of peeks (the asynchronous GXPeekARGB and GXPeekZ fields) answers at
+        // every logical pixel what a single peek of that pixel answers, at whole and fitted
+        // scales; texels differ everywhere, so a field that read one fixed texel would fail.
+        const galaxy::gx::EfbAxes field_axes[] = {
+            galaxy::gx::EfbAxes::uniform(1u),
+            galaxy::gx::EfbAxes::uniform(2u),
+            galaxy::gx::EfbAxes::uniform(3u),
+            galaxy::gx::EfbAxes{3.0f, 1080.0f / 456.0f},
+            galaxy::gx::EfbAxes{2.0f, 1.5f},
+        };
+        for (const galaxy::gx::EfbAxes axes : field_axes) {
+            constexpr unsigned kLogical = 3u;
+            const auto width =
+                static_cast<unsigned>(galaxy::gx::efb_physical(kLogical, axes.x));
+            const auto height =
+                static_cast<unsigned>(galaxy::gx::efb_physical(kLogical, axes.y));
+            std::vector<Pixel> color(static_cast<std::size_t>(width) * height);
+            std::vector<std::uint32_t> depth(color.size());
+            for (std::size_t i = 0u; i < color.size(); ++i) {
+                const auto mixed = static_cast<std::uint32_t>((i + 1u) * 2654435761u);
+                color[i] = Pixel{
+                    static_cast<std::uint8_t>(mixed >> 8u),
+                    static_cast<std::uint8_t>(mixed >> 16u),
+                    static_cast<std::uint8_t>(mixed >> 24u),
+                    static_cast<std::uint8_t>(mixed >> 4u)};
+                depth[i] = (mixed >> 4u) & 0x00ffffffu;
+            }
+            const auto color_field =
+                harness.run_color_field(color, width, height, axes, kLogical);
+            const auto depth_field =
+                harness.run_depth_field(depth, width, height, axes, kLogical);
+            for (unsigned y = 0u; y < kLogical; ++y) {
+                for (unsigned x = 0u; x < kLogical; ++x) {
+                    const galaxy::gx::EfbPeekSamplingGeometry sampling =
+                        galaxy::gx::compute_efb_peek_sampling_geometry(
+                            static_cast<std::uint16_t>(x),
+                            static_cast<std::uint16_t>(y),
+                            axes);
+                    char label[128]{};
+                    std::snprintf(label, sizeof(label),
+                        "%.3fx%.3f colour field (%u,%u) equals GXPeekARGB there",
+                        axes.x, axes.y, x, y);
+                    passed &= expect_pixel(
+                        color_field.at(y * kLogical + x),
+                        harness.run_color_peek(color, width, height, sampling),
+                        label);
+                    std::snprintf(label, sizeof(label),
+                        "%.3fx%.3f depth field (%u,%u) equals GXPeekZ there",
+                        axes.x, axes.y, x, y);
+                    passed &= expect_pixel(
+                        depth_field.at(y * kLogical + x),
+                        harness.run_depth_peek(depth, width, height, sampling),
+                        label);
+                }
+            }
         }
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAILED: WARP EFB conversion suite: %s\n", error.what());
