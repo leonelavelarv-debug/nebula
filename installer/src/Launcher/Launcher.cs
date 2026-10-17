@@ -1284,10 +1284,20 @@ namespace Nebula.Launcher
                 var started = DateTime.UtcNow;
                 StreamWriter samples = null;
                 StreamWriter threads = null;
+                System.Diagnostics.PerformanceCounter clock = null;
                 if (sampling)
                 {
                     samples = new StreamWriter(Path.Combine(session, "process.csv"));
-                    samples.WriteLine("elapsedSeconds,cpuSeconds,workingSetBytes");
+                    // privateBytes is the process's own commit (the working set also counts mapped driver caches).
+                    // cpuClockPercent is the cores' clock against their base frequency (Processor Information,
+                    // % Processor Performance): under 100 the CPU runs below base, held by power or thermal limits.
+                    samples.WriteLine("elapsedSeconds,cpuSeconds,workingSetBytes,privateBytes,handles,cpuClockPercent");
+                    try
+                    {
+                        clock = new System.Diagnostics.PerformanceCounter("Processor Information", "% Processor Performance", "_Total", true);
+                        clock.NextValue();
+                    }
+                    catch (Exception) { clock = null; }
                     // Per-thread CPU, alongside the process-wide row. process.csv cannot say which thread spends the time, and
                     // the process-wide total does not show whether CPU rises when the frame rate falls. CPU rate per second is
                     // the comparable signal. CPU per produced frame mostly reflects the frame rate (it grows as 1/frame_rate for
@@ -1304,8 +1314,14 @@ namespace Nebula.Launcher
                     {
                         process.Refresh();
                         var elapsed = (DateTime.UtcNow - started).TotalSeconds;
-                        samples.WriteLine(string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:F3},{1:F6},{2}",
-                            elapsed, process.TotalProcessorTime.TotalSeconds, process.WorkingSet64));
+                        float clockPercent = -1;
+                        if (clock != null)
+                        {
+                            try { clockPercent = clock.NextValue(); } catch (Exception) { clockPercent = -1; }
+                        }
+                        samples.WriteLine(string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:F3},{1:F6},{2},{3},{4},{5:F1}",
+                            elapsed, process.TotalProcessorTime.TotalSeconds, process.WorkingSet64, process.PrivateMemorySize64,
+                            process.HandleCount, clockPercent));
                         samples.Flush();
                         // A thread can exit between enumerating the collection and reading its properties, so one bad thread must
                         // not lose the whole sample. A thread that has never run reports a zero TotalProcessorTime. That is a real
@@ -1336,6 +1352,7 @@ namespace Nebula.Launcher
                 process.WaitForExit();
                 if (samples != null) samples.Dispose();
                 if (threads != null) threads.Dispose();
+                if (clock != null) clock.Dispose();
                 lock (stdout) stdout.Dispose();
                 lock (stderr) stderr.Dispose();
                 Json.Save(Path.Combine(session, "exit.json"), new Dictionary<string, object>
