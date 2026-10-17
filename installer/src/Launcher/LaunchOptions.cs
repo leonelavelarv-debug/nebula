@@ -57,6 +57,11 @@ namespace Nebula.Launcher
             env["GALAXY_TRACE_NATIVE_THP_BOUNDARY"] = detailed ? "1" : "0";
             env["GALAXY_TRACE_GX_STALLS"] = detailed ? "1" : "0";
             env["GALAXY_SIM_PROFILE"] = detailed ? "1" : "0";
+            // The render thread is sampled too, both every 2 ms: together as many samples as the
+            // simulation thread's alone at 1 ms, which a four-core PC felt.
+            env["GALAXY_RENDER_PROFILE"] = detailed ? "1" : "0";
+            env["GALAXY_SIM_PROFILE_INTERVAL_US"] = "2000";
+            env["GALAXY_GPU_PASS_PROFILE"] = detailed ? "1" : "0";
             env["GALAXY_FRAME_TIMELINE"] = record ? "1" : "0";
             env["GALAXY_FRAME_TIMELINE_EVENTS"] = "4000000";
             env["GALAXY_GPU_TIMESTAMPS"] = detailed ? "1" : "0";
