@@ -85,6 +85,7 @@
 #include <Psapi.h>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -19406,6 +19407,86 @@ void dump_nested_interrupt_audit(
            << '\n';
 }
 
+// The process working set by region kind, with the largest mapped files and private allocations:
+// a working set far above private bytes is mapped files (a GPU driver's shader cache, game.pak).
+void dump_process_memory_map(std::ostream& output) {
+    constexpr std::size_t kPage = 4096u;
+    constexpr std::size_t kBatch = 4096u;
+    const HANDLE process = GetCurrentProcess();
+    std::vector<PSAPI_WORKING_SET_EX_INFORMATION> pages(kBatch);
+    std::map<std::wstring, std::uint64_t> mapped;
+    std::vector<std::pair<std::uint64_t, std::uintptr_t>> private_blocks;
+    std::uint64_t resident[3]{};
+    std::uint64_t committed[3]{};
+    std::uintptr_t address = 0u;
+    MEMORY_BASIC_INFORMATION region{};
+    while (VirtualQuery(reinterpret_cast<void*>(address), &region, sizeof(region)) == sizeof(region)) {
+        const auto base = reinterpret_cast<std::uintptr_t>(region.BaseAddress);
+        address = base + region.RegionSize;
+        if (region.State != MEM_COMMIT) {
+            continue;
+        }
+        const unsigned kind = region.Type == MEM_IMAGE ? 0u : region.Type == MEM_MAPPED ? 1u : 2u;
+        committed[kind] += region.RegionSize;
+        std::uint64_t in_set = 0u;
+        for (std::size_t first = 0u; first < region.RegionSize / kPage; first += kBatch) {
+            const std::size_t count = std::min(kBatch, region.RegionSize / kPage - first);
+            for (std::size_t i = 0u; i < count; ++i) {
+                pages[i].VirtualAddress = reinterpret_cast<void*>(base + (first + i) * kPage);
+            }
+            if (K32QueryWorkingSetEx(process, pages.data(),
+                                     static_cast<DWORD>(count * sizeof(pages[0])))) {
+                for (std::size_t i = 0u; i < count; ++i) {
+                    in_set += pages[i].VirtualAttributes.Valid != 0u ? kPage : 0u;
+                }
+            }
+        }
+        resident[kind] += in_set;
+        if (in_set == 0u) {
+            continue;
+        }
+        if (kind == 2u) {
+            private_blocks.emplace_back(in_set, reinterpret_cast<std::uintptr_t>(region.AllocationBase));
+            continue;
+        }
+        wchar_t name[MAX_PATH]{};
+        const DWORD length = K32GetMappedFileNameW(process, region.BaseAddress, name, MAX_PATH);
+        std::wstring key = length != 0u ? std::wstring(name, length) : std::wstring(L"(pagefile section)");
+        if (const std::size_t slash = key.find_last_of(L'\\'); kind == 0u && slash != std::wstring::npos) {
+            key = key.substr(slash + 1u);
+        }
+        mapped[key] += in_set;
+    }
+    output << "[memory-map] image-mb=" << (resident[0] >> 20u) << '/' << (committed[0] >> 20u)
+           << " mapped-mb=" << (resident[1] >> 20u) << '/' << (committed[1] >> 20u)
+           << " private-mb=" << (resident[2] >> 20u) << '/' << (committed[2] >> 20u)
+           << " note=resident/committed\n";
+    std::vector<std::pair<std::uint64_t, std::wstring>> files;
+    for (const auto& [name, bytes] : mapped) {
+        files.emplace_back(bytes, name);
+    }
+    std::sort(files.rbegin(), files.rend());
+    for (std::size_t i = 0u; i < std::min<std::size_t>(files.size(), 8u); ++i) {
+        char name[MAX_PATH * 3]{};
+        (void)WideCharToMultiByte(CP_UTF8, 0, files[i].second.c_str(), -1, name, sizeof(name), nullptr, nullptr);
+        output << "[memory-map-file] mb=" << (files[i].first >> 20u) << " name=" << name << '\n';
+    }
+    // Regions of one allocation are reported together.
+    std::map<std::uintptr_t, std::uint64_t> allocations;
+    for (const auto& [bytes, base] : private_blocks) {
+        allocations[base] += bytes;
+    }
+    std::vector<std::pair<std::uint64_t, std::uintptr_t>> largest;
+    for (const auto& [base, bytes] : allocations) {
+        largest.emplace_back(bytes, base);
+    }
+    std::sort(largest.rbegin(), largest.rend());
+    for (std::size_t i = 0u; i < std::min<std::size_t>(largest.size(), 6u); ++i) {
+        output << "[memory-map-private] mb=" << (largest[i].first >> 20u) << " base=0x" << std::hex
+               << largest[i].second << std::dec << '\n';
+    }
+}
+
 bool trace_realtime_vi_wait(const RuntimeState& state);
 
 // The guest scheduler's idle loop (SelectThread with an empty run queue) is translated code and would
@@ -33686,6 +33767,9 @@ int wmain(int argc, wchar_t** argv) {
                       << " ai-late-probes=" << state.ai_dma_late_probes
                       << '\n';
             dump_decrementer_deadline_audit(state, std::cerr, "shutdown");
+            if (read_env_flag("GALAXY_TRACE_PRESENT_STATS", false)) {
+                dump_process_memory_map(std::cerr);
+            }
             dump_nested_interrupt_audit(state, std::cerr, "shutdown");
             dump_native_thp_boundary_probe(state, std::cerr, "shutdown");
             std::cerr<<"[mouse-pointer-summary] enabled="<<state.native_mouse_pointer_frame
