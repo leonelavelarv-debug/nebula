@@ -605,9 +605,13 @@ bool trace_xfb_causal_deferred_frame(std::uint64_t frame) {
 
 // Test hook: GALAXY_TEST_RENDER_STALL_MS=<ms>,<every N render chunks> makes
 // the render thread sleep, to reproduce a slow GPU/driver on any machine.
+// GALAXY_TEST_RENDER_STALL_MS=ms,every[,step]: every `every` render chunks the render thread
+// stalls `ms` ms. With `step`, the stall is spent in pieces of `step` ms, each counted as
+// renderer progress, as a run of first-use pipeline builds would be.
 struct RenderStallInjection {
     std::uint32_t ms = 0u;
     std::uint32_t every = 0u;
+    std::uint32_t step = 0u;
 };
 
 const RenderStallInjection& render_stall_injection() {
@@ -622,7 +626,11 @@ const RenderStallInjection& render_stall_injection() {
         const char* comma = std::find(static_cast<const char*>(value), end, ',');
         std::from_chars(value, comma, result.ms);
         if (comma != end) {
-            std::from_chars(comma + 1, end, result.every);
+            const char* second = std::find(comma + 1, end, ',');
+            std::from_chars(comma + 1, second, result.every);
+            if (second != end) {
+                std::from_chars(second + 1, end, result.step);
+            }
         }
         if (result.every == 0u) {
             result.ms = 0u;
@@ -6182,9 +6190,19 @@ void GxBackend::wait_for_render_fifo_effects_idle() {
 
 void GxBackend::wait_for_frame_pe_completion(
     FramePeCompletionToken token) {
-    if (wait_for_frame_pe_completion_for(
-            token, kFramePeCompletionTimeoutMs)) {
-        return;
+    const auto started = std::chrono::steady_clock::now();
+    for (;;) {
+        const auto origin = frame_pe_wait_origin(started);
+        const auto now = std::chrono::steady_clock::now();
+        const auto remaining = std::chrono::milliseconds(kFramePeCompletionTimeoutMs) - (now - origin);
+        if (remaining <= std::chrono::steady_clock::duration::zero()) {
+            break;
+        }
+        const auto remaining_ms = std::chrono::ceil<std::chrono::milliseconds>(remaining).count();
+        if (wait_for_frame_pe_completion_for(
+                token, static_cast<std::uint32_t>(std::clamp<std::int64_t>(remaining_ms, 1, 1000)))) {
+            return;
+        }
     }
     // Close the timeout-boundary race: completion may publish between the
     // timed wait's final probe and this diagnostic path.
@@ -9989,7 +10007,16 @@ void GxBackend::render_thread_main() {
                     if (const RenderStallInjection& stall = render_stall_injection(); stall.ms != 0u) {
                         static std::uint32_t chunks = 0u;
                         if (++chunks % stall.every == 0u) {
-                            Sleep(stall.ms);
+                            std::cerr << "[test-render-stall] ms=" << stall.ms << " step=" << stall.step << '\n';
+                            for (std::uint32_t spent = 0u; spent < stall.ms;) {
+                                const std::uint32_t piece = stall.step == 0u
+                                    ? stall.ms : std::min(stall.step, stall.ms - spent);
+                                Sleep(piece);
+                                spent += piece;
+                                if (stall.step != 0u) {
+                                    note_render_progress();
+                                }
+                            }
                         }
                     }
                     render_frame_on_thread(chunk);
@@ -9998,6 +10025,7 @@ void GxBackend::render_thread_main() {
                         std::lock_guard<std::mutex> lock(queue_mutex_);
                         render_chunk_started_ns_ = 0u;
                     }
+                    note_render_progress();
                     submit_async_peek_fields_if_requested();
                 }
             } else if (idle_present) {

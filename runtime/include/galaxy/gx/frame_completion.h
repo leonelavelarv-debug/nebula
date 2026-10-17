@@ -2,6 +2,7 @@
 
 #include "galaxy/frame_cadence_diagnostics.h"
 
+#include <chrono>
 #include <cstdint>
 #include <deque>
 
@@ -16,6 +17,22 @@ inline constexpr std::uint32_t kFramePeCompletionTimeoutMs = 30'000u;
 inline constexpr std::uint32_t kFramePeCooperativeWaitSliceMs = 1u;
 inline constexpr std::uint32_t kFramePeCooperativeWaitTimeoutMs =
     kFramePeCompletionTimeoutMs;
+
+// The completion budgets count from the renderer's latest progress, not from the start of the
+// wait: a frame whose first pipelines take longer than the budget to build in total (a first
+// start on a slow CPU with no driver cache) completes, while a renderer with no progress for the
+// whole budget still fails. Progress is a finished render chunk or a built pipeline (any thread).
+void note_render_progress() noexcept;
+// The later of `started` and the latest render progress: the origin a completion budget counts
+// from.
+[[nodiscard]] std::chrono::steady_clock::time_point frame_pe_wait_origin(
+    std::chrono::steady_clock::time_point started) noexcept;
+[[nodiscard]] inline bool frame_pe_wait_expired(
+    std::chrono::steady_clock::time_point started,
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now(),
+    std::uint32_t timeout_ms = kFramePeCompletionTimeoutMs) noexcept {
+    return now - frame_pe_wait_origin(started) >= std::chrono::milliseconds(timeout_ms);
+}
 
 struct FramePeCooperativeWaitStep {
     std::uint32_t wait_ms = 0;

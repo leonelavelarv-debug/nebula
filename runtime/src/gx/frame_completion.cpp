@@ -1,12 +1,29 @@
 #include "galaxy/gx/frame_completion.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
 #include <string>
 
 namespace galaxy::gx {
+
+namespace {
+std::atomic<std::chrono::steady_clock::rep> g_render_progress{0};
+}  // namespace
+
+void note_render_progress() noexcept {
+    g_render_progress.store(
+        std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
+}
+
+std::chrono::steady_clock::time_point frame_pe_wait_origin(
+    std::chrono::steady_clock::time_point started) noexcept {
+    const std::chrono::steady_clock::time_point progress{
+        std::chrono::steady_clock::duration{g_render_progress.load(std::memory_order_relaxed)}};
+    return std::max(started, progress);
+}
 
 FramePeCooperativeWaitStep frame_pe_cooperative_wait_step(
     std::uint64_t elapsed_ms,

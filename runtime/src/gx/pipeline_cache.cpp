@@ -11,6 +11,7 @@
 // render thread (completion queue) stays lock-free.
 
 #include "galaxy/gx/pipeline_cache.h"
+#include "galaxy/gx/frame_completion.h"
 
 #include "galaxy/gx/renderer_d3d12.h"
 #include "galaxy/gx/shader_gen.h"
@@ -2350,6 +2351,7 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineCache::create_or_load_pso(
                 IID_PPV_ARGS(&cached));
             if (SUCCEEDED(load_hr)) {
                 pso_library_loads_.fetch_add(1, std::memory_order_relaxed);
+                note_render_progress();
                 return cached;
             }
         }
@@ -2367,6 +2369,7 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineCache::create_or_load_pso(
         return nullptr;
     }
     pso_compiles_.fetch_add(1, std::memory_order_relaxed);
+    note_render_progress();
 
     if (store_in_library) {
         std::lock_guard<std::mutex> lock(pipeline_library_mutex_);

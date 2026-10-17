@@ -17667,9 +17667,8 @@ bool poll_draw_done_submissions(RuntimeState& state) {
         }
         if (entry->phase == galaxy::gx::FifoSubmissionPhase::Submitted) {
             if (!galaxy::gx::wait_for_frame_pe_completion_for(token, 0u)) {
-                if (std::chrono::steady_clock::now() -
-                        entry->started >=
-                    std::chrono::milliseconds(
+                if (galaxy::gx::frame_pe_wait_expired(
+                        entry->started, std::chrono::steady_clock::now(),
                         galaxy::gx::kFramePeCooperativeWaitTimeoutMs)) {
                     throw RuntimeFailure("draw-done PE token exceeded absolute budget");
                 }
@@ -18556,7 +18555,7 @@ void wait_for_frame_pe_completion_cooperatively(
         const auto before_wait = std::chrono::steady_clock::now();
         const auto elapsed_before =
             std::chrono::duration_cast<std::chrono::milliseconds>(
-                before_wait - start);
+                before_wait - galaxy::gx::frame_pe_wait_origin(start));
         const std::uint64_t elapsed_ms = elapsed_before.count() > 0
             ? static_cast<std::uint64_t>(elapsed_before.count())
             : 0u;
@@ -19904,7 +19903,6 @@ bool advance_pending_vi_boundary(
                     ++state.pending_vi_token_nonblocking_polls;
                 }
                 const auto poll_start = std::chrono::steady_clock::now();
-                const auto elapsed = poll_start - snapshot.started;
                 // Each case invocation charges only its own wall interval,
                 // including service/park and unwind. Boundary age overlaps on
                 // successive polls and includes time spent running other owners.
@@ -19938,7 +19936,8 @@ bool advance_pending_vi_boundary(
                 }
                 // Observe an already published completion before declaring an
                 // expired absolute budget. This does not extend the deadline.
-                if (!complete && elapsed >= std::chrono::milliseconds(
+                if (!complete && galaxy::gx::frame_pe_wait_expired(
+                        snapshot.started, poll_start,
                         galaxy::gx::kFramePeCooperativeWaitTimeoutMs)) {
                     throw RuntimeFailure(
                         "persistent VI PE token exceeded its absolute budget"
@@ -25424,7 +25423,7 @@ void call_guest_impl_body(
                     // same owner that must advance AI/DSP and input deadlines.
                     while (!frame->capture->complete.load(std::memory_order_acquire)) {
                         const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::steady_clock::now()-begin).count();
+                            std::chrono::steady_clock::now()-galaxy::gx::frame_pe_wait_origin(begin)).count();
                         const auto step=galaxy::gx::frame_pe_cooperative_wait_step(
                             static_cast<std::uint64_t>(elapsed));
                         service_realtime_devices_during_frame_pe_wait(state,memory);
@@ -25438,7 +25437,8 @@ void call_guest_impl_body(
                         // schedules native device servicing. Retain the absolute
                         // budget and query identity, including completion races.
                         const auto deadline=std::min(
-                            begin+std::chrono::milliseconds(galaxy::gx::kFramePeCooperativeWaitTimeoutMs),
+                            galaxy::gx::frame_pe_wait_origin(begin)+
+                                std::chrono::milliseconds(galaxy::gx::kFramePeCooperativeWaitTimeoutMs),
                             std::chrono::steady_clock::now()+std::chrono::milliseconds(step.wait_ms));
                         (void)frame->capture->await_until(deadline);
                     }
@@ -34002,8 +34002,8 @@ int wmain(int argc, wchar_t** argv) {
                     const auto token = state.pending_vi_boundary.snapshot().token;
                     const auto start = std::chrono::steady_clock::now();
                     while (!galaxy::gx::wait_for_frame_pe_completion_for(token, 0u)) {
-                        if (std::chrono::steady_clock::now() - start >=
-                            std::chrono::milliseconds(
+                        if (galaxy::gx::frame_pe_wait_expired(
+                                start, std::chrono::steady_clock::now(),
                                 galaxy::gx::kFramePeCooperativeWaitTimeoutMs)) {
                             throw RuntimeFailure(
                                 "shutdown VI PE token exceeded its absolute budget");
