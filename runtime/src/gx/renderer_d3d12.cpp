@@ -289,6 +289,15 @@ std::atomic<bool> s_pointer_right_button{false};
 std::atomic<bool> s_pointer_focus_valid{false};
 galaxy::host::HostPointerEventRing s_pointer_transitions;
 bool s_tracking_mouse_leave = false;
+// The OS cursor in the game window's client coordinates, sampled on the window thread
+// (sample_os_cursor). The input poll on the simulation thread reads it instead of calling
+// GetCursorPos or WindowFromPoint: those take the win32k lock, which on some PCs held the
+// simulation thread for milliseconds per poll.
+std::atomic<std::uint64_t> s_cursor_client_xy{0};
+std::atomic<std::uint64_t> s_cursor_sample_ms{0};
+std::atomic<bool> s_cursor_over_window{false};
+std::atomic<bool> s_remote_session{false};
+constexpr UINT_PTR kCursorSampleTimer = 0x4E43u;
 std::atomic<bool> s_system_menu_active{false};
 std::atomic<bool> s_move_size_active{false};
 std::recursive_mutex s_native_settings_mutex;
@@ -2008,6 +2017,55 @@ void maybe_hide_os_cursor() {
     }
 }
 
+// Window thread only. A WM_MOUSEMOVE coordinate is stored here too, so the sample is always the
+// newest position the window thread has seen, by message or by poll.
+void store_cursor_sample(int client_x, int client_y, bool over_window) noexcept {
+    s_cursor_over_window.store(over_window, std::memory_order_relaxed);
+    s_cursor_client_xy.store(
+        static_cast<std::uint64_t>(static_cast<std::uint32_t>(client_x)) |
+            (static_cast<std::uint64_t>(static_cast<std::uint32_t>(client_y)) << 32u),
+        std::memory_order_relaxed);
+    s_cursor_sample_ms.store(std::max<std::uint64_t>(GetTickCount64(), 1u), std::memory_order_release);
+}
+
+// Window thread only.
+void sample_os_cursor(HWND hwnd) noexcept {
+    s_remote_session.store(GetSystemMetrics(SM_REMOTESESSION) != 0, std::memory_order_relaxed);
+    POINT cursor{};
+    POINT client{};
+    if (!GetCursorPos(&cursor)) {
+        s_cursor_sample_ms.store(0u, std::memory_order_release);
+        return;
+    }
+    client = cursor;
+    if (!ScreenToClient(hwnd, &client)) {
+        s_cursor_sample_ms.store(0u, std::memory_order_release);
+        return;
+    }
+    HWND hovered = WindowFromPoint(cursor);
+    if (hovered != nullptr) {
+        if (HWND root = GetAncestor(hovered, GA_ROOT); root != nullptr) {
+            hovered = root;
+        }
+    }
+    store_cursor_sample(static_cast<int>(client.x), static_cast<int>(client.y), hovered == hwnd);
+}
+
+// The window thread's latest cursor sample in client coordinates; false when there is none or it
+// is older than a few timer periods (the window thread is in a modal loop or not pumping).
+bool sampled_os_cursor(POINT& client) noexcept {
+    constexpr std::uint64_t kMaxSampleAgeMs = 250u;
+    const std::uint64_t at = s_cursor_sample_ms.load(std::memory_order_acquire);
+    const std::uint64_t now = GetTickCount64();
+    if (at == 0u || now < at || now - at > kMaxSampleAgeMs) {
+        return false;
+    }
+    const std::uint64_t xy = s_cursor_client_xy.load(std::memory_order_relaxed);
+    client.x = static_cast<LONG>(static_cast<std::int32_t>(static_cast<std::uint32_t>(xy)));
+    client.y = static_cast<LONG>(static_cast<std::int32_t>(static_cast<std::uint32_t>(xy >> 32u)));
+    return true;
+}
+
 galaxy::host::HostPointerCoordinates cached_pointer_coordinates(
     bool inside_override) noexcept {
     const galaxy::host::HostPointerSnapshot snapshot =
@@ -2085,14 +2143,14 @@ bool seed_pointer_from_client(
     // cursor here and publish it with the same compare-before-publish rule used by the normal
     // first-poll fallback. Without this, the synthetic valid/outside seed can mask
     // native_runtime's independent cursor recovery indefinitely.
-    const bool remote_session = GetSystemMetrics(SM_REMOTESESSION) != 0;
+    const bool remote_session = s_remote_session.load(std::memory_order_relaxed);
     const auto poll_authority =
         galaxy::host::select_host_pointer_cursor_poll_authority(
             mouse_ir_cursor_poll_mode(), remote_session, false);
     POINT cursor{};
     if (poll_authority.poll_enabled &&
-        poll_authority.authoritative && GetCursorPos(&cursor) &&
-        ScreenToClient(hwnd, &cursor) && cursor.x >= 0 && cursor.y >= 0 &&
+        poll_authority.authoritative && sampled_os_cursor(cursor) &&
+        cursor.x >= 0 && cursor.y >= 0 &&
         cursor.x < width && cursor.y < height) {
         const int cursor_x =
             std::clamp(static_cast<int>(cursor.x), 0, width - 1);
@@ -2171,6 +2229,9 @@ AcquiredHostPointerCoordinates update_pointer_absolute(
                 });
         });
 
+    if (inside) {
+        store_cursor_sample(raw_x, raw_y, true);
+    }
     if (inside && !s_tracking_mouse_leave) {
         TRACKMOUSEEVENT tme{};
         tme.cbSize = sizeof(tme);
@@ -2325,6 +2386,16 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_CREATE) {
         s_pointer_hwnd.store(reinterpret_cast<std::uintptr_t>(hwnd),
                              std::memory_order_release);
+        // A hidden test window is no keyboard or mouse source (native_host skips the poll).
+        if (!hidden_window_mode_enabled() &&
+            mouse_ir_cursor_poll_mode() != galaxy::host::HostPointerCursorPollMode::Disabled) {
+            sample_os_cursor(hwnd);
+            (void)SetTimer(hwnd, kCursorSampleTimer, USER_TIMER_MINIMUM, nullptr);
+        }
+    }
+    if (msg == WM_TIMER && wp == kCursorSampleTimer) {
+        sample_os_cursor(hwnd);
+        return 0;
     }
     if (msg == WM_ENTERMENULOOP || msg == WM_ENTERSIZEMOVE) {
         (msg == WM_ENTERMENULOOP ? s_system_menu_active : s_move_size_active)
@@ -2358,6 +2429,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             .store(false, std::memory_order_release);
         s_pointer_focus_valid.store(GetForegroundWindow() == hwnd,
                                     std::memory_order_release);
+        sample_os_cursor(hwnd);
         seed_pointer_from_client(hwnd, false);
     }
     if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
@@ -2512,6 +2584,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     if (msg == WM_SIZE) {
+        sample_os_cursor(hwnd);
         seed_pointer_from_client(hwnd, false);
         // wp == SIZE_MINIMIZED collapses the client rect to a bogus 0x0 (or
         // near-0) size; ignore it rather than requesting a degenerate resize
@@ -2541,6 +2614,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_SETFOCUS) {
         s_pointer_focused.store(true, std::memory_order_relaxed);
         s_pointer_focus_valid.store(true, std::memory_order_release);
+        sample_os_cursor(hwnd);
         seed_pointer_from_client(hwnd, false);
         maybe_hide_os_cursor();
         return 0;
@@ -2564,6 +2638,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         hold_display_on(wp != 0);
         if (wp != 0) {
             s_pointer_focus_valid.store(true, std::memory_order_release);
+            sample_os_cursor(hwnd);
             seed_pointer_from_client(hwnd, false);
             maybe_hide_os_cursor();
         } else {
@@ -14689,7 +14764,7 @@ HostPointerState poll_host_pointer_state() noexcept {
             pointer_now_ms, cached_snapshot.last_client_message_ms,
             recent_pointer_move_ms, mouse_ir_stale_center_reject_ms());
     const bool recent_client_move = client_message_timing.recent;
-    const bool remote_session = GetSystemMetrics(SM_REMOTESESSION) != 0;
+    const bool remote_session = s_remote_session.load(std::memory_order_relaxed);
     const galaxy::host::HostPointerCursorPollAuthorityDecision
         cursor_poll_authority =
             galaxy::host::select_host_pointer_cursor_poll_authority(
@@ -14720,7 +14795,7 @@ HostPointerState poll_host_pointer_state() noexcept {
                 std::clamp(cached_snapshot.coordinates.client_y, 0, height - 1);
             POINT cursor{};
             if (cursor_poll_authority.poll_enabled && hwnd != nullptr &&
-                GetCursorPos(&cursor) && ScreenToClient(hwnd, &cursor)) {
+                sampled_os_cursor(cursor)) {
                 state.debug_flags |= kPointerDebugCursorPollAttempted;
                 const bool cursor_inside = cursor.x >= 0 && cursor.y >= 0 &&
                                            cursor.x < width &&
@@ -14848,8 +14923,8 @@ HostPointerState poll_host_pointer_state() noexcept {
                 }
             }
             // WndProc can publish a newer movement, leave, or resize while
-            // GetCursorPos/ScreenToClient is in flight. A rejected cursor
-            // candidate must not return the older cached tuple to HID.
+            // this poll runs. A rejected cursor candidate must not return the
+            // older cached tuple to HID.
             const galaxy::host::HostPointerSnapshot final_snapshot =
                 s_pointer_snapshot.snapshot();
             state.client_width = final_snapshot.coordinates.client_width;
@@ -14862,9 +14937,7 @@ HostPointerState poll_host_pointer_state() noexcept {
                     final_snapshot.coordinates.absolute_valid,
                     final_snapshot.coordinates.inside_client)
                     .acquired_inside_available;
-            if (state.inside_client) {
-                maybe_hide_os_cursor();
-            }
+            state.window_under_cursor = s_cursor_over_window.load(std::memory_order_relaxed);
             state.absolute_valid = final_snapshot.coordinates.absolute_valid;
             state.absolute_sequence = final_snapshot.absolute_sequence;
             state.absolute_acquired_ms = final_snapshot.absolute_acquired_ms;
@@ -14876,8 +14949,7 @@ HostPointerState poll_host_pointer_state() noexcept {
         cursor_poll_authority.authoritative) {
         RECT client{};
         POINT cursor{};
-        if (GetClientRect(hwnd, &client) && GetCursorPos(&cursor) &&
-            ScreenToClient(hwnd, &cursor)) {
+        if (GetClientRect(hwnd, &client) && sampled_os_cursor(cursor)) {
             state.debug_flags |= kPointerDebugFallbackCursorPoll;
             const int width = client.right - client.left;
             const int height = client.bottom - client.top;
@@ -14922,7 +14994,7 @@ HostPointerState poll_host_pointer_state() noexcept {
                     state.absolute_sequence = publication.absolute_sequence;
                     state.absolute_acquired_ms =
                         publication.absolute_acquired_ms;
-                    maybe_hide_os_cursor();
+                    state.window_under_cursor = s_cursor_over_window.load(std::memory_order_relaxed);
                     return state;
                 }
             }
@@ -14946,7 +15018,24 @@ HostPointerState poll_host_pointer_state() noexcept {
     state.absolute_valid = final_snapshot.coordinates.absolute_valid;
     state.absolute_sequence = final_snapshot.absolute_sequence;
     state.absolute_acquired_ms = final_snapshot.absolute_acquired_ms;
+    state.window_under_cursor = s_cursor_over_window.load(std::memory_order_relaxed);
     return state;
+}
+
+bool sampled_host_cursor(HostCursorSample& sample) noexcept {
+    const HWND hwnd = reinterpret_cast<HWND>(s_pointer_hwnd.load(std::memory_order_acquire));
+    RECT client{};
+    POINT cursor{};
+    if (hwnd == nullptr || !GetClientRect(hwnd, &client) || !sampled_os_cursor(cursor)) {
+        return false;
+    }
+    sample.window = reinterpret_cast<std::uintptr_t>(hwnd);
+    sample.client_x = static_cast<int>(cursor.x);
+    sample.client_y = static_cast<int>(cursor.y);
+    sample.client_width = static_cast<int>(client.right - client.left);
+    sample.client_height = static_cast<int>(client.bottom - client.top);
+    sample.over_window = s_cursor_over_window.load(std::memory_order_relaxed);
+    return true;
 }
 
 host::HostPointerTransitionPoll

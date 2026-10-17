@@ -34,6 +34,8 @@ struct HostPointerState {
     std::uint32_t debug_flags = 0;
     std::uint32_t debug_error = 0;
     std::uintptr_t debug_window = 0;
+    // The game window is the top-level window under the OS cursor (the window thread's sample).
+    bool window_under_cursor = false;
 };
 
 struct HostClientExtent {
@@ -219,6 +221,19 @@ void pump_messages();
 // client-area mouse messages; frame-time OS cursor polling is opt-in because it
 // can trail live WM_MOUSEMOVE coordinates on Remote Desktop.
 [[nodiscard]] HostPointerState poll_host_pointer_state() noexcept;
+
+// The OS cursor relative to the game window, from the window thread's latest sample; false
+// without a window or a recent sample. Issues no win32k call on the calling thread.
+struct HostCursorSample {
+    std::uintptr_t window = 0;
+    int client_x = 0;
+    int client_y = 0;
+    int client_width = 0;
+    int client_height = 0;
+    bool over_window = false;
+};
+[[nodiscard]] bool sampled_host_cursor(HostCursorSample& sample) noexcept;
+
 [[nodiscard]] host::HostPointerTransitionPoll poll_host_pointer_transition(
     std::uint64_t after_sequence) noexcept;
 

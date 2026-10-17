@@ -31358,88 +31358,9 @@ static bool gx_efb_peek(
     return peeked;
 }
 
-static HWND current_process_root_window_from_point(POINT cursor) noexcept {
-    HWND window = WindowFromPoint(cursor);
-    if (window == nullptr) {
-        return nullptr;
-    }
-    if (HWND root = GetAncestor(window, GA_ROOT); root != nullptr) {
-        window = root;
-    }
-    if (!IsWindow(window) || !IsWindowVisible(window)) {
-        return nullptr;
-    }
-    DWORD pid = 0;
-    GetWindowThreadProcessId(window, &pid);
-    return pid == GetCurrentProcessId() ? window : nullptr;
-}
-
-static HWND find_current_process_runtime_window() noexcept {
-    static std::atomic<std::uintptr_t> s_cached_window{0};
-
-    HWND cached = reinterpret_cast<HWND>(
-        s_cached_window.load(std::memory_order_acquire));
-    if (cached != nullptr && IsWindow(cached) && IsWindowVisible(cached)) {
-        return cached;
-    }
-
-    struct SearchState {
-        DWORD pid = GetCurrentProcessId();
-        HWND class_window = nullptr;
-        HWND fallback_window = nullptr;
-        std::int64_t fallback_area = 0;
-    } search{};
-
-    EnumWindows(
-        [](HWND candidate, LPARAM user) -> BOOL {
-            auto* state = reinterpret_cast<SearchState*>(user);
-            if (candidate == nullptr || !IsWindow(candidate)) {
-                return TRUE;
-            }
-            DWORD pid = 0;
-            GetWindowThreadProcessId(candidate, &pid);
-            if (pid != state->pid || !IsWindowVisible(candidate)) {
-                return TRUE;
-            }
-            RECT client{};
-            if (!GetClientRect(candidate, &client) ||
-                client.right <= client.left ||
-                client.bottom <= client.top) {
-                return TRUE;
-            }
-            const std::int64_t area =
-                static_cast<std::int64_t>(client.right - client.left) *
-                static_cast<std::int64_t>(client.bottom - client.top);
-            if (area > state->fallback_area) {
-                state->fallback_window = candidate;
-                state->fallback_area = area;
-            }
-            wchar_t class_name[64]{};
-            if (GetClassNameW(candidate, class_name,
-                              static_cast<int>(
-                                  sizeof(class_name) /
-                                  sizeof(class_name[0]))) != 0 &&
-                lstrcmpW(class_name, L"NebulaRuntimeWndR") == 0) {
-                state->class_window = candidate;
-                return FALSE;
-            }
-            return TRUE;
-        },
-        reinterpret_cast<LPARAM>(&search));
-
-    HWND selected = search.class_window != nullptr
-        ? search.class_window
-        : search.fallback_window;
-    s_cached_window.store(
-        reinterpret_cast<std::uintptr_t>(selected),
-        std::memory_order_release);
-    return selected;
-}
-
 static galaxy::host::HostPointerState compute_runtime_host_pointer_state_uncached() noexcept {
     constexpr std::uint32_t kPointerDebugHaveCursor = 1u << 0u;
     constexpr std::uint32_t kPointerDebugPointWindow = 1u << 1u;
-    constexpr std::uint32_t kPointerDebugEnumWindow = 1u << 2u;
     constexpr std::uint32_t kPointerDebugClientRect = 1u << 3u;
     constexpr std::uint32_t kPointerDebugScreenToClient = 1u << 4u;
     constexpr std::uint32_t kPointerDebugRendererCache = 1u << 6u;
@@ -31466,66 +31387,37 @@ static galaxy::host::HostPointerState compute_runtime_host_pointer_state_uncache
             kPointerDebugRendererCache | renderer_pointer.debug_flags;
         state.debug_error = renderer_pointer.debug_error;
         state.debug_window = renderer_pointer.debug_window;
+        state.window_under_cursor = renderer_pointer.window_under_cursor;
         return state;
     }
 
-    POINT cursor{};
-    const bool have_cursor = GetCursorPos(&cursor) != FALSE;
-    if (have_cursor) {
-        state.debug_flags |= kPointerDebugHaveCursor;
-    } else {
-        state.debug_error = GetLastError();
+    // The window thread's cursor sample: this runs on the simulation thread, which must not wait on
+    // win32k (GetCursorPos, WindowFromPoint) during an input poll.
+    galaxy::gx::HostCursorSample cursor{};
+    if (!galaxy::gx::sampled_host_cursor(cursor)) {
+        return state;
     }
-    HWND window = have_cursor
-        ? current_process_root_window_from_point(cursor)
-        : nullptr;
-    if (window != nullptr) {
+    state.debug_flags |= kPointerDebugHaveCursor | kPointerDebugClientRect | kPointerDebugScreenToClient;
+    if (cursor.over_window) {
         state.debug_flags |= kPointerDebugPointWindow;
     }
-    if (window == nullptr) {
-        window = find_current_process_runtime_window();
-        if (window != nullptr) {
-            state.debug_flags |= kPointerDebugEnumWindow;
-        }
-    }
-    state.debug_window = reinterpret_cast<std::uintptr_t>(window);
-    state.window_focused =
-        window != nullptr && GetForegroundWindow() == window;
-
-    RECT client{};
-    POINT client_cursor = cursor;
-    if (window != nullptr && have_cursor &&
-        GetClientRect(window, &client)) {
-        state.debug_flags |= kPointerDebugClientRect;
-        const bool screen_to_client =
-            ScreenToClient(window, &client_cursor) != FALSE;
-        if (screen_to_client) {
-            state.debug_flags |= kPointerDebugScreenToClient;
-        } else {
-            state.debug_error = GetLastError();
-        }
-        if (screen_to_client) {
-        const int width = client.right - client.left;
-        const int height = client.bottom - client.top;
-        if (width > 1 && height > 1) {
-            state.client_width = width;
-            state.client_height = height;
-            state.client_x =
-                std::clamp(static_cast<int>(client_cursor.x), 0, width - 1);
-            state.client_y =
-                std::clamp(static_cast<int>(client_cursor.y), 0, height - 1);
-            state.inside_client =
-                client_cursor.x >= 0 && client_cursor.y >= 0 &&
-                client_cursor.x < width && client_cursor.y < height;
-            state.absolute_valid = true;
-            static std::atomic<std::uint64_t> s_pointer_sequence{0};
-            state.absolute_sequence =
-                s_pointer_sequence.fetch_add(
-                    1, std::memory_order_relaxed) + 1u;
-            state.absolute_acquired_ms =
-                static_cast<std::uint64_t>(GetTickCount64());
-        }
-        }
+    const HWND window = reinterpret_cast<HWND>(cursor.window);
+    state.debug_window = cursor.window;
+    state.window_focused = GetForegroundWindow() == window;
+    state.window_under_cursor = cursor.over_window;
+    const int width = cursor.client_width;
+    const int height = cursor.client_height;
+    if (width > 1 && height > 1) {
+        state.client_width = width;
+        state.client_height = height;
+        state.client_x = std::clamp(cursor.client_x, 0, width - 1);
+        state.client_y = std::clamp(cursor.client_y, 0, height - 1);
+        state.inside_client = cursor.client_x >= 0 && cursor.client_y >= 0 &&
+                              cursor.client_x < width && cursor.client_y < height;
+        state.absolute_valid = true;
+        static std::atomic<std::uint64_t> s_pointer_sequence{0};
+        state.absolute_sequence = s_pointer_sequence.fetch_add(1, std::memory_order_relaxed) + 1u;
+        state.absolute_acquired_ms = static_cast<std::uint64_t>(GetTickCount64());
     }
     return state;
 }

@@ -150,6 +150,8 @@ struct HostPointerState {
     std::uint32_t debug_flags = 0;
     std::uint32_t debug_error = 0;
     std::uintptr_t debug_window = 0;
+    // The game window is the top-level window under the OS cursor.
+    bool window_under_cursor = false;
 };
 
 // Private host policy; not part of the generated-module ABI. Host cursor

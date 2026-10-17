@@ -8984,21 +8984,9 @@ galaxy::input::WiimoteInputSnapshot build_native_hid_input_snapshot(
                     host_pointer.client_height);
             if (use_keyboard &&
                 (host_pointer.left_button || host_pointer.right_button)) {
-                POINT cursor{};
-                HWND hovered_window = nullptr;
-                HWND game_window = reinterpret_cast<HWND>(
-                    host_pointer.debug_window);
-                if (game_window != nullptr) {
-                    if (HWND root = GetAncestor(game_window, GA_ROOT);
-                        root != nullptr) {
-                        game_window = root;
-                    }
-                }
+                // From the window thread's cursor sample: no win32k call on this thread.
                 const bool game_window_under_cursor =
-                    game_window != nullptr &&
-                    current_process_window_under_cursor(
-                        cursor, hovered_window) &&
-                    hovered_window == game_window;
+                    host_pointer.debug_window != 0u && host_pointer.window_under_cursor;
                 if (select_host_pointer_mouse_button_delivery(
                         host_pointer.window_focused,
                         host_pointer.absolute_valid,
