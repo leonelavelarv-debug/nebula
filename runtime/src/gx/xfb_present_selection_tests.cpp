@@ -802,6 +802,45 @@ int main() {
                     galaxy::gx::kMaxEfbScale + galaxy::gx::kMaxEfbScale / 2u,
             "EFB peek geometry clamps unsupported scales before selecting a texel");
     }
+    {
+        // Match Output at 1920x1080: the 640x456 picture fitted to the window on each axis.
+        const galaxy::gx::EfbAxes fitted{3.0f, 1080.0f / 456.0f};
+        const galaxy::gx::ScaledEfbCopyExtent picture =
+            galaxy::gx::compute_scaled_efb_copy_extent(640u, 456u, fitted);
+        passed &= expect(
+            picture.width == 1920u && picture.height == 1080u,
+            "a fitted 1080p picture is exactly 1920x1080");
+        const galaxy::gx::ScaledEfbRect upper =
+            galaxy::gx::compute_scaled_efb_rect(0, 0, 640, 114, 640u, 528u, fitted);
+        const galaxy::gx::ScaledEfbRect lower =
+            galaxy::gx::compute_scaled_efb_rect(0, 114, 640, 456, 640u, 528u, fitted);
+        const galaxy::gx::ScaledEfbRect beyond =
+            galaxy::gx::compute_scaled_efb_rect(0, 0, 700, 600, 640u, 528u, fitted);
+        passed &= expect(
+            upper.bottom == lower.top && upper.right == 1920 && lower.bottom == 1080 &&
+                beyond.right == 1920 && beyond.bottom == 1251,
+            "fitted rectangles share rounded edges and clamp to the fitted EFB");
+        const float picture_viewport[6] = {
+            320.0f, -228.0f, 16777215.0f, 662.0f, 570.0f, 16777215.0f};
+        const galaxy::gx::ScaledGxViewport viewport =
+            galaxy::gx::compute_scaled_gx_viewport(picture_viewport, fitted);
+        passed &= expect_near(viewport.width, 1920.0f, "a fitted viewport spans 1920 columns");
+        passed &= expect_near(viewport.height, 1080.0f, "a fitted viewport spans the picture's 1080 rows");
+        bool inside = true;
+        for (std::uint16_t y = 0u; y < 528u; ++y) {
+            for (const std::uint16_t x : {std::uint16_t{0u}, std::uint16_t{317u}, std::uint16_t{639u}}) {
+                const galaxy::gx::EfbPeekSamplingGeometry peek =
+                    galaxy::gx::compute_efb_peek_sampling_geometry(x, y, fitted);
+                const auto top = static_cast<std::uint32_t>(galaxy::gx::efb_physical(y, fitted.y));
+                const auto bottom = static_cast<std::uint32_t>(galaxy::gx::efb_physical(y + 1, fitted.y));
+                inside &= peek.depth_texel_y >= top && peek.depth_texel_y < bottom &&
+                          peek.depth_texel_x >= x * 3u && peek.depth_texel_x < x * 3u + 3u &&
+                          peek.color_reduction_width == 2u && peek.src_y >= 0.0f &&
+                          peek.src_y + 2.0f <= 1251.0f;
+            }
+        }
+        passed &= expect(inside, "fitted peeks read texels of the logical pixel inside the EFB");
+    }
     passed &= expect(
         galaxy::gx::efb_copy_alias_texture_format(7u) ==
             static_cast<std::uint8_t>(galaxy::gx::TexFormat::I8),

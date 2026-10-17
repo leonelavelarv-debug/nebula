@@ -3060,9 +3060,11 @@ float4 main(V v) : SV_Target {
             // Depth peeks are point reads. src_xform.xy is the exact physical
             // texel selected by the CPU geometry policy; Load prevents the
             // multi-texel blend that linear sampling produced at scaled EFB sizes.
+            // A field read (from the EFB origin) takes the texel under each
+            // logical pixel's center, which a fractional scale needs as well.
             texcol_raw = pack_depth(
                 srctex.Load(int3(
-                    filt2.w < 0.0 ? int2(src_xform.xy + floor(v.pos.xy) * src_xform.zw)
+                    filt2.w < 0.0 ? int2((floor(v.pos.xy) + 0.5) * src_xform.zw)
                                  : int2(src_xform.xy), 0)).r);
         } else {
             // Color peeks reduce the complete scaled logical-pixel block.
@@ -3204,8 +3206,27 @@ EfbConversionShaderConstants make_efb_conversion_constants(
     unsigned efb_scale,
     unsigned logical_efb_height,
     unsigned reduction_width) noexcept {
-    const float scale = static_cast<float>(
-        std::clamp(efb_scale, 1u, kMaxEfbScale));
+    return make_efb_conversion_constants(
+        params, is_depth_copy, intensity, keep_alpha, copy_format, src_x, src_y, step_x,
+        step_y, filter_row_offset, EfbAxes::uniform(std::clamp(efb_scale, 1u, kMaxEfbScale)),
+        logical_efb_height, reduction_width);
+}
+
+EfbConversionShaderConstants make_efb_conversion_constants(
+    const EfbCopyParams& params,
+    bool is_depth_copy,
+    bool intensity,
+    bool keep_alpha,
+    std::uint8_t copy_format,
+    float src_x,
+    float src_y,
+    float step_x,
+    float step_y,
+    float filter_row_offset,
+    EfbAxes axes,
+    unsigned logical_efb_height,
+    unsigned reduction_width) noexcept {
+    const float scale = axes.y;
     float fw_up = static_cast<float>(params.filter_upper());
     float fw_mid = static_cast<float>(params.filter_middle());
     float fw_low = static_cast<float>(params.filter_lower());
@@ -3255,7 +3276,7 @@ EfbConversionShaderConstants make_efb_peek_conversion_constants(
         src_x,
         src_y,
         sampling.step,
-        sampling.step,
+        sampling.step_y,
         0.0f,
         1.0f,
         is_depth ? 1.0f : 0.0f,
@@ -3266,8 +3287,8 @@ EfbConversionShaderConstants make_efb_peek_conversion_constants(
         sampling.center_y,
         sampling.center_y,
         255.0f,
-        sampling.step,
-        sampling.step,
+        sampling.step_y,
+        static_cast<float>(sampling.color_reduction_width),
     }};
 }
 
@@ -3911,7 +3932,7 @@ void RendererD3D12::wait_for_gpu() {
     wait_for_fence_value(val);
 }
 
-bool RendererD3D12::create_efb_targets(unsigned efb_scale) {
+bool RendererD3D12::create_efb_targets(EfbAxes axes) {
     // Aurora MIT lib/window.cpp and lib/gx/gx.cpp keep logical Wii size
     // separate from the physical target. Apply that rule to Galaxy's D3D12
     // resources without changing guest EFB/XFB addresses or dimensions.
@@ -3920,12 +3941,14 @@ bool RendererD3D12::create_efb_targets(unsigned efb_scale) {
     // (out of video memory) leaves the current targets untouched. On success
     // the previous targets move to efb_carry_*, whose contents begin_frame
     // copies into the new ones.
-    const std::uint64_t width =
-        static_cast<std::uint64_t>(kEfbWidth) * efb_scale;
-    const std::uint64_t height =
-        static_cast<std::uint64_t>(kEfbHeight) * efb_scale;
-    if (efb_scale < 1u || efb_scale > kMaxEfbScale ||
-        width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+    const auto max_scale = static_cast<float>(kMaxEfbScale);
+    if (!(axes.x >= 1.0f && axes.y >= 1.0f && axes.x <= max_scale && axes.y <= max_scale)) {
+        std::cerr << "[Renderer] invalid physical EFB extent\n";
+        return false;
+    }
+    const auto width = static_cast<std::uint64_t>(efb_physical(kEfbWidth, axes.x));
+    const auto height = static_cast<std::uint64_t>(efb_physical(kEfbHeight, axes.y));
+    if (width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
         height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
         width > static_cast<std::uint64_t>(
             std::numeric_limits<LONG>::max()) ||
@@ -4093,11 +4116,9 @@ void RendererD3D12::carry_over_efb_contents() {
     command_list_->ResourceBarrier(2u, to_read);
 
     const D3D12_VIEWPORT viewport{
-        0.0f, 0.0f, static_cast<float>(kEfbWidth * efb_scale_),
-        static_cast<float>(kEfbHeight * efb_scale_), 0.0f, 1.0f};
+        0.0f, 0.0f, static_cast<float>(efb_width()), static_cast<float>(efb_height()), 0.0f, 1.0f};
     const D3D12_RECT scissor{
-        0, 0, static_cast<LONG>(kEfbWidth * efb_scale_),
-        static_cast<LONG>(kEfbHeight * efb_scale_)};
+        0, 0, static_cast<LONG>(efb_width()), static_cast<LONG>(efb_height())};
     command_list_->SetGraphicsRootSignature(s_blit_root_sig.Get());
     command_list_->RSSetViewports(1, &viewport);
     command_list_->RSSetScissorRects(1, &scissor);
@@ -4612,6 +4633,7 @@ void RendererD3D12::follow_window_internal_resolution() {
     follow_window_width_ = s_bb_width;
     follow_window_height_ = s_bb_height;
     follow_window_aspect_ = content_aspect;
+    follow_window_axes_ = {0.0f, 0.0f};
     RenderConfig render = get_render_config();
     if (!render.internal_follow_window) {
         return;
@@ -4621,11 +4643,17 @@ void RendererD3D12::follow_window_internal_resolution() {
     if (content.width <= 0 || content.height <= 0) {
         return;
     }
-    // The launcher's Match Output rule: cover the picture on both axes.
-    const double needed = std::max(content.width / static_cast<double>(kEfbWidth),
-                                   content.height / 456.0);
+    // The launcher's Match Output rule: cover the picture on both axes. The whole scale is
+    // the setting; the picture itself is fitted to the content rectangle on each axis
+    // (apply_pending_efb_scale), unless that would be below 1x.
+    const double fit_x = content.width / static_cast<double>(kEfbWidth);
+    const double fit_y = content.height / 456.0;
+    const double needed = std::max(fit_x, fit_y);
     const unsigned scale = std::clamp(
         static_cast<unsigned>(std::ceil(needed - 1e-6)), 1u, kMaxEfbScale);
+    if (fit_x >= 1.0 && fit_y >= 1.0 && needed <= kMaxEfbScale) {
+        follow_window_axes_ = {static_cast<float>(fit_x), static_cast<float>(fit_y)};
+    }
     if (scale != render.efb_scale) {
         render.efb_scale = scale;
         set_render_config(render);
@@ -4657,7 +4685,10 @@ void RendererD3D12::apply_pending_efb_scale() {
     const unsigned wanted = upscaler_render_scale(render, internal);
     const unsigned live_internal = upscale_output_scale_ != 0u ? upscale_output_scale_ : efb_scale_;
     upscale_output_scale_ = internal;
-    if (wanted == efb_scale_) {
+    const bool fitted = follow_window_axes_.x >= 1.0f && wanted == internal &&
+                        fitted_internal_resolution_allowed(render);
+    const EfbAxes wanted_axes = fitted ? follow_window_axes_ : EfbAxes::uniform(wanted);
+    if (wanted == efb_scale_ && wanted_axes == efb_axes_) {
         return;
     }
     // Keeps the current targets; the setting returns to the live internal resolution.
@@ -4670,7 +4701,8 @@ void RendererD3D12::apply_pending_efb_scale() {
         s_efb_scale_rejected.store(wanted, std::memory_order_release);
         return restored.internal_follow_window;
     };
-    if (wanted > efb_scale_ && !efb_scale_fits_memory(wanted)) {
+    if (wanted_axes.x * wanted_axes.y > efb_axes_.x * efb_axes_.y &&
+        !efb_scale_fits_memory(wanted_axes)) {
         std::cerr << "[Renderer] internal resolution " << wanted
                   << "x exceeds the video-memory budget; staying at "
                   << efb_scale_ << "x\n";
@@ -4695,21 +4727,36 @@ void RendererD3D12::apply_pending_efb_scale() {
     readback_pending_ = false;
     readback_fence_value_ = 0u;
     const unsigned previous = efb_scale_;
-    if (!create_efb_targets(wanted)) {
+    if (!create_efb_targets(wanted_axes)) {
         (void)refuse();
         return;
     }
     const unsigned applied = wanted;
     efb_scale_ = applied;
+    efb_axes_ = wanted_axes;
     refresh_efb_conversion_source_views();
     invalidate_gx_bindings();
     bound_scissor_input_scale_ = 0u;
     std::cout << "[Renderer] internal resolution " << previous << "x -> "
-              << applied << "x (" << kEfbWidth * applied << "x"
-              << kEfbHeight * applied << ")\n";
+              << applied << "x (" << efb_width() << "x" << efb_height()
+              << (fitted ? ", fitted to the window" : "") << ")\n";
 }
 
-bool RendererD3D12::efb_scale_fits_memory(unsigned scale) const {
+bool RendererD3D12::fitted_internal_resolution_allowed(const RenderConfig& render) const {
+    // GALAXY_FITTED_INTERNAL_RESOLUTION=0 keeps Match Output on whole scales (comparisons).
+    static const bool enabled = [] {
+        char value[8]{};
+        std::size_t length = 0u;
+        return !(getenv_s(&length, value, sizeof(value), "GALAXY_FITTED_INTERNAL_RESOLUTION") == 0 &&
+                 length > 1u && value[0] == '0');
+    }();
+    return enabled && render.internal_follow_window && temporal_upscaler(render) == 0u &&
+           !spatial_quality_mode(render) && !temporal_mode() &&
+           !(render.ray_tracing_enabled && s_ray_tracing_offered.load(std::memory_order_relaxed)) &&
+           !frame_generation_running() && !interpolation_mode();
+}
+
+bool RendererD3D12::efb_scale_fits_memory(EfbAxes axes) const {
     if (!adapter3_) {
         return true;
     }
@@ -4721,12 +4768,12 @@ bool RendererD3D12::efb_scale_fits_memory(unsigned scale) const {
     // Scale-dependent residency: EFB color + depth (8 bytes per pixel) and,
     // at most, the XFB pair plus one full-picture copy (12 bytes per pixel of
     // the 640x456 picture). Everything else is independent of the scale.
-    const auto scaled_bytes = [](unsigned s) {
-        const double area = static_cast<double>(s) * s;
+    const auto scaled_bytes = [](EfbAxes a) {
+        const double area = static_cast<double>(a.x) * a.y;
         return area * (static_cast<double>(kEfbWidth) * kEfbHeight * 8.0 +
                        static_cast<double>(kEfbWidth) * 456.0 * 12.0);
     };
-    const double needed = scaled_bytes(scale) - scaled_bytes(efb_scale_);
+    const double needed = scaled_bytes(axes) - scaled_bytes(efb_axes_);
     return static_cast<double>(info.CurrentUsage) + needed <=
            0.9 * static_cast<double>(info.Budget);
 }
@@ -5401,7 +5448,8 @@ bool RendererD3D12::initialize(int window_width, int window_height, unsigned efb
         // EFB render targets.
         // A saved scale above what this display can show is clamped here.
         efb_scale_ = std::min(efb_scale_, display_efb_scale_cap());
-        if (!create_efb_targets(efb_scale_)) return false;
+        efb_axes_ = EfbAxes::uniform(efb_scale_);
+        if (!create_efb_targets(efb_axes_)) return false;
 
         // Root signatures.
         if (!create_root_signature()) return false;
@@ -5536,8 +5584,7 @@ bool RendererD3D12::initialize(int window_width, int window_height, unsigned efb
         ensure_native_settings_solid_pipeline_loaded();
 
         if (trace_renderer_startup_enabled()) {
-            std::cout << "[Renderer] OK  EFB=" << kEfbWidth * efb_scale_
-                      << "x" << kEfbHeight * efb_scale_ << "\n";
+            std::cout << "[Renderer] OK  EFB=" << efb_width() << "x" << efb_height() << "\n";
         }
     } catch (const std::exception& e) {
         std::cerr << "[Renderer] initialize failed: " << e.what() << "\n";
@@ -9714,6 +9761,9 @@ bool RendererD3D12::begin_replay_sequence(const ReplaySequence& sequence) {
         replay_failure_ = 4u;
         return false;
     }
+    subframe_xfb_.logical_width = display->params.src_width;
+    subframe_xfb_.logical_height = compute_xfb_copy_height(
+        display->params.src_height, display->params.y_scale_raw, display->params.scale_y);
     if (!ensure_interp_eval()) {
         replay_failure_ = 7u;
         return false;
@@ -11007,6 +11057,7 @@ void RendererD3D12::swap_efb_with(EfbTargetSet& other) {
     std::swap(efb_color_, other.color);
     std::swap(efb_depth_, other.depth);
     std::swap(efb_scale_, other.scale);
+    efb_axes_ = EfbAxes::uniform(efb_scale_);
     std::swap(efb_rtv_, other.rtv);
     std::swap(efb_dsv_, other.dsv);
     std::swap(conv_efb_source_table_, other.conv_table);
@@ -11023,6 +11074,7 @@ void RendererD3D12::swap_efb_sets() {
     std::swap(efb_color_, alt_efb_.color);
     std::swap(efb_depth_, alt_efb_.depth);
     std::swap(efb_scale_, alt_efb_.scale);
+    efb_axes_ = EfbAxes::uniform(efb_scale_);
     std::swap(efb_rtv_, alt_efb_.rtv);
     std::swap(efb_dsv_, alt_efb_.dsv);
     std::swap(conv_efb_source_table_, alt_efb_.conv_table);
@@ -11257,7 +11309,7 @@ void RendererD3D12::record_scene_aa() {
     const D3D12_RESOURCE_DESC desc = efb_color_->GetDesc();
     const AaRun ran = post_process_.record_scene_aa(
         command_list_.Get(), srv_ring_, efb_color_.Get(), efb_rtv_, static_cast<unsigned>(desc.Width),
-        desc.Height, kEfbWidth * efb_scale_, 456u * efb_scale_,
+        desc.Height, efb_width(), static_cast<unsigned>(efb_physical(456, efb_axes_.y)),
         static_cast<unsigned>(std::max(content.width, 1)), static_cast<unsigned>(std::max(content.height, 1)),
         split, frame_index_, kFramesInFlight);
     if (time_pass && scene_aa_queries_ && ran != AaRun::kNone) {
@@ -11307,7 +11359,8 @@ void RendererD3D12::read_scene_aa_timing() {
 bool RendererD3D12::begin_output_efb() {
     const bool temporal = scene_temporal_;
     scene_temporal_ = false;
-    if (output_efb_active_ || (!temporal && !get_render_config().hud_output_resolution)) {
+    if (output_efb_active_ || (!temporal && !get_render_config().hud_output_resolution) ||
+        efb_axes_ != EfbAxes::uniform(efb_scale_)) {
         return false;
     }
     // A temporal upscaler outputs the internal resolution; the 2D layer alone
@@ -11406,8 +11459,8 @@ void RendererD3D12::bind_efb(const float xf_vp[6]) {
     bound_rt_aux_ = 0u;
 
     float vp_x = 0.0f, vp_y = 0.0f;
-    float vp_w = static_cast<float>(kEfbWidth  * efb_scale_);
-    float vp_h = static_cast<float>(kEfbHeight * efb_scale_);
+    float vp_w = static_cast<float>(efb_width());
+    float vp_h = static_cast<float>(efb_height());
 
     if (xf_vp) {
         // GX XF viewport: [xs, xo, ys, yo, zs, zo]
@@ -11415,17 +11468,16 @@ void RendererD3D12::bind_efb(const float xf_vp[6]) {
         // y_center = yo - 342,  half_h = |ys|
         const float xs = xf_vp[0], xo = xf_vp[1];
         const float ys = xf_vp[2], yo = xf_vp[3];
-        const float scale = static_cast<float>(efb_scale_);
-        const float hw = std::abs(xs) * scale;
-        const float hh = std::abs(ys) * scale;
-        const float cx = (xo - 342.0f) * scale;
-        const float cy = (yo - 342.0f) * scale;
+        const float hw = std::abs(xs) * efb_axes_.x;
+        const float hh = std::abs(ys) * efb_axes_.y;
+        const float cx = (xo - 342.0f) * efb_axes_.x;
+        const float cy = (yo - 342.0f) * efb_axes_.y;
         vp_x = cx - hw; vp_y = cy - hh;
         vp_w = hw * 2.0f; vp_h = hh * 2.0f;
     }
 
     D3D12_VIEWPORT vp{vp_x, vp_y, vp_w, vp_h, 0.0f, 1.0f};
-    D3D12_RECT sci{0, 0, static_cast<LONG>(kEfbWidth * efb_scale_), static_cast<LONG>(kEfbHeight * efb_scale_)};
+    D3D12_RECT sci{0, 0, static_cast<LONG>(efb_width()), static_cast<LONG>(efb_height())};
     command_list_->RSSetViewports(1, &vp);
     command_list_->RSSetScissorRects(1, &sci);
     bound_viewport_ = vp;
@@ -11455,8 +11507,8 @@ void RendererD3D12::clear_efb(
     const D3D12_CPU_DESCRIPTOR_HANDLE dsv = efb_dsv_;
 
     // Scope the clear to the copy's src rect (scaled), per hardware.
-    const LONG efb_w = static_cast<LONG>(kEfbWidth * efb_scale_);
-    const LONG efb_h = static_cast<LONG>(kEfbHeight * efb_scale_);
+    const LONG efb_w = static_cast<LONG>(efb_width());
+    const LONG efb_h = static_cast<LONG>(efb_height());
     D3D12_RECT rect{0, 0, efb_w, efb_h};
     UINT num_rects = 0;
     const D3D12_RECT* rects = nullptr;
@@ -11468,7 +11520,7 @@ void RendererD3D12::clear_efb(
             static_cast<std::int32_t>(rect_y + rect_h),
             kEfbWidth,
             kEfbHeight,
-            efb_scale_);
+            efb_axes_);
         rect = D3D12_RECT{
             scaled.left, scaled.top, scaled.right, scaled.bottom};
         if (rect.right <= rect.left || rect.bottom <= rect.top) {
@@ -11679,7 +11731,7 @@ void RendererD3D12::draw(const DrawCall& call) {
             call.scissor.bottom,
             kEfbWidth,
             kEfbHeight,
-            efb_scale_);
+            efb_axes_);
         if (scaled.empty()) {
             return;  // nothing can rasterize
         }
@@ -11711,7 +11763,7 @@ void RendererD3D12::draw(const DrawCall& call) {
     // side, GX far to the MinDepth side; depth funcs are flipped in pipeline_cache to match.
     if (call.has_viewport) {
         const ScaledGxViewport scaled =
-            compute_scaled_gx_viewport(call.xf_viewport, efb_scale_);
+            compute_scaled_gx_viewport(call.xf_viewport, efb_axes_);
         D3D12_VIEWPORT vp{
             scaled.x,
             scaled.y,
@@ -11783,7 +11835,7 @@ void RendererD3D12::draw(const DrawCall& call) {
 // ---------------------------------------------------------------------------
 
 std::optional<D3D12_BOX> detail::efb_identity_copy_box(
-    const EfbCopyParams& params, bool is_depth_copy, unsigned efb_scale,
+    const EfbCopyParams& params, bool is_depth_copy, EfbAxes axes,
     unsigned dest_width, unsigned dest_height) noexcept {
     if (is_depth_copy || params.copy_to_xfb || params.target_format != 6u ||
         params.intensity || params.yuv || (params.gamma & 3u) != 0u ||
@@ -11800,14 +11852,22 @@ std::optional<D3D12_BOX> detail::efb_identity_copy_box(
     if (upper != 0u || lower != 0u || (middle != 0u && middle != 64u)) {
         return std::nullopt;
     }
-    const unsigned scale = std::clamp(efb_scale, 1u, kMaxEfbScale);
-    if (dest_width != params.src_width * scale ||
-        dest_height != params.src_height * scale) {
+    const auto left = static_cast<UINT>(efb_physical(params.src_x, axes.x));
+    const auto top = static_cast<UINT>(efb_physical(params.src_y, axes.y));
+    const auto right = static_cast<UINT>(efb_physical(params.src_x + params.src_width, axes.x));
+    const auto bottom = static_cast<UINT>(efb_physical(params.src_y + params.src_height, axes.y));
+    if (dest_width != right - left || dest_height != bottom - top) {
         return std::nullopt;
     }
-    const UINT left = params.src_x * scale;
-    const UINT top = params.src_y * scale;
-    return D3D12_BOX{left, top, 0u, left + dest_width, top + dest_height, 1u};
+    return D3D12_BOX{left, top, 0u, right, bottom, 1u};
+}
+
+std::optional<D3D12_BOX> detail::efb_identity_copy_box(
+    const EfbCopyParams& params, bool is_depth_copy, unsigned efb_scale,
+    unsigned dest_width, unsigned dest_height) noexcept {
+    return efb_identity_copy_box(params, is_depth_copy,
+                                 EfbAxes::uniform(std::clamp(efb_scale, 1u, kMaxEfbScale)),
+                                 dest_width, dest_height);
 }
 
 void detail::record_efb_identity_copy(
@@ -11919,7 +11979,7 @@ void RendererD3D12::record_conversion_blit(
             step_x,
             step_y,
             filter_row_offset,
-            efb_scale_,
+            efb_axes_,
             kEfbHeight);
     command_list_->SetGraphicsRoot32BitConstants(
         0, 16, constants.values.data(), 0);
@@ -11967,7 +12027,7 @@ void RendererD3D12::copy_efb_to_xfb(const EfbCopyParams& params, XfbTexture& des
 
     const EfbCopySamplingGeometry sampling =
         compute_xfb_sampling_geometry(
-            params, dest.width, dest.height, efb_scale_);
+            params, dest.width, dest.height, efb_axes_);
     const bool recording = replay_recording_;
     if (recording) [[unlikely]] {
         ReplayCopy copy{};
@@ -12092,7 +12152,7 @@ bool RendererD3D12::copy_efb_to_texture(
         : is_galaxy_bloom_workspace_copy(params, is_depth_copy);
     const bool bloom_copy =
         (native_bloom_workspace || native_effect_copies || !bloom_comparison_file.empty()) &&
-        efb_scale_ > 1u && effect_copy;
+        (efb_axes_.x > 1.0f || efb_axes_.y > 1.0f) && effect_copy;
     if (bloom_copy && !bloom_comparison_file.empty()) {
         const auto now = GetTickCount64();
         if (comparison_last_poll == 0u || now - comparison_last_poll >= 250u) {
@@ -12121,7 +12181,7 @@ bool RendererD3D12::copy_efb_to_texture(
     const ScaledEfbCopyExtent extent = compute_scaled_efb_copy_extent(
         static_cast<std::uint16_t>(dw_unscaled),
         static_cast<std::uint16_t>(dh_unscaled),
-        native_bloom ? 1u : efb_scale_);
+        native_bloom ? EfbAxes{} : efb_axes_);
     const UINT w = extent.width;
     const UINT h = extent.height;
     if (w == 0 || h == 0) {
@@ -12276,7 +12336,7 @@ bool RendererD3D12::copy_efb_to_texture(
         }
     }
     if (const auto source_box = detail::efb_identity_copy_box(
-            params, is_depth_copy, efb_scale_, w, h)) {
+            params, is_depth_copy, efb_axes_, w, h)) {
         if (replay_recording_) [[unlikely]] {
             ReplayCopy copy{};
             copy.dest = dest.texture.Get();
@@ -12308,7 +12368,7 @@ bool RendererD3D12::copy_efb_to_texture(
     command_list_->ResourceBarrier(1, &b);
 
     const EfbCopySamplingGeometry sampling =
-        compute_efb_copy_sampling_geometry(params, w, h, efb_scale_);
+        compute_efb_copy_sampling_geometry(params, w, h, efb_axes_);
 
     // Intensity copies to the RA4/RA8 (-> IA4/IA8) formats keep the source
     // alpha; pure-I formats replicate Y into alpha, matching the texture
@@ -12540,7 +12600,7 @@ bool RendererD3D12::record_pointer_depth_capture_in_frame() {
     command_list_->SetGraphicsRootSignature(s_conv_root_sig.Get());
     command_list_->SetPipelineState(conv_pipeline_.Get());
     const EfbPeekSamplingGeometry sampling =
-        compute_efb_peek_sampling_geometry(0u, 0u, efb_scale_);
+        compute_efb_peek_sampling_geometry(0u, 0u, efb_axes_);
     EfbConversionShaderConstants constants =
         make_efb_peek_conversion_constants(sampling, EfbPeekKind::Depth);
     constants.values[15] = -1.0f;
@@ -12770,7 +12830,7 @@ std::uint64_t RendererD3D12::submit_async_peek_field(EfbPeekKind kind, std::size
     list->SetGraphicsRootSignature(s_conv_root_sig.Get());
     list->SetPipelineState(conv_pipeline_.Get());
     const EfbPeekSamplingGeometry sampling =
-        compute_efb_peek_sampling_geometry(0u, 0u, efb_scale_);
+        compute_efb_peek_sampling_geometry(0u, 0u, efb_axes_);
     EfbConversionShaderConstants constants =
         make_efb_peek_conversion_constants(sampling, kind);
     constants.values[15] = -1.0f;
@@ -12849,7 +12909,7 @@ bool RendererD3D12::record_async_peek_field_in_frame(EfbPeekKind kind, std::size
     command_list_->RSSetScissorRects(1, &scissor);
     command_list_->SetGraphicsRootSignature(s_conv_root_sig.Get());
     command_list_->SetPipelineState(conv_pipeline_.Get());
-    const EfbPeekSamplingGeometry sampling = compute_efb_peek_sampling_geometry(0u, 0u, efb_scale_);
+    const EfbPeekSamplingGeometry sampling = compute_efb_peek_sampling_geometry(0u, 0u, efb_axes_);
     EfbConversionShaderConstants constants = make_efb_peek_conversion_constants(sampling, kind);
     constants.values[15] = -1.0f;
     command_list_->SetGraphicsRoot32BitConstants(0, 16, constants.values.data(), 0);
@@ -12966,7 +13026,7 @@ bool RendererD3D12::read_efb_pixels(
     peek_command_list_->SetPipelineState(conv_pipeline_.Get());
 
     const EfbPeekSamplingGeometry sampling =
-        compute_efb_peek_sampling_geometry(x, y, efb_scale_);
+        compute_efb_peek_sampling_geometry(x, y, efb_axes_);
     EfbConversionShaderConstants constants =
         make_efb_peek_conversion_constants(sampling, kind);
     if (field) constants.values[15] = -1.0f;
@@ -13206,8 +13266,8 @@ bool RendererD3D12::debug_copy_efb_to_readback() {
                   << next_efb_capture_path_ << '\n';
         return false;
     }
-    const UINT w = kEfbWidth * efb_scale_;
-    const UINT h = kEfbHeight * efb_scale_;
+    const UINT w = efb_width();
+    const UINT h = efb_height();
     const UINT row_pitch =
         (w * 4u + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) &
         ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
@@ -13273,8 +13333,8 @@ void RendererD3D12::debug_log_readback() {
     readback_pending_ = false;
     readback_fence_value_ = 0u;
 
-    const UINT w = kEfbWidth * efb_scale_;
-    const UINT h = kEfbHeight * efb_scale_;
+    const UINT w = efb_width();
+    const UINT h = efb_height();
     const UINT row_pitch =
         (w * 4u + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) &
         ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
@@ -14391,12 +14451,9 @@ bool RendererD3D12::present(
         galaxy::experimental_effective_host_aspect();
     // A frame copied before a live internal-resolution change is still a
     // full-width copy at the scale it was made with.
-    const unsigned source_scale = source->width / kEfbWidth;
     if (ultrawide &&
-        (source_scale == 0u ||
-         source->width != kEfbWidth * source_scale ||
-         source->height == 0u ||
-         source->height > kEfbHeight * source_scale)) {
+        (source->logical_width != kEfbWidth || source->logical_height == 0u ||
+         source->logical_height > kEfbHeight)) {
         throw std::runtime_error(
             "RMGE01 ultrawide aspect requires a full-width Wii XFB copy");
     }

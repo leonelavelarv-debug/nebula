@@ -195,6 +195,20 @@ struct EfbConversionShaderConstants {
     unsigned efb_scale,
     unsigned logical_efb_height,
     unsigned reduction_width = 0u) noexcept;
+[[nodiscard]] EfbConversionShaderConstants make_efb_conversion_constants(
+    const EfbCopyParams& params,
+    bool is_depth_copy,
+    bool intensity,
+    bool keep_alpha,
+    std::uint8_t copy_format,
+    float src_x,
+    float src_y,
+    float step_x,
+    float step_y,
+    float filter_row_offset,
+    EfbAxes axes,
+    unsigned logical_efb_height,
+    unsigned reduction_width = 0u) noexcept;
 
 // Builds the production 1x1 GXPeek conversion payload. Color peeks box-reduce
 // the complete scaled logical-pixel block; depth peeks address the exact
@@ -370,6 +384,9 @@ create_efb_conversion_source_views(
 [[nodiscard]] std::optional<D3D12_BOX> efb_identity_copy_box(
     const EfbCopyParams& params, bool is_depth_copy, unsigned efb_scale,
     unsigned dest_width, unsigned dest_height) noexcept;
+[[nodiscard]] std::optional<D3D12_BOX> efb_identity_copy_box(
+    const EfbCopyParams& params, bool is_depth_copy, EfbAxes axes,
+    unsigned dest_width, unsigned dest_height) noexcept;
 // Source enters/leaves RENDER_TARGET; destination enters/leaves PSR. Neither
 // the copy nor its barriers changes any graphics binding on the command list.
 void record_efb_identity_copy(
@@ -470,7 +487,7 @@ public:
     [[nodiscard]] bool output_efb_active() const noexcept { return output_efb_active_; }
     // Whether the targets for `scale` fit the adapter's video-memory budget
     // next to everything already resident.
-    [[nodiscard]] bool efb_scale_fits_memory(unsigned scale) const;
+    [[nodiscard]] bool efb_scale_fits_memory(EfbAxes axes) const;
 
     // Temporal upscaling (upscaler mode 2). At the start of the guest's 3D
     // scene: whether the temporal path runs for it and, if so, the scene's
@@ -869,7 +886,10 @@ public:
         std::string backbuffer_ppm_path);
 
     [[nodiscard]] ID3D12Device* device() const { return device_.Get(); }
+    // The whole internal-resolution scale; with a fractional Match Output resolution the
+    // smallest whole scale that covers it. Per-axis geometry uses efb_axes().
     [[nodiscard]] unsigned efb_scale() const noexcept { return efb_scale_; }
+    [[nodiscard]] EfbAxes efb_axes() const noexcept { return efb_axes_; }
     [[nodiscard]] ID3D12GraphicsCommandList* command_list() const {
         return command_list_.Get();
     }
@@ -989,8 +1009,18 @@ private:
         unsigned width,
         unsigned height,
         unsigned row_pitch);
-    bool create_efb_targets(unsigned efb_scale);
+    bool create_efb_targets(EfbAxes axes);
     void carry_over_efb_contents();
+    [[nodiscard]] UINT efb_width() const noexcept {
+        return static_cast<UINT>(efb_physical(kEfbWidth, efb_axes_.x));
+    }
+    [[nodiscard]] UINT efb_height() const noexcept {
+        return static_cast<UINT>(efb_physical(kEfbHeight, efb_axes_.y));
+    }
+    // Match Output fits the picture to the window on each axis while nothing needs whole
+    // scales: the temporal and quality-mode upscalers, ray tracing, frame generation and
+    // interpolated frames size their targets and replays from efb_scale().
+    [[nodiscard]] bool fitted_internal_resolution_allowed(const RenderConfig& render) const;
     [[nodiscard]] unsigned output_efb_scale_for_window() const;
     [[nodiscard]] bool ensure_motion_target();
     [[nodiscard]] bool record_temporal_upscale(unsigned output_scale);
@@ -1013,6 +1043,8 @@ private:
     void sync_post_process_settings();
     UINT follow_window_width_ = 0;
     UINT follow_window_height_ = 0;
+    // Match Output's per-axis scale for the window's picture rectangle (0: not measured).
+    EfbAxes follow_window_axes_{0.0f, 0.0f};
     double follow_window_aspect_ = 0.0;
     // A scale refused for the memory budget is tried again at this tick.
     std::uint64_t follow_window_retry_ms_ = 0;
@@ -1105,6 +1137,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtv_heap_;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dsv_heap_;
     unsigned efb_scale_ = 1;
+    EfbAxes efb_axes_{};
     D3D12_CPU_DESCRIPTOR_HANDLE efb_rtv_{};
     D3D12_CPU_DESCRIPTOR_HANDLE efb_dsv_{};
     // The inactive EFB target set (the output-resolution one between frames).

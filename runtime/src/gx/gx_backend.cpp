@@ -8129,7 +8129,7 @@ void GxBackend::on_fifo_marker(FifoMarker marker, const std::array<float, 12>* v
         switched = true;
     }
     if (switched) {
-        efb_copies_.set_efb_scale(renderer_.efb_scale());
+        efb_copies_.set_efb_axes(renderer_.efb_axes());
         frame_bindings_dirty_ = true;
     }
     if (marker == FifoMarker::SceneEnd) {
@@ -11072,8 +11072,8 @@ void GxBackend::render_frame_on_thread(FrameChunk& chunk) {
         // begin_frame() applies a pending internal-resolution change, so copies must use the scale the
         // EFB actually has. Reading the setting separately could race a change made in between and size
         // one frame's copies for the other scale.
-        if (renderer_.efb_scale() != efb_copies_.efb_scale()) {
-            efb_copies_.set_efb_scale(renderer_.efb_scale());
+        if (renderer_.efb_axes() != efb_copies_.efb_axes()) {
+            efb_copies_.set_efb_axes(renderer_.efb_axes());
         }
         // begin_frame() waited for this slot's previous frame: resident vertex
         // blocks released kFramesInFlight render frames ago are now unused.
@@ -13804,7 +13804,7 @@ ID3D12PipelineState* GxBackend::flush_draw_state(
                 const float wd = std::bit_cast<float>(state_.xf(xf::kViewportBase));
                 const float left = std::bit_cast<float>(state_.xf(static_cast<std::uint16_t>(xf::kViewportBase + 3u))) -
                                    static_cast<float>(state_.efb_scissor().offset.x) - 342.0f - wd;
-                const float x = (left + enhanced_split_ * 2.0f * wd) * static_cast<float>(renderer_.efb_scale());
+                const float x = (left + enhanced_split_ * 2.0f * wd) * renderer_.efb_axes().x;
                 column = static_cast<std::uint32_t>(std::clamp(x, 1.0f, 65535.0f));
             }
             ps_c.uber_ps_header[3] = enhanced_ps_flags_ | column | enhanced_material_bits;
@@ -15959,7 +15959,7 @@ void GxBackend::on_efb_copy(std::uint32_t exec_command) {
             // frame use the render-resolution EFB again.
             if (renderer_.output_efb_active()) {
                 renderer_.end_output_efb();
-                efb_copies_.set_efb_scale(renderer_.efb_scale());
+                efb_copies_.set_efb_axes(renderer_.efb_axes());
                 frame_bindings_dirty_ = true;
             }
             static const bool trace_layout=read_env_u64("GALAXY_MONITOR_DISPLAY_LAYOUT",0u)!=0u;
@@ -15971,9 +15971,11 @@ void GxBackend::on_efb_copy(std::uint32_t exec_command) {
                 if (count<seen.size() && std::find(seen.begin(),seen.begin()+count,current)==seen.begin()+count) {
                     seen[count++]=current;
                     const auto scale=renderer_.efb_scale();
-                    std::cerr<<"[display-render-layout] unique="<<count<<" backing-efb="<<640u*scale<<'x'<<528u*scale
+                    const EfbAxes axes=renderer_.efb_axes();
+                    std::cerr<<"[display-render-layout] unique="<<count<<" backing-efb="<<efb_physical(640,axes.x)<<'x'
+                        <<efb_physical(528,axes.y)
                         <<" guest-copy-rect="<<params.src_x<<','<<params.src_y<<','<<params.src_width<<','<<params.src_height
-                        <<" scene-copy-sampled="<<params.src_width*scale<<'x'<<params.src_height*scale
+                        <<" scene-copy-sampled="<<efb_physical(params.src_width,axes.x)<<'x'<<efb_physical(params.src_height,axes.y)
                         <<" scaled-xfb="<<xfb->width<<'x'<<xfb->height<<" guest-stride="<<params.dest_stride
                         <<" internal-scale="<<scale<<" xfb-serial-before-publication="<<xfb->copy_serial<<'\n';
                 }

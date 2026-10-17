@@ -42,6 +42,9 @@ struct XfbTexture {
     // VI selection remain in logical Wii units and are never multiplied.
     std::uint16_t width = 0;
     std::uint16_t height = 0;       // after logical y-scale and EFB scale
+    // The copy's extent in Wii units (source width, lines after the y-scale).
+    std::uint16_t logical_width = 0;
+    std::uint16_t logical_height = 0;
     std::uint64_t frame_stamp = 0;  // frame index of the last copy into it
     PointerResponseStamp pointer_response{};
     bool prerecorded_movie{};
@@ -118,6 +121,10 @@ struct ScaledEfbCopyExtent {
     std::uint16_t logical_width,
     std::uint16_t logical_height,
     unsigned efb_scale) noexcept;
+[[nodiscard]] ScaledEfbCopyExtent compute_scaled_efb_copy_extent(
+    std::uint16_t logical_width,
+    std::uint16_t logical_height,
+    EfbAxes axes) noexcept;
 
 // Default-off bloom path. Late color workspaces are distinguished from earlier
 // mask/depth passes by copy rectangle, format, stride and flags, not only by
@@ -139,6 +146,11 @@ struct EfbCopySamplingGeometry {
     unsigned dest_width,
     unsigned dest_height,
     unsigned efb_scale) noexcept;
+[[nodiscard]] EfbCopySamplingGeometry compute_efb_copy_sampling_geometry(
+    const EfbCopyParams& params,
+    unsigned dest_width,
+    unsigned dest_height,
+    EfbAxes axes) noexcept;
 
 // High-resolution display copies retain GX filter weights but sample adjacent
 // physical source rows. Texture/depth copies keep their logical-row footprint.
@@ -147,6 +159,11 @@ struct EfbCopySamplingGeometry {
     unsigned dest_width,
     unsigned dest_height,
     unsigned efb_scale) noexcept;
+[[nodiscard]] EfbCopySamplingGeometry compute_xfb_sampling_geometry(
+    const EfbCopyParams& params,
+    unsigned dest_width,
+    unsigned dest_height,
+    EfbAxes axes) noexcept;
 
 struct ScaledEfbRect {
     std::int32_t left = 0;
@@ -160,7 +177,36 @@ struct ScaledEfbRect {
 };
 
 // Both helpers below run once per draw and are defined inline so the compiler can
-// inline them into the caller. Arithmetic and result types are unchanged.
+// inline them into the caller.
+[[nodiscard]] inline ScaledEfbRect compute_scaled_efb_rect(
+    std::int32_t logical_left,
+    std::int32_t logical_top,
+    std::int32_t logical_right,
+    std::int32_t logical_bottom,
+    unsigned logical_target_width,
+    unsigned logical_target_height,
+    EfbAxes axes) noexcept {
+    // The public helper accepts arbitrary unsigned target extents, while its
+    // D3D12_RECT-compatible result is signed 32-bit. Saturate before the
+    // narrowing cast even though production EFB extents are much smaller.
+    constexpr std::int64_t kRectLimit =
+        std::numeric_limits<std::int32_t>::max();
+    const std::int64_t target_width = std::min(
+        efb_physical(logical_target_width, axes.x), kRectLimit);
+    const std::int64_t target_height = std::min(
+        efb_physical(logical_target_height, axes.y), kRectLimit);
+    const auto scaled_clamped = [](std::int32_t coordinate, float scale,
+                                   std::int64_t maximum) {
+        return static_cast<std::int32_t>(std::clamp<std::int64_t>(
+            efb_physical(coordinate, scale), 0, maximum));
+    };
+    return ScaledEfbRect{
+        scaled_clamped(logical_left, axes.x, target_width),
+        scaled_clamped(logical_top, axes.y, target_height),
+        scaled_clamped(logical_right, axes.x, target_width),
+        scaled_clamped(logical_bottom, axes.y, target_height)};
+}
+
 [[nodiscard]] inline ScaledEfbRect compute_scaled_efb_rect(
     std::int32_t logical_left,
     std::int32_t logical_top,
@@ -169,32 +215,10 @@ struct ScaledEfbRect {
     unsigned logical_target_width,
     unsigned logical_target_height,
     unsigned efb_scale) noexcept {
-    const std::int64_t scale = static_cast<std::int64_t>(
-        std::clamp(efb_scale, 1u, kMaxEfbScale));
-    // The public helper accepts arbitrary unsigned target extents, while its
-    // D3D12_RECT-compatible result is signed 32-bit. Saturate before the
-    // narrowing cast even though production EFB extents are much smaller.
-    constexpr std::int64_t kRectLimit =
-        std::numeric_limits<std::int32_t>::max();
-    const std::int64_t target_width = std::min(
-        static_cast<std::int64_t>(logical_target_width) * scale,
-        kRectLimit);
-    const std::int64_t target_height = std::min(
-        static_cast<std::int64_t>(logical_target_height) * scale,
-        kRectLimit);
-    const auto scaled_clamped = [scale](
-                                    std::int32_t coordinate,
-                                    std::int64_t maximum) {
-        return static_cast<std::int32_t>(std::clamp<std::int64_t>(
-            static_cast<std::int64_t>(coordinate) * scale,
-            0,
-            maximum));
-    };
-    return ScaledEfbRect{
-        scaled_clamped(logical_left, target_width),
-        scaled_clamped(logical_top, target_height),
-        scaled_clamped(logical_right, target_width),
-        scaled_clamped(logical_bottom, target_height)};
+    return compute_scaled_efb_rect(
+        logical_left, logical_top, logical_right, logical_bottom,
+        logical_target_width, logical_target_height,
+        EfbAxes::uniform(std::clamp(efb_scale, 1u, kMaxEfbScale)));
 }
 
 struct ScaledGxViewport {
@@ -214,12 +238,10 @@ struct ScaledGxViewport {
 // per-draw inlining reason as `compute_scaled_efb_rect` above.
 [[nodiscard]] inline ScaledGxViewport compute_scaled_gx_viewport(
     const float xf_viewport[6],
-    unsigned efb_scale) noexcept {
+    EfbAxes axes) noexcept {
     if (xf_viewport == nullptr) {
         return {};
     }
-    const float scale = static_cast<float>(
-        std::clamp(efb_scale, 1u, kMaxEfbScale));
     const float wd = xf_viewport[0];
     const float ht = xf_viewport[1];
     const float z_range = xf_viewport[2];
@@ -236,12 +258,19 @@ struct ScaledGxViewport {
         min_depth = max_depth;
     }
     return ScaledGxViewport{
-        (x_origin - wd) * scale,
-        (y_origin + ht) * scale,
-        2.0f * wd * scale,
-        -2.0f * ht * scale,
+        (x_origin - wd) * axes.x,
+        (y_origin + ht) * axes.y,
+        2.0f * wd * axes.x,
+        -2.0f * ht * axes.y,
         min_depth,
         max_depth};
+}
+
+[[nodiscard]] inline ScaledGxViewport compute_scaled_gx_viewport(
+    const float xf_viewport[6],
+    unsigned efb_scale) noexcept {
+    return compute_scaled_gx_viewport(
+        xf_viewport, EfbAxes::uniform(std::clamp(efb_scale, 1u, kMaxEfbScale)));
 }
 
 struct EfbPeekSamplingGeometry {
@@ -255,12 +284,20 @@ struct EfbPeekSamplingGeometry {
     std::uint32_t depth_texel_x = 0;
     std::uint32_t depth_texel_y = 0;
     unsigned color_reduction_samples = 1;
+    // The vertical step, and the color reduction's block width: at a fractional scale the
+    // block is the whole texels around the pixel's center.
+    float step_y = 1.0f;
+    unsigned color_reduction_width = 1;
 };
 
 [[nodiscard]] EfbPeekSamplingGeometry compute_efb_peek_sampling_geometry(
     std::uint16_t x,
     std::uint16_t y,
     unsigned efb_scale) noexcept;
+[[nodiscard]] EfbPeekSamplingGeometry compute_efb_peek_sampling_geometry(
+    std::uint16_t x,
+    std::uint16_t y,
+    EfbAxes axes) noexcept;
 
 class EfbCopyManager {
 public:
@@ -269,7 +306,8 @@ public:
     // Live internal-resolution change: later acquisitions re-create any XFB
     // texture whose physical extent no longer matches.
     void set_efb_scale(unsigned efb_scale) noexcept;
-    [[nodiscard]] unsigned efb_scale() const noexcept { return efb_scale_; }
+    void set_efb_axes(EfbAxes axes) noexcept { axes_ = axes; }
+    [[nodiscard]] EfbAxes efb_axes() const noexcept { return axes_; }
     void begin_frame(unsigned frame_slot, unsigned frames_in_flight);
 
     // Returns the XFB texture registered at the copy destination, creating
@@ -309,7 +347,7 @@ private:
     std::vector<std::vector<PooledTexture>> retired_textures_;
     std::vector<PooledTexture> idle_textures_;
     unsigned current_frame_slot_ = 0;
-    unsigned efb_scale_ = 1;
+    EfbAxes axes_{};
 };
 
 }  // namespace galaxy::gx

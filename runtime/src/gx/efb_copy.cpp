@@ -7,6 +7,7 @@
 #include "galaxy/gx/render_config.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -140,7 +141,7 @@ constexpr std::size_t kMaxIdleXfbTextures = 8u;
 
 bool EfbCopyManager::initialize(ID3D12Device* device, unsigned efb_scale) {
     device_ = device;
-    efb_scale_ = std::clamp(efb_scale, 1u, kMaxEfbScale);
+    axes_ = EfbAxes::uniform(std::clamp(efb_scale, 1u, kMaxEfbScale));
     return device_ != nullptr;
 }
 
@@ -152,7 +153,7 @@ void EfbCopyManager::shutdown() {
     has_latest_ = false;
     latest_addr_ = 0;
     next_copy_serial_ = 1;
-    efb_scale_ = 1;
+    axes_ = {};
     device_.Reset();
 }
 
@@ -266,19 +267,25 @@ std::uint16_t compute_xfb_copy_height(
 ScaledEfbCopyExtent compute_scaled_efb_copy_extent(
     std::uint16_t logical_width,
     std::uint16_t logical_height,
-    unsigned efb_scale) noexcept {
-    const unsigned scale = std::clamp(efb_scale, 1u, kMaxEfbScale);
-    constexpr unsigned kMaxTextureDimension =
+    EfbAxes axes) noexcept {
+    constexpr std::int64_t kMaxTextureDimension =
         D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
-    const unsigned width = std::min(
-        static_cast<unsigned>(logical_width) * scale,
-        kMaxTextureDimension);
-    const unsigned height = std::min(
-        static_cast<unsigned>(logical_height) * scale,
-        kMaxTextureDimension);
+    const std::int64_t width = std::min(
+        efb_physical(logical_width, axes.x), kMaxTextureDimension);
+    const std::int64_t height = std::min(
+        efb_physical(logical_height, axes.y), kMaxTextureDimension);
     return ScaledEfbCopyExtent{
         static_cast<std::uint16_t>(width),
         static_cast<std::uint16_t>(height)};
+}
+
+ScaledEfbCopyExtent compute_scaled_efb_copy_extent(
+    std::uint16_t logical_width,
+    std::uint16_t logical_height,
+    unsigned efb_scale) noexcept {
+    return compute_scaled_efb_copy_extent(
+        logical_width, logical_height,
+        EfbAxes::uniform(std::clamp(efb_scale, 1u, kMaxEfbScale)));
 }
 
 bool is_galaxy_bloom_workspace_copy(
@@ -305,24 +312,32 @@ EfbCopySamplingGeometry compute_efb_copy_sampling_geometry(
     const EfbCopyParams& params,
     unsigned dest_width,
     unsigned dest_height,
-    unsigned efb_scale) noexcept {
-    const float scale = static_cast<float>(
-        std::clamp(efb_scale, 1u, kMaxEfbScale));
+    EfbAxes axes) noexcept {
     EfbCopySamplingGeometry geometry{};
-    geometry.src_x = static_cast<float>(params.src_x) * scale;
-    geometry.src_y = static_cast<float>(params.src_y) * scale;
+    geometry.src_x = static_cast<float>(params.src_x) * axes.x;
+    geometry.src_y = static_cast<float>(params.src_y) * axes.y;
     geometry.step_x = dest_width == 0u
         ? 0.0f
-        : static_cast<float>(params.src_width) * scale /
+        : static_cast<float>(params.src_width) * axes.x /
               static_cast<float>(dest_width);
     geometry.step_y = dest_height == 0u
         ? 0.0f
-        : static_cast<float>(params.src_height) * scale /
+        : static_cast<float>(params.src_height) * axes.y /
               static_cast<float>(dest_height);
     // GX copy-filter taps are one logical EFB row apart. At Nx internal
     // resolution that separation is N physical source texels.
-    geometry.filter_row_offset = scale;
+    geometry.filter_row_offset = axes.y;
     return geometry;
+}
+
+EfbCopySamplingGeometry compute_efb_copy_sampling_geometry(
+    const EfbCopyParams& params,
+    unsigned dest_width,
+    unsigned dest_height,
+    unsigned efb_scale) noexcept {
+    return compute_efb_copy_sampling_geometry(
+        params, dest_width, dest_height,
+        EfbAxes::uniform(std::clamp(efb_scale, 1u, kMaxEfbScale)));
 }
 
 EfbCopySamplingGeometry compute_xfb_sampling_geometry(
@@ -330,8 +345,18 @@ EfbCopySamplingGeometry compute_xfb_sampling_geometry(
     unsigned dest_width,
     unsigned dest_height,
     unsigned efb_scale) noexcept {
+    return compute_xfb_sampling_geometry(
+        params, dest_width, dest_height,
+        EfbAxes::uniform(std::clamp(efb_scale, 1u, kMaxEfbScale)));
+}
+
+EfbCopySamplingGeometry compute_xfb_sampling_geometry(
+    const EfbCopyParams& params,
+    unsigned dest_width,
+    unsigned dest_height,
+    EfbAxes axes) noexcept {
     auto geometry = compute_efb_copy_sampling_geometry(
-        params, dest_width, dest_height, efb_scale);
+        params, dest_width, dest_height, axes);
     // The scaled VRAM copy filter operates on physical source texels, as in
     // Dolphin TextureCacheBase::CopyEFBToCacheEntry's scaled pixel_height.
     // Preserve origin, resampling, coefficients, gamma and clamp behavior.
@@ -346,26 +371,37 @@ EfbCopySamplingGeometry compute_xfb_sampling_geometry(
 EfbPeekSamplingGeometry compute_efb_peek_sampling_geometry(
     std::uint16_t x,
     std::uint16_t y,
+    EfbAxes axes) noexcept {
+    // The texel under the pixel's center, and a block of whole texels centred on it: at a
+    // whole scale N the N x N block of the logical pixel, texel N * x + floor(N / 2).
+    const double center_x = (static_cast<double>(x) + 0.5) * axes.x;
+    const double center_y = (static_cast<double>(y) + 0.5) * axes.y;
+    const unsigned width = std::max(
+        1u, static_cast<unsigned>(std::min(axes.x, axes.y) + 1e-4f));
+    const double half = 0.5 * width;
+    EfbPeekSamplingGeometry geometry{};
+    geometry.src_x = static_cast<float>(std::floor(center_x - half));
+    geometry.src_y = static_cast<float>(std::floor(center_y - half));
+    geometry.step = axes.x;
+    geometry.center_y = static_cast<float>(center_y);
+    geometry.depth_texel_x = static_cast<std::uint32_t>(std::floor(center_x));
+    geometry.depth_texel_y = static_cast<std::uint32_t>(std::floor(center_y));
+    geometry.color_reduction_samples = width * width;
+    geometry.step_y = axes.y;
+    geometry.color_reduction_width = width;
+    return geometry;
+}
+
+EfbPeekSamplingGeometry compute_efb_peek_sampling_geometry(
+    std::uint16_t x,
+    std::uint16_t y,
     unsigned efb_scale) noexcept {
-    const unsigned integer_scale = std::clamp(efb_scale, 1u, kMaxEfbScale);
-    const float scale = static_cast<float>(integer_scale);
-    const std::uint32_t src_x =
-        static_cast<std::uint32_t>(x) * integer_scale;
-    const std::uint32_t src_y =
-        static_cast<std::uint32_t>(y) * integer_scale;
-    const std::uint32_t center_offset = integer_scale / 2u;
-    return EfbPeekSamplingGeometry{
-        static_cast<float>(src_x),
-        static_cast<float>(src_y),
-        scale,
-        static_cast<float>(src_y) + 0.5f * scale,
-        src_x + center_offset,
-        src_y + center_offset,
-        integer_scale * integer_scale};
+    return compute_efb_peek_sampling_geometry(
+        x, y, EfbAxes::uniform(std::clamp(efb_scale, 1u, kMaxEfbScale)));
 }
 
 void EfbCopyManager::set_efb_scale(unsigned efb_scale) noexcept {
-    efb_scale_ = std::clamp(efb_scale, 1u, kMaxEfbScale);
+    axes_ = EfbAxes::uniform(std::clamp(efb_scale, 1u, kMaxEfbScale));
 }
 
 XfbTexture* EfbCopyManager::acquire_xfb(
@@ -382,7 +418,7 @@ XfbTexture* EfbCopyManager::acquire_xfb(
     const ScaledEfbCopyExtent extent = compute_scaled_efb_copy_extent(
         params.src_width,
         logical_h,
-        efb_scale_);
+        axes_);
     const std::uint16_t wanted_w = extent.width;
     const std::uint16_t wanted_h = extent.height;
 
@@ -395,6 +431,8 @@ XfbTexture* EfbCopyManager::acquire_xfb(
         if (entry.width == wanted_w && entry.height == wanted_h &&
             entry.texture) {
             static_cast<void>(frame_index);
+            entry.logical_width = params.src_width;
+            entry.logical_height = logical_h;
             return &entry;
         }
         // Size changed: drop the old texture and recreate it below.
@@ -415,6 +453,8 @@ XfbTexture* EfbCopyManager::acquire_xfb(
     entry.guest_addr  = registry_addr;
     entry.width       = wanted_w;
     entry.height      = wanted_h;
+    entry.logical_width = params.src_width;
+    entry.logical_height = logical_h;
     entry.frame_stamp = frame_index;
     entry.copy_serial = 0;
     entry.presentable = false;

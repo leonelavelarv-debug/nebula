@@ -25,6 +25,28 @@ namespace galaxy::gx {
 // 12x covers 32:9 at 2160 lines and 16x (10240x8448) stays well inside the
 // D3D12 16384-texel limit. Higher scales are opt-in; the default remains 1x.
 inline constexpr unsigned kMaxEfbScale = 16u;
+
+// Physical EFB texels per logical pixel on each axis. A whole internal resolution uses
+// one integer factor on both; Match Output fits the 640x456 picture to the window's
+// picture rectangle on each axis (3 x 2.368 at 1920x1080), so the game renders the
+// window's pixels instead of a larger picture that the present reduces.
+struct EfbAxes {
+    float x = 1.0f;
+    float y = 1.0f;
+
+    [[nodiscard]] static constexpr EfbAxes uniform(unsigned scale) noexcept {
+        return {static_cast<float>(scale), static_cast<float>(scale)};
+    }
+    [[nodiscard]] constexpr bool operator==(const EfbAxes&) const noexcept = default;
+};
+
+// A logical EFB coordinate on the physical grid, rounded to the nearest texel edge. Every
+// rectangle (scissor, clear, copy source) and extent goes through this one rounding, so
+// adjacent rectangles share edges; whole scales multiply exactly.
+[[nodiscard]] inline std::int64_t efb_physical(std::int64_t logical, float scale) noexcept {
+    return static_cast<std::int64_t>(std::floor(static_cast<double>(logical) * scale + 0.5));
+}
+
 inline constexpr float kMinFrameRate = 1.0f;
 inline constexpr float kMaxFrameRate = 1000.0f;
 
