@@ -933,6 +933,7 @@ public:
         print_functions(out, tag("-host-fn").c_str(), host_buckets_, function_rows, pct);
         print_functions(out, tag("-other-fn").c_str(), other_buckets_, function_rows, pct);
         print_functions(out, tag("-other-caller-fn").c_str(), other_caller_buckets_, function_rows, pct);
+        print_function_pairs(out, tag("-other-pair-fn").c_str(), other_caller_pairs_, function_rows, pct);
         print_addresses(out, tag("-other-caller").c_str(), other_caller_buckets_, 32u, pct);
         print_addresses(out, tag("-blocked-site").c_str(), blocked_sites_, 24u, pct);
         print_addresses(out, tag("-blocked-leaf").c_str(), blocked_leaves_, 12u, pct);
@@ -978,6 +979,26 @@ private:
         for (std::size_t i = 0; i < rows.size() && i < limit; ++i) {
             out << tag << ' ' << rows[i].first << " samples=" << rows[i].second
                 << " pct=" << pct(rows[i].second) << '\n';
+        }
+    }
+
+    // "leaf <- caller" per foreign function and the runtime function that reached it.
+    template <typename Pct>
+    void print_function_pairs(std::ostream& out, const char* tag,
+                              const std::map<std::pair<std::uintptr_t, std::uintptr_t>, std::uint64_t>& pairs,
+                              std::size_t limit, Pct pct) {
+        ensure_symbols();
+        std::map<std::pair<std::string, std::string>, std::uint64_t> totals;
+        for (const auto& [pair, count] : pairs) {
+            totals[{function_name(pair.first << 4u), function_name(pair.second << 4u)}] += count;
+        }
+        std::vector<std::pair<std::uint64_t, const std::pair<std::string, std::string>*>> rows;
+        rows.reserve(totals.size());
+        for (const auto& [names, count] : totals) rows.emplace_back(count, &names);
+        std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        for (std::size_t i = 0; i < rows.size() && i < limit; ++i) {
+            out << tag << ' ' << rows[i].second->first << " <- " << rows[i].second->second
+                << " samples=" << rows[i].first << " pct=" << pct(rows[i].first) << '\n';
         }
     }
 
@@ -1047,13 +1068,20 @@ private:
         galaxy::host::name_current_thread(L"Nebula Sim Profiler");
         (void)SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        // GALAXY_SIM_PROFILE_START_MS delays the first sample, so a profile can leave out the boot.
+        static const std::uint64_t start_ms = read_env_u64("GALAXY_SIM_PROFILE_START_MS", 0u);
+        const auto first_sample = std::chrono::steady_clock::now() + std::chrono::milliseconds(start_ms);
+        while (running_.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < first_sample) {
+            Sleep(100);
+        }
         ULONG64 last_cycles = 0u;
         (void)QueryThreadCycleTime(target_, &last_cycles);
         std::uint64_t since_refresh = 0u;
         refresh_images();
         while (running_.load(std::memory_order_acquire)) {
-            if (++since_refresh * interval_us_ >= 1'000'000u) {
+            if (++since_refresh * interval_us_ >= 1'000'000u || images_stale_) {
                 since_refresh = 0u;
+                images_stale_ = false;
                 refresh_images();
             }
             if (timer != nullptr) {
@@ -1104,6 +1132,27 @@ private:
         const RUNTIME_FUNCTION* entries{};
         std::size_t count{};
     };
+    // Images can unload between the enumeration and the header reads, and between refreshes (the
+    // Streamline loader maps and unmaps its plugins while the game starts), so every read of a cached
+    // image is guarded.
+    static bool read_image_tables(std::uintptr_t base, ImageTables& image) noexcept {
+        __try {
+            const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+            const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + static_cast<std::uintptr_t>(dos->e_lfanew));
+            if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return false;
+            const IMAGE_DATA_DIRECTORY& directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+            image.base = base;
+            image.end = base + nt->OptionalHeader.SizeOfImage;
+            if (directory.VirtualAddress != 0u && directory.Size >= sizeof(RUNTIME_FUNCTION)) {
+                image.entries = reinterpret_cast<const RUNTIME_FUNCTION*>(base + directory.VirtualAddress);
+                image.count = directory.Size / sizeof(RUNTIME_FUNCTION);
+            }
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
     void refresh_images() {
         HMODULE modules[512]{};
         DWORD needed = 0u;
@@ -1112,20 +1161,8 @@ private:
         std::vector<ImageTables> tables;
         tables.reserve(total);
         for (std::size_t i = 0; i < total; ++i) {
-            const auto base = reinterpret_cast<std::uintptr_t>(modules[i]);
-            const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-            if (dos->e_magic != IMAGE_DOS_SIGNATURE) continue;
-            const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + static_cast<std::uintptr_t>(dos->e_lfanew));
-            if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) continue;
-            const IMAGE_DATA_DIRECTORY& directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
             ImageTables image{};
-            image.base = base;
-            image.end = base + nt->OptionalHeader.SizeOfImage;
-            if (directory.VirtualAddress != 0u && directory.Size >= sizeof(RUNTIME_FUNCTION)) {
-                image.entries = reinterpret_cast<const RUNTIME_FUNCTION*>(base + directory.VirtualAddress);
-                image.count = directory.Size / sizeof(RUNTIME_FUNCTION);
-            }
-            tables.push_back(image);
+            if (read_image_tables(reinterpret_cast<std::uintptr_t>(modules[i]), image)) tables.push_back(image);
         }
         std::sort(tables.begin(), tables.end(), [](const auto& a, const auto& b) { return a.base < b.base; });
         images_.swap(tables);
@@ -1148,6 +1185,15 @@ private:
             else return &entry;
         }
         return nullptr;
+    }
+    static bool guarded_function_for(const ImageTables& image, std::uintptr_t address,
+                                     const RUNTIME_FUNCTION*& function) noexcept {
+        __try {
+            function = function_for(image, address);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
     }
     // RtlVirtualUnwind reads the stack slots its unwind codes name. A frame caught mid-prologue or with
     // no valid unwind state yields a garbage RSP, and unwinding from it faulted inside ntdll
@@ -1178,7 +1224,12 @@ private:
                 rsp_before >= stack_base) break;
             const ImageTables* image = image_for(static_cast<std::uintptr_t>(ctx.Rip));
             if (image == nullptr) break;
-            const RUNTIME_FUNCTION* function = function_for(*image, static_cast<std::uintptr_t>(ctx.Rip));
+            const RUNTIME_FUNCTION* function = nullptr;
+            if (!guarded_function_for(*image, static_cast<std::uintptr_t>(ctx.Rip), function)) {
+                ++walk_faults_;
+                images_stale_ = true;
+                break;
+            }
             if (function == nullptr) {
                 if (ctx.Rsp == 0u || ctx.Rsp % 8u != 0u) break;
                 const auto* slot = reinterpret_cast<const std::uint64_t*>(ctx.Rsp);
@@ -1253,6 +1304,7 @@ private:
                 if (!in_host(frames[i])) continue;
                 if (is_allocator_frame(frames[i]) && i + 1u < frame_count) continue;
                 ++other_caller_buckets_[frames[i] >> 4u];
+                ++other_caller_pairs_[{rip >> 4u, frames[i] >> 4u}];
                 break;
             }
         }
@@ -1271,6 +1323,7 @@ private:
     std::uintptr_t module_base_ = 0, module_end_ = 0, host_base_ = 0, host_end_ = 0;
     std::vector<std::pair<std::uintptr_t, std::uint32_t>> entries_;
     std::vector<ImageTables> images_;
+    bool images_stale_{};
     std::vector<std::uint64_t> guest_counts_;
     std::vector<std::uint64_t> guest_caller_counts_;
     std::vector<std::uint64_t> guest_blocked_counts_;
@@ -1282,6 +1335,7 @@ private:
     std::unordered_map<std::uint64_t, std::uint64_t> module_caller_pairs_;
     std::unordered_map<std::uintptr_t, std::uint64_t> other_buckets_;
     std::unordered_map<std::uintptr_t, std::uint64_t> other_caller_buckets_;
+    std::map<std::pair<std::uintptr_t, std::uintptr_t>, std::uint64_t> other_caller_pairs_;
     std::vector<std::uintptr_t> wait_stubs_;
     std::unordered_map<std::uintptr_t, std::uint64_t> blocked_sites_;
     std::unordered_map<std::uintptr_t, std::uint64_t> blocked_leaves_;
