@@ -44,6 +44,7 @@ bool native_host_test_concurrent_wav_dump();
 bool native_host_test_wav_dump(std::span<const std::byte> pcm,
     std::uint32_t rate, bool fail_finalization);
 void native_host_test_attach_nand_metadata(const std::filesystem::path& path);
+bool native_host_test_select_nand_stream_layout(const std::filesystem::path& root);
 
 struct NativeNandTestAccess {
     static std::uint32_t persist_new_file(const std::filesystem::path& root,
@@ -945,18 +946,13 @@ bool host_file_stream_exists_for_test(const std::filesystem::path& path) {
     return true;
 }
 
-// Under Wine the runtime keeps NAND streams in sidecar files (see
-// nand_uses_sidecar_streams in native_host.cpp); the tests follow it.
+// The runtime's NAND stream layout for the test roots
+// (select_nand_stream_layout in native_host.cpp), chosen in main before any
+// test; the helpers below follow it.
+bool g_test_nand_sidecar_streams = false;
+
 bool test_nand_uses_sidecar_streams() {
-    std::array<wchar_t, 4> value{};
-    const DWORD length = GetEnvironmentVariableW(
-        L"NEBULA_NAND_SIDECAR_STREAMS",
-        value.data(),
-        static_cast<DWORD>(value.size()));
-    if (length == 1u) return value[0] == L'1';
-    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    return ntdll != nullptr &&
-        GetProcAddress(ntdll, "wine_get_version") != nullptr;
+    return g_test_nand_sidecar_streams;
 }
 
 constexpr std::array<std::wstring_view, 3> kTestNandStreamNames{
@@ -14705,6 +14701,10 @@ int main(int argc, char** argv) {
     std::error_code nand_test_ec;
     std::filesystem::remove_all(nand_test_root, nand_test_ec);
     ScopedWideEnv set_nand_root(L"GALAXY_NAND_ROOT", nand_test_root);
+    g_test_nand_sidecar_streams =
+        galaxy::host::native_host_test_select_nand_stream_layout(nand_test_root);
+    std::cerr << "[native-host-test] NAND streams: "
+              << (g_test_nand_sidecar_streams ? "sidecar files" : "named streams") << '\n';
     bool passed = true;
     passed &= flat_guest_owner_abi_boundary_works();
     passed &= native_audio_recovery_backpressure_works(

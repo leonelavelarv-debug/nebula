@@ -21958,8 +21958,8 @@ constexpr std::wstring_view kNandMetadataPendingStream =
     L":galaxy.isfs.meta.pending";
 constexpr std::wstring_view kNandProvisionalStream =
     L":galaxy.isfs.provisional";
-// Marks a sidecar file that stands in for a named stream under Wine (see
-// nand_uses_sidecar_streams).
+// Marks a sidecar file that stands in for a named stream (see
+// select_nand_stream_layout).
 constexpr std::wstring_view kNandSidecarStreamMarker = L"~nebula-ads~";
 constexpr std::array<std::byte, 4> kNandMetadataMagic{
     std::byte{'G'}, std::byte{'I'}, std::byte{'S'}, std::byte{'3'}};
@@ -21973,25 +21973,14 @@ constexpr std::size_t kNandRenameJournalSerializedSize = 176u;
 constexpr std::uint8_t kNandRenameOldTargetProvisional = 1u << 0u;
 std::atomic<std::uint64_t> s_nand_temp_sequence{0u};
 
-bool detect_nand_sidecar_streams() noexcept {
-    std::array<wchar_t, 4> value{};
-    const DWORD length = GetEnvironmentVariableW(
-        L"NEBULA_NAND_SIDECAR_STREAMS",
-        value.data(),
-        static_cast<DWORD>(value.size()));
-    if (length == 1u) return value[0] == L'1';
-    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    return ntdll != nullptr &&
-        GetProcAddress(ntdll, "wine_get_version") != nullptr;
-}
-
-// Decided once at process start. On Windows every nand_* wrapper is its
-// plain Win32 call behind one load of this flag; the sidecar work stays out
-// of line.
-const bool s_nand_sidecar_streams = detect_nand_sidecar_streams();
+// Set by select_nand_stream_layout before the first NAND access. With named
+// streams every nand_* wrapper is its plain Win32 call behind one load of
+// this flag (a relaxed load is a plain byte load on x64); the sidecar work
+// stays out of line.
+std::atomic<bool> s_nand_sidecar_streams{false};
 
 bool nand_uses_sidecar_streams() noexcept {
-    return s_nand_sidecar_streams;
+    return s_nand_sidecar_streams.load(std::memory_order_relaxed);
 }
 
 enum class NativeNandStartupMode {
@@ -22362,13 +22351,13 @@ std::string_view isfs_parent_path(std::string_view path) {
     return slash == 0u ? std::string_view{"/"} : path.substr(0u, slash);
 }
 
-// Wine has no NTFS named streams. Under Wine each stream lives in a sidecar
-// file instead: a file's streams beside it, a directory's inside it, so a
-// directory carries its own streams when it moves. Sidecar names are longer
-// than any ISFS name (12 characters), so the guest can never reach one, and
-// every NAND rename, delete and directory scan below goes through the
-// nand_* wrappers, which move, delete or skip the sidecars as NTFS would.
-// NEBULA_NAND_SIDECAR_STREAMS=1 or 0 forces the choice (tests on Windows).
+// On a volume without named streams (select_nand_stream_layout) each stream
+// lives in a sidecar file instead: a file's streams beside it, a directory's
+// inside it, so a directory carries its own streams when it moves. Sidecar
+// names are longer than any ISFS name (12 characters), so the guest can
+// never reach one, and every NAND rename, delete and directory scan below
+// goes through the nand_* wrappers, which move, delete or skip the sidecars
+// as NTFS would.
 constexpr std::array<std::wstring_view, 3> kNandSidecarStreamNames{
     kNandMetadataStream, kNandMetadataPendingStream, kNandProvisionalStream};
 
@@ -23854,15 +23843,15 @@ std::optional<DWORD> nand_volume_serial(
     return serial;
 }
 
-bool nand_volume_supports_named_streams(
-    const std::filesystem::path& existing_path) {
-    if (nand_uses_sidecar_streams()) return true;
+// The path need not exist yet: GetVolumePathNameW walks up to its volume.
+std::optional<bool> nand_volume_has_named_streams(
+    const std::filesystem::path& path) {
     std::array<wchar_t, MAX_PATH> volume_root{};
     if (GetVolumePathNameW(
-            existing_path.c_str(),
+            path.c_str(),
             volume_root.data(),
             static_cast<DWORD>(volume_root.size())) == FALSE) {
-        return false;
+        return std::nullopt;
     }
     DWORD flags = 0u;
     if (GetVolumeInformationW(
@@ -23874,9 +23863,41 @@ bool nand_volume_supports_named_streams(
             &flags,
             nullptr,
             0u) == FALSE) {
-        return false;
+        return std::nullopt;
     }
     return (flags & FILE_NAMED_STREAMS) != 0u;
+}
+
+bool nand_volume_supports_named_streams(
+    const std::filesystem::path& existing_path) {
+    return nand_uses_sidecar_streams() ||
+        nand_volume_has_named_streams(existing_path).value_or(false);
+}
+
+// NAND streams are named streams where the volume holding the root has them
+// (NTFS) and sidecar files where it has none: every volume under Wine and
+// Proton, which report no FILE_NAMED_STREAMS, and FAT32 or exFAT drives. A
+// volume that cannot be queried keeps named streams, and the root probe
+// then refuses it. NEBULA_NAND_SIDECAR_STREAMS=1 or 0 forces the layout
+// (tests). One NAND root per process.
+void select_nand_stream_layout(const std::filesystem::path& root) {
+    std::array<wchar_t, 4> value{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"NEBULA_NAND_SIDECAR_STREAMS",
+        value.data(),
+        static_cast<DWORD>(value.size()));
+    bool sidecar = false;
+    if (length == 1u) {
+        sidecar = value[0] == L'1';
+    } else {
+        std::error_code error;
+        const std::filesystem::path absolute =
+            std::filesystem::absolute(root, error);
+        const std::optional<bool> named_streams =
+            nand_volume_has_named_streams(error ? root : absolute);
+        sidecar = named_streams.has_value() && !*named_streams;
+    }
+    s_nand_sidecar_streams.store(sidecar, std::memory_order_relaxed);
 }
 
 std::optional<bool> nand_path_has_case_fold_collision(
@@ -25528,6 +25549,7 @@ NativeNandRootProbe probe_native_nand_root() {
                   L"SuperMarioGalaxy" / L"nand"
             : std::filesystem::path(L"generated") / L"nand";
     }
+    select_nand_stream_layout(root);
     const std::optional<std::filesystem::path> extended_root =
         extended_length_nand_root(root);
     if (!extended_root.has_value()) {
@@ -27010,6 +27032,12 @@ NandAdoption adopt_foreign_nand_tree(const std::filesystem::path& root) {
 #if defined(GALAXY_NATIVE_HOST_TEST_SUPPORT)
 void native_host_test_attach_nand_metadata(const std::filesystem::path& path) {
     (void)attach_nand_metadata_to_existing_object(path, {}, false, {});
+}
+
+bool native_host_test_select_nand_stream_layout(
+    const std::filesystem::path& root) {
+    select_nand_stream_layout(root);
+    return nand_uses_sidecar_streams();
 }
 #endif
 
