@@ -6056,6 +6056,22 @@ void publish_native_pointer_input_origin(bool button, bool injected) noexcept {
         .store(injected, std::memory_order_relaxed);
 }
 
+namespace {
+std::atomic<std::uintptr_t> g_foreground_window{0};
+std::atomic<bool> g_foreground_owned{false};
+}  // namespace
+
+void publish_native_foreground_window(std::uintptr_t window, bool owned_by_process) noexcept {
+    g_foreground_owned.store(owned_by_process, std::memory_order_relaxed);
+    g_foreground_window.store(window, std::memory_order_release);
+}
+
+std::uintptr_t native_foreground_window(bool& owned_by_process) noexcept {
+    const std::uintptr_t window = g_foreground_window.load(std::memory_order_acquire);
+    owned_by_process = g_foreground_owned.load(std::memory_order_relaxed);
+    return window;
+}
+
 bool native_window_key_injected(std::uint32_t key) noexcept {
     return key < g_window_key_injected.size() &&
            g_window_key_injected[key].load(std::memory_order_relaxed);
@@ -6933,13 +6949,9 @@ std::uint16_t wiimote_trace_button_bits(
 }
 
 bool foreground_process_window(HWND& window) {
-    window = GetForegroundWindow();
-    if (window == nullptr || !IsWindow(window) || !IsWindowVisible(window)) {
-        return false;
-    }
-    DWORD pid = 0;
-    GetWindowThreadProcessId(window, &pid);
-    return pid == GetCurrentProcessId();
+    bool owned = false;
+    window = reinterpret_cast<HWND>(native_foreground_window(owned));
+    return window != nullptr && owned;
 }
 
 bool current_process_window_under_cursor(POINT& cursor, HWND& window) {

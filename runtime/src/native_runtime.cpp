@@ -31487,9 +31487,10 @@ static galaxy::host::HostPointerState compute_runtime_host_pointer_state_uncache
     if (cursor.over_window) {
         state.debug_flags |= kPointerDebugPointWindow;
     }
-    const HWND window = reinterpret_cast<HWND>(cursor.window);
     state.debug_window = cursor.window;
-    state.window_focused = GetForegroundWindow() == window;
+    bool foreground_owned = false;
+    state.window_focused =
+        galaxy::host::native_foreground_window(foreground_owned) == cursor.window;
     state.window_under_cursor = cursor.over_window;
     const int width = cursor.client_width;
     const int height = cursor.client_height;

@@ -1196,6 +1196,10 @@ add_executable(galaxy_xfb_present_selection_tests
     runtime/src/gx/xfb_present_selection_tests.cpp)
 target_link_libraries(galaxy_xfb_present_selection_tests PRIVATE galaxy_gx)
 
+add_executable(galaxy_window_input_tests
+    runtime/src/gx/window_input_tests.cpp)
+target_link_libraries(galaxy_window_input_tests PRIVATE galaxy_gx)
+
 add_executable(galaxy_efb_conversion_tests
     runtime/src/gx/efb_conversion_tests.cpp)
 target_link_libraries(galaxy_efb_conversion_tests PRIVATE galaxy_gx)
@@ -1324,6 +1328,7 @@ if(MSVC)
         galaxy_rt_surfaces_tests
         galaxy_rt_materials_tests
         galaxy_xfb_present_selection_tests
+        galaxy_window_input_tests
         galaxy_efb_conversion_tests
         galaxy_line_point_raster_tests
         galaxy_xf_lighting_tests
@@ -1421,6 +1426,9 @@ galaxy_add_native_test(sampler_key_packing galaxy_sampler_key_tests)
 galaxy_add_native_test(rt_surface_classes galaxy_rt_surfaces_tests)
 galaxy_add_native_test(rt_material_table galaxy_rt_materials_tests)
 galaxy_add_native_test(xfb_present_selection galaxy_xfb_present_selection_tests)
+galaxy_add_native_test(window_input_messages galaxy_window_input_tests)
+galaxy_add_native_test(window_input_cursor_timer galaxy_window_input_tests --timer)
+set_tests_properties(window_input_messages window_input_cursor_timer PROPERTIES TIMEOUT 20)
 galaxy_add_native_test(efb_content_key_identity galaxy_efb_conversion_tests --content-key-hash)
 galaxy_add_native_test(efb_conversion_pipeline galaxy_efb_conversion_tests)
 galaxy_add_native_test(efb_oversized_content_retirement galaxy_efb_conversion_tests --oversized-content-cache)

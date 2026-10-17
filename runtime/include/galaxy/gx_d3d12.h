@@ -231,8 +231,13 @@ struct HostCursorSample {
     int client_width = 0;
     int client_height = 0;
     bool over_window = false;
+    // GetTickCount64 when the window thread took the sample.
+    std::uint64_t sampled_ms = 0;
 };
 [[nodiscard]] bool sampled_host_cursor(HostCursorSample& sample) noexcept;
+
+// The game window's procedure, for tests that drive the window thread with messages.
+[[nodiscard]] void* native_window_procedure_for_tests() noexcept;
 
 [[nodiscard]] host::HostPointerTransitionPoll poll_host_pointer_transition(
     std::uint64_t after_sequence) noexcept;

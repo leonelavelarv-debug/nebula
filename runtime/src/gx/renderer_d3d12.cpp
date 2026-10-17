@@ -331,6 +331,14 @@ std::atomic<std::uint64_t> s_cursor_sample_ms{0};
 std::atomic<bool> s_cursor_over_window{false};
 std::atomic<bool> s_remote_session{false};
 constexpr UINT_PTR kCursorSampleTimer = 0x4E43u;
+// Window-thread health for recordings ([present-stats]): time spent in each timer tick's cursor
+// and foreground samples, and the process's handle, GDI and USER object counts every 2 s.
+std::atomic<std::uint64_t> s_window_sample_ticks{0};
+std::atomic<std::uint64_t> s_window_sample_us_total{0};
+std::atomic<std::uint64_t> s_window_sample_us_max{0};
+std::atomic<std::uint32_t> s_process_handles{0};
+std::atomic<std::uint32_t> s_gdi_objects{0};
+std::atomic<std::uint32_t> s_user_objects{0};
 std::atomic<bool> s_system_menu_active{false};
 std::atomic<bool> s_move_size_active{false};
 std::recursive_mutex s_native_settings_mutex;
@@ -2084,6 +2092,57 @@ void sample_os_cursor(HWND hwnd) noexcept {
     store_cursor_sample(static_cast<int>(client.x), static_cast<int>(client.y), hovered == hwnd);
 }
 
+// Window thread only.
+void sample_foreground_window() noexcept {
+    const HWND foreground = GetForegroundWindow();
+    DWORD pid = 0;
+    if (foreground != nullptr) {
+        (void)GetWindowThreadProcessId(foreground, &pid);
+    }
+    galaxy::host::publish_native_foreground_window(
+        reinterpret_cast<std::uintptr_t>(foreground),
+        foreground != nullptr && pid == GetCurrentProcessId() &&
+            IsWindowVisible(foreground) != FALSE);
+}
+
+// Window thread only: one sampling-timer tick.
+void sample_window_thread_inputs(HWND hwnd) noexcept {
+    static const std::uint64_t qpc_frequency = [] {
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        return static_cast<std::uint64_t>(frequency.QuadPart);
+    }();
+    LARGE_INTEGER start{};
+    QueryPerformanceCounter(&start);
+    if (!hidden_window_mode_enabled()) {
+        sample_foreground_window();
+        if (mouse_ir_cursor_poll_mode() != galaxy::host::HostPointerCursorPollMode::Disabled) {
+            sample_os_cursor(hwnd);
+        }
+    }
+    LARGE_INTEGER end{};
+    QueryPerformanceCounter(&end);
+    const std::uint64_t us = qpc_frequency == 0u ? 0u
+        : static_cast<std::uint64_t>(end.QuadPart - start.QuadPart) * 1'000'000u / qpc_frequency;
+    s_window_sample_ticks.fetch_add(1u, std::memory_order_relaxed);
+    s_window_sample_us_total.fetch_add(us, std::memory_order_relaxed);
+    std::uint64_t seen = s_window_sample_us_max.load(std::memory_order_relaxed);
+    while (us > seen &&
+           !s_window_sample_us_max.compare_exchange_weak(seen, us, std::memory_order_relaxed)) {
+    }
+    static std::uint64_t next_resource_ms = 0u;
+    const std::uint64_t now_ms = GetTickCount64();
+    if (now_ms >= next_resource_ms) {
+        next_resource_ms = now_ms + 2000u;
+        DWORD handles = 0;
+        if (GetProcessHandleCount(GetCurrentProcess(), &handles)) {
+            s_process_handles.store(handles, std::memory_order_relaxed);
+        }
+        s_gdi_objects.store(GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS), std::memory_order_relaxed);
+        s_user_objects.store(GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS), std::memory_order_relaxed);
+    }
+}
+
 // The window thread's latest cursor sample in client coordinates; false when there is none or it
 // is older than a few timer periods (the window thread is in a modal loop or not pumping).
 bool sampled_os_cursor(POINT& client) noexcept {
@@ -2421,15 +2480,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         s_pointer_hwnd.store(reinterpret_cast<std::uintptr_t>(hwnd),
                              std::memory_order_release);
         refresh_monitor_efb_scale_cap(hwnd, true);
-        // A hidden test window is no keyboard or mouse source (native_host skips the poll).
-        if (!hidden_window_mode_enabled() &&
-            mouse_ir_cursor_poll_mode() != galaxy::host::HostPointerCursorPollMode::Disabled) {
-            sample_os_cursor(hwnd);
-            (void)SetTimer(hwnd, kCursorSampleTimer, USER_TIMER_MINIMUM, nullptr);
-        }
+        // A hidden test window is no keyboard or mouse source (native_host skips the poll); its
+        // timer only counts handles and GDI/USER objects.
+        sample_window_thread_inputs(hwnd);
+        (void)SetTimer(hwnd, kCursorSampleTimer, USER_TIMER_MINIMUM, nullptr);
     }
     if (msg == WM_TIMER && wp == kCursorSampleTimer) {
-        sample_os_cursor(hwnd);
+        sample_window_thread_inputs(hwnd);
         return 0;
     }
     if (msg == WM_ENTERMENULOOP || msg == WM_ENTERSIZEMOVE) {
@@ -2672,6 +2729,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_ACTIVATEAPP) {
         s_pointer_focused.store(wp != 0, std::memory_order_relaxed);
         hold_display_on(wp != 0);
+        if (!hidden_window_mode_enabled()) {
+            sample_foreground_window();
+        }
         if (wp != 0) {
             s_pointer_focus_valid.store(true, std::memory_order_release);
             sample_os_cursor(hwnd);
@@ -7273,6 +7333,16 @@ void RendererD3D12::present_to_swap_chain() {
                 message << " process-mb(working-set/private)=" << (process_memory.WorkingSetSize >> 20u) << '/'
                         << (process_memory.PrivateUsage >> 20u);
             }
+            // The window thread's own measurements: a slow cursor sample there (win32k waits)
+            // would show here before it delays window messages.
+            const std::uint64_t window_ticks = s_window_sample_ticks.exchange(0u, std::memory_order_relaxed);
+            const std::uint64_t window_us = s_window_sample_us_total.exchange(0u, std::memory_order_relaxed);
+            message << " window-sample-us(avg/max/ticks)="
+                    << (window_ticks != 0u ? static_cast<double>(window_us) / static_cast<double>(window_ticks) : 0.0)
+                    << '/' << s_window_sample_us_max.exchange(0u, std::memory_order_relaxed) << '/' << window_ticks
+                    << " handles=" << s_process_handles.load(std::memory_order_relaxed)
+                    << " gdi-objects=" << s_gdi_objects.load(std::memory_order_relaxed)
+                    << " user-objects=" << s_user_objects.load(std::memory_order_relaxed);
             message
                 << " no-xfb-presents="
                 << telemetry_no_xfb_present_count_
@@ -15221,8 +15291,11 @@ HostPointerState poll_host_pointer_state() noexcept {
         state.debug_flags |= kPointerDebugLocalPollAuthority;
     }
 
+    bool foreground_owned = false;
     state.window_focused = s_pointer_focused.load(std::memory_order_relaxed) ||
-                           (hwnd != nullptr && GetForegroundWindow() == hwnd);
+        (hwnd != nullptr &&
+         galaxy::host::native_foreground_window(foreground_owned) ==
+             reinterpret_cast<std::uintptr_t>(hwnd));
 
     if (event_seq != 0) {
         const int width = cached_snapshot.coordinates.client_width;
@@ -15478,7 +15551,12 @@ bool sampled_host_cursor(HostCursorSample& sample) noexcept {
     sample.client_width = static_cast<int>(client.right - client.left);
     sample.client_height = static_cast<int>(client.bottom - client.top);
     sample.over_window = s_cursor_over_window.load(std::memory_order_relaxed);
+    sample.sampled_ms = s_cursor_sample_ms.load(std::memory_order_acquire);
     return true;
+}
+
+void* native_window_procedure_for_tests() noexcept {
+    return reinterpret_cast<void*>(&wnd_proc);
 }
 
 host::HostPointerTransitionPoll

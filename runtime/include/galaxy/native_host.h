@@ -256,6 +256,11 @@ void publish_native_window_key_state(std::uint32_t key, bool down) noexcept;
 // ignored so the controller is not read twice.
 void publish_native_window_input_origin(std::uint32_t key, bool injected) noexcept;
 void publish_native_pointer_input_origin(bool button, bool injected) noexcept;
+// The foreground window, as the game window's thread last sampled it (on its timer and on
+// activation), and whether this process owns it. The input poll reads it instead of calling
+// GetForegroundWindow: a win32k call can wait milliseconds for the window manager's lock.
+void publish_native_foreground_window(std::uintptr_t window, bool owned_by_process) noexcept;
+[[nodiscard]] std::uintptr_t native_foreground_window(bool& owned_by_process) noexcept;
 [[nodiscard]] bool native_window_key_injected(std::uint32_t key) noexcept;
 [[nodiscard]] bool native_pointer_input_injected(bool button) noexcept;
 
