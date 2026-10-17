@@ -12918,6 +12918,15 @@ void GuestAddressSpace::copy_disc_bytes_raw(
         copy(
             guest_dest + written,
             std::span<const std::byte>(pak_view_ + cursor, chunk));
+        // The copied pages of the read-only game.pak view leave the process's working set; they stay in
+        // the system's standby cache for a later read. Kept, a session that visits many galaxies holds
+        // gigabytes of the disc image as its own working set. VirtualUnlock on pages that are not locked
+        // does exactly this and reports ERROR_NOT_LOCKED, which is expected.
+        const std::uint64_t page_begin = cursor & ~std::uint64_t{0xFFFu};
+        const std::uint64_t page_end = (cursor + chunk + 0xFFFu) & ~std::uint64_t{0xFFFu};
+        (void)VirtualUnlock(
+            const_cast<std::byte*>(pak_view_ + page_begin),
+            static_cast<SIZE_T>(std::min<std::uint64_t>(page_end, pak_size_) - page_begin));
         cursor += chunk;
         written += chunk;
         remaining -= chunk;
