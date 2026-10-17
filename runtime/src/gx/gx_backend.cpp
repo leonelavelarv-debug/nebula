@@ -10866,21 +10866,18 @@ void GxBackend::render_frame_on_thread(FrameChunk& chunk) {
     const bool frame_profile_enabled =
         frame_microprofile_enabled_ || trace_gx_stalls;
     // One decision per frame for the per-draw clock reads. Draw-path sites read frame_time_detail_
-    // instead of re-evaluating `frame_microprofile_enabled_ || trace_gx_stalls_enabled()` for every
-    // draw.
+    // instead of re-evaluating the gates for every draw.
     //
-    // Default behavior: fully on under an intrusive run, fully off otherwise. A requested sample
-    // interval also enables it for one frame in N, so a routine recording contains some fully
-    // attributed frames while the rest run at production speed.
+    // On for a microprofile frame and for one frame in GALAXY_GX_FRAME_TIMING_SAMPLE; the other
+    // frames run at production speed. Stall tracing does not turn it on: it selects slow frames by
+    // their always-valid fields, and per-draw clocks on every frame (thousands of reads) made a
+    // detailed recording's render thread several times slower than the game it recorded.
     frame_time_sample_ = frame_gx_timing_sample_enabled(frame_index_);
-    frame_time_detail_ =
-        frame_microprofile_enabled_ || trace_gx_stalls || frame_time_sample_;
-    // CPU-cycle witness for the `flush-pso` window. It is independent of `frame_time_detail_`:
-    // enabling wall-clock per-draw instrumentation to get cycle data would distort the wall clock the
-    // cycles are meant to interpret. Off unless requested. `GALAXY_GX_PSO_CYCLES=1` turns it on, and
-    // so does detailed mode, since a run already paying for trace_gx_stalls may as well carry the
-    // witness.
-    pso_cycles_enabled = pso_cycles_requested() || trace_gx_stalls;
+    frame_time_detail_ = frame_microprofile_enabled_ || frame_time_sample_;
+    // CPU-cycle witness for the `flush-pso` window, read only where that window is timed: a
+    // thread-cycle query per flush is a system call. `GALAXY_GX_PSO_CYCLES=1` requests it, and so
+    // does stall tracing.
+    pso_cycles_enabled = frame_time_detail_ && (pso_cycles_requested() || trace_gx_stalls);
     // Routine monitoring must not need the instrumentation it measures. Per-frame phase timing is
     // about 14 steady_clock reads; per-draw instrumentation is thousands. Sampling is therefore
     // always on, while the line that prints it stays bounded by the deferred stats ring or the
@@ -11261,8 +11258,9 @@ void GxBackend::render_frame_on_thread(FrameChunk& chunk) {
             frame_dependency_event_sink_, *ordered_read_recorder,
             *ordered_dependency_events);
     }
+    // Per-command clocks, like the per-draw ones: sampled frames only.
     parser_.set_profile(
-        frame_profile_enabled ? &frame_fifo_profile_ : nullptr);
+        frame_time_detail_ ? &frame_fifo_profile_ : nullptr);
     const auto parse_start = frame_timing_enabled
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
