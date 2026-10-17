@@ -130,42 +130,69 @@ static RECT s_windowed_rect{};
 // The last internal resolution refused for the video-memory budget (0: none).
 static std::atomic<unsigned> s_efb_scale_rejected{0u};
 
-// The internal resolution that fills the display: the smallest scale whose
-// 640x456 game picture covers the monitor's current mode, or the swap chain
-// in exclusive fullscreen. Higher scales cost GPU time and memory without
-// adding pixels the display can show.
-static unsigned display_efb_scale_cap() {
-    UINT width = 0u;
-    UINT height = 0u;
-    if (s_exclusive_fullscreen_active.load(std::memory_order_acquire)) {
-        width = s_bb_width;
-        height = s_bb_height;
-    } else {
-        const HWND window = reinterpret_cast<HWND>(
-            s_native_settings_window.load(std::memory_order_acquire));
-        const HMONITOR monitor = window != nullptr
-            ? MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST)
-            : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
-        MONITORINFOEXW info{};
-        info.cbSize = sizeof(info);
-        if (monitor != nullptr && GetMonitorInfoW(monitor, &info)) {
-            DEVMODEW mode{};
-            mode.dmSize = sizeof(mode);
-            if (EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode) &&
-                mode.dmPelsWidth != 0u && mode.dmPelsHeight != 0u) {
-                width = mode.dmPelsWidth;
-                height = mode.dmPelsHeight;
-            } else {
-                width = static_cast<UINT>(info.rcMonitor.right - info.rcMonitor.left);
-                height = static_cast<UINT>(info.rcMonitor.bottom - info.rcMonitor.top);
-            }
-        }
-    }
+static unsigned efb_scale_filling(UINT width, UINT height) {
     if (width == 0u || height == 0u) {
         return kMaxEfbScale;
     }
     const double needed = std::max(width / static_cast<double>(kEfbWidth), height / 456.0);
     return std::clamp(static_cast<unsigned>(std::ceil(needed - 1e-6)), 1u, kMaxEfbScale);
+}
+
+// The scale filling the window's monitor at its current mode, and that monitor (0: not measured).
+// Measured on the window thread at creation, on a display change and when the window reaches
+// another monitor: GetMonitorInfo and EnumDisplaySettings enter the display driver, which the
+// render thread must not do for every frame.
+static std::atomic<unsigned> s_monitor_efb_scale_cap{0u};
+static std::atomic<std::uintptr_t> s_monitor_efb_scale_cap_monitor{0u};
+
+static unsigned measure_monitor_efb_scale_cap(HMONITOR monitor) {
+    UINT width = 0u;
+    UINT height = 0u;
+    MONITORINFOEXW info{};
+    info.cbSize = sizeof(info);
+    if (monitor != nullptr && GetMonitorInfoW(monitor, &info)) {
+        DEVMODEW mode{};
+        mode.dmSize = sizeof(mode);
+        if (EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode) &&
+            mode.dmPelsWidth != 0u && mode.dmPelsHeight != 0u) {
+            width = mode.dmPelsWidth;
+            height = mode.dmPelsHeight;
+        } else {
+            width = static_cast<UINT>(info.rcMonitor.right - info.rcMonitor.left);
+            height = static_cast<UINT>(info.rcMonitor.bottom - info.rcMonitor.top);
+        }
+    }
+    return efb_scale_filling(width, height);
+}
+
+// Window thread: `force` after a display change, otherwise only when the monitor changed.
+static void refresh_monitor_efb_scale_cap(HWND window, bool force) {
+    const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+    const auto key = reinterpret_cast<std::uintptr_t>(monitor);
+    if (!force && s_monitor_efb_scale_cap.load(std::memory_order_acquire) != 0u &&
+        s_monitor_efb_scale_cap_monitor.load(std::memory_order_relaxed) == key) {
+        return;
+    }
+    s_monitor_efb_scale_cap_monitor.store(key, std::memory_order_relaxed);
+    s_monitor_efb_scale_cap.store(measure_monitor_efb_scale_cap(monitor), std::memory_order_release);
+}
+
+// The internal resolution that fills the display: the smallest scale whose
+// 640x456 game picture covers the monitor's current mode, or the swap chain
+// in exclusive fullscreen. Higher scales cost GPU time and memory without
+// adding pixels the display can show.
+static unsigned display_efb_scale_cap() {
+    if (s_exclusive_fullscreen_active.load(std::memory_order_acquire)) {
+        return efb_scale_filling(s_bb_width, s_bb_height);
+    }
+    if (const unsigned cap = s_monitor_efb_scale_cap.load(std::memory_order_acquire); cap != 0u) {
+        return cap;
+    }
+    const HWND window = reinterpret_cast<HWND>(
+        s_native_settings_window.load(std::memory_order_acquire));
+    return measure_monitor_efb_scale_cap(window != nullptr
+        ? MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST)
+        : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
 }
 
 #if defined(GALAXY_WITH_STREAMLINE)
@@ -2364,6 +2391,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     if (msg == WM_DISPLAYCHANGE) {
         store_monitor_cache(enumerate_monitors());
+        refresh_monitor_efb_scale_cap(hwnd, true);
     }
     if (msg == kPlaceWindowMessage) {
         const auto* placement = reinterpret_cast<const WindowPlacement*>(lp);
@@ -2386,6 +2414,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_CREATE) {
         s_pointer_hwnd.store(reinterpret_cast<std::uintptr_t>(hwnd),
                              std::memory_order_release);
+        refresh_monitor_efb_scale_cap(hwnd, true);
         // A hidden test window is no keyboard or mouse source (native_host skips the poll).
         if (!hidden_window_mode_enabled() &&
             mouse_ir_cursor_poll_mode() != galaxy::host::HostPointerCursorPollMode::Disabled) {
@@ -2620,6 +2649,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     if (msg == WM_MOVE) {
+        refresh_monitor_efb_scale_cap(hwnd, false);
         (void)s_pointer_snapshot.update([](galaxy::host::HostPointerSnapshot& snapshot) noexcept {
             galaxy::host::invalidate_host_pointer_geometry(snapshot);
         });
