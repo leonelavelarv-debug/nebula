@@ -909,6 +909,13 @@ bool FifoParser::display_list_bytes_current(
         cached.compared_run = frame_index_;
         return true;
     case DisplayListValidation::FlushTracked:
+        if (cached.verify_on_replay) {
+            if (!equal()) {
+                return false;
+            }
+            cached.verify_on_replay = false;
+            return true;
+        }
         if (++flush_backstop_tick_ % 64u != 0u || equal()) {
             return true;
         }
@@ -1294,6 +1301,7 @@ void FifoParser::store_cached_display_list(
         display_list_cache_last_page(canonical_addr, byte_size);
     target->last_used = ++display_list_cache_tick_;
     target->compared_run = frame_index_;
+    target->verify_on_replay = false;
     target->bytes = std::move(recording.bytes);
     target->commands = std::move(recording.commands);
     target->cp_dependencies = std::move(recording.cp_dependencies);
@@ -1565,7 +1573,13 @@ std::size_t FifoParser::invalidate_display_list_cache_range(
                 cached.byte_size)) {
             continue;
         }
-        invalidate_display_list_cache_index(index);
+        if (validation_ == DisplayListValidation::FlushTracked) {
+            // Games flush whole buffers whose lists did not change: compare at the next replay
+            // and keep the entry (and its recorded commands) when the bytes still match.
+            cached.verify_on_replay = true;
+        } else {
+            invalidate_display_list_cache_index(index);
+        }
         ++invalidated;
     }
     return invalidated;

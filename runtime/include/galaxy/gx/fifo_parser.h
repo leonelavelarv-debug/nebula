@@ -63,8 +63,9 @@ enum class DisplayListValidation : std::uint8_t {
     // Byte compare on an entry's first replay in each parser run. One run reads one capture,
     // and the game does not rewrite a list the GPU may still be reading.
     OncePerRun,
-    // No compare: each chunk's published guest writes (dcbf/dcbst lines, DMA, device writes)
-    // invalidate the entries they overlap. Every 64th replay still compares.
+    // Compare only an entry that a published guest write (dcbf/dcbst lines, DMA, device writes)
+    // overlapped since it last matched; keep it when its bytes are unchanged. Every 64th replay of
+    // the others still compares.
     FlushTracked,
     // EveryCall, counting the replays for which OncePerRun or FlushTracked would have replayed
     // bytes guest memory no longer holds ([dl-validate] lines).
@@ -601,6 +602,8 @@ private:
         std::uint64_t last_used = 0;
         // The parser run in which guest memory last held `bytes` (recorded or compared).
         std::uint64_t compared_run = 0;
+        // FlushTracked: a published write overlapped the list since it last matched.
+        bool verify_on_replay = false;
         std::vector<std::byte> bytes;
         std::vector<CachedDisplayListCommand> commands;
         std::vector<std::pair<std::uint8_t, std::uint32_t>> cp_dependencies;
