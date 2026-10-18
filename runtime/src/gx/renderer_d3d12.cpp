@@ -7582,6 +7582,26 @@ std::uint64_t RendererD3D12::end_frame(
     return submitted_fence;
 }
 
+std::uint64_t RendererD3D12::pending_readback_fence() const noexcept {
+    if (pointer_depth_in_frame_pending_) {
+        return ~std::uint64_t{0};
+    }
+    std::uint64_t earliest = pointer_depth_capture_fence_;
+    for (const AsyncPeekField& field : async_peek_fields_) {
+        if (field.in_frame) {
+            return ~std::uint64_t{0};
+        }
+        if (field.fence != 0u && (earliest == 0u || field.fence < earliest)) {
+            earliest = field.fence;
+        }
+    }
+    return earliest;
+}
+
+bool RendererD3D12::set_event_at_fence(std::uint64_t fence_value, HANDLE event) const noexcept {
+    return fence_ && event != nullptr && SUCCEEDED(fence_->SetEventOnCompletion(fence_value, event));
+}
+
 std::uint64_t RendererD3D12::completed_fence_value() const {
     if (!fence_) {
         return 0u;

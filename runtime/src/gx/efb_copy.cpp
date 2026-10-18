@@ -58,6 +58,21 @@ XfbSerialAccountingEvent account_xfb_present_serial(
     return event;
 }
 
+const XfbTexture* newest_display_xfb(
+    const XfbTexture* displayed,
+    std::span<const XfbTexture* const> candidates) noexcept {
+    if (displayed == nullptr) {
+        return nullptr;
+    }
+    const XfbTexture* chosen = displayed;
+    for (const XfbTexture* candidate : candidates) {
+        if (candidate != nullptr && candidate->copy_serial > chosen->copy_serial) {
+            chosen = candidate;
+        }
+    }
+    return chosen;
+}
+
 XfbPresentSelection select_xfb_for_present(
     bool requested_specific,
     const XfbTexture* requested,

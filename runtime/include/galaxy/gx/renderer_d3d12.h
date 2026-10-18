@@ -879,6 +879,11 @@ public:
     [[nodiscard]] bool any_async_peek_field_pending() const noexcept {
         return async_peek_field_pending(EfbPeekKind::Depth) || async_peek_field_pending(EfbPeekKind::Color);
     }
+    // The oldest frame fence a pending readback (pointer depth, peek fields) completes at: 0 when none
+    // is pending, UINT64_MAX while one is still recorded in the open frame.
+    [[nodiscard]] std::uint64_t pending_readback_fence() const noexcept;
+    // Sets `event` once the frame fence reaches `fence_value` (at once when it already has).
+    [[nodiscard]] bool set_event_at_fence(std::uint64_t fence_value, HANDLE event) const noexcept;
     static constexpr std::size_t async_peek_field_index(EfbPeekKind kind) noexcept {
         return kind == EfbPeekKind::Depth ? 0u : 1u;
     }

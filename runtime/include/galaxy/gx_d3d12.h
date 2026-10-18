@@ -193,9 +193,12 @@ void set_safety_scene_surround(float intensity) noexcept;
 // Present an already-rendered XFB after the guest VI callback has selected
 // the displayed buffer. This keeps the host swap-chain cadence tied to the
 // game's own XFB exchange instead of to the pre-VI FIFO copy point.
+// `newer_candidates` are the game's other display buffers: when one holds a
+// completed copy newer than the displayed buffer's, that copy is presented.
 void present_cached_xfb(
     std::uint32_t displayed_xfb_addr,
-    bool present_swap_chain = true);
+    bool present_swap_chain = true,
+    const std::array<std::uint32_t, 3>& newer_candidates = {});
 
 // Parse newly produced GX FIFO bytes on the simulation thread only for PE
 // finish/token events. This does not render; it raises native hardware

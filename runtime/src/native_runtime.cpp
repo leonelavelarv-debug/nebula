@@ -16433,6 +16433,44 @@ std::uint32_t current_displayed_xfb_addr(RuntimeState& state) {
     return has_any_xfb_copy ? galaxy::gx::kUnknownDisplayedXfbAddr : 0u;
 }
 
+// With GALAXY_PRESENT_NEWEST_XFB=1 the present may show a newer completed copy in one of the game's other display
+// buffers. With three buffers the game names a copied buffer for display only after its next frame starts, one VI
+// after the copy; the copy is already final, and the game draws only into a buffer it does not display. The render
+// thread picks a candidate only when its copy is newer than the displayed buffer's, so a frame that was still being
+// drawn at the VI keeps the game's choice.
+std::array<std::uint32_t, 3> newer_display_xfb_candidates(
+    const RuntimeState& state,
+    std::uint32_t displayed_xfb_addr) {
+    std::array<std::uint32_t, 3> candidates{};
+    static const bool enabled = read_env_u64("GALAXY_PRESENT_NEWEST_XFB", 0u) != 0u;
+    if (!enabled || state.address_space == nullptr || displayed_xfb_addr == 0u ||
+        displayed_xfb_addr == galaxy::gx::kUnknownDisplayedXfbAddr ||
+        displayed_xfb_addr == galaxy::gx::kNoDisplayedXfbAddr) {
+        return candidates;
+    }
+    const auto& address_space = *state.address_space;
+    constexpr std::uint32_t kJutXfbManagerPtr = 0x806A2868u;
+    const std::uint32_t xfb = address_space.read_u32(kJutXfbManagerPtr);
+    if (xfb < 0x80000000u || xfb >= 0x81800000u ||
+        address_space.pointer_or_null(xfb, 0x20u) == nullptr) {
+        return candidates;
+    }
+    const std::uint32_t buffer_num = address_space.read_u32(xfb + 0x10u);
+    if (buffer_num < 2u || buffer_num > 3u) {
+        return candidates;
+    }
+    bool names_displayed = false;
+    for (std::uint32_t slot = 0; slot < buffer_num; ++slot) {
+        const std::uint32_t addr = address_space.read_u32(xfb + slot * sizeof(std::uint32_t));
+        if (addr == displayed_xfb_addr) {
+            names_displayed = true;
+        } else {
+            candidates[slot] = addr;
+        }
+    }
+    return names_displayed ? candidates : std::array<std::uint32_t, 3>{};
+}
+
 void capture_cadence_jut_selection(
     RuntimeState& state,
     std::uint32_t selected_xfb_addr) noexcept {
@@ -17115,7 +17153,8 @@ void complete_external_dispatch(
                 (!pending.present_in_render_frame ||
                  !pending.present_this_vi)) {
                 galaxy::gx::present_cached_xfb(
-                    displayed_xfb_addr, pending.present_this_vi);
+                    displayed_xfb_addr, pending.present_this_vi,
+                    newer_display_xfb_candidates(state, displayed_xfb_addr));
             }
             const std::uint64_t xfb_copies_after_present =
                 galaxy::gx::xfb_copy_count();
@@ -20619,7 +20658,8 @@ bool finalize_vi_retrace(
         (!present_in_render_frame || !present_this_vi)) {
         galaxy::gx::present_cached_xfb(
             displayed_xfb_addr,
-            present_this_vi);
+            present_this_vi,
+            newer_display_xfb_candidates(state, displayed_xfb_addr));
         xfb_copies_after_present = galaxy::gx::xfb_copy_count();
     }
     if (state.active_cadence_record_valid &&

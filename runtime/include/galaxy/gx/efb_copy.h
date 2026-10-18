@@ -30,6 +30,7 @@
 #include <cstddef>
 #include "galaxy/gx/pointer_response.h"
 #include <cstdint>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -103,6 +104,12 @@ struct XfbPresentSelection {
     std::uint64_t current_frame_stamp,
     std::uint64_t max_preserved_age,
     std::uint64_t last_presented_frame_stamp);
+
+// The game's displayed XFB, or the one among `candidates` (its other display buffers) whose copy is the
+// newest and newer than the displayed buffer's. Null when the displayed buffer has no copy.
+[[nodiscard]] const XfbTexture* newest_display_xfb(
+    const XfbTexture* displayed,
+    std::span<const XfbTexture* const> candidates) noexcept;
 
 [[nodiscard]] std::uint16_t compute_xfb_copy_height(
     std::uint16_t src_height,

@@ -505,6 +505,12 @@ public:
     [[nodiscard]] DisplayListValidation display_list_validation() const noexcept {
         return validation_;
     }
+    // Whether the display-list cache relies on published guest writes reaching
+    // invalidate_display_list_cache_range before each run.
+    [[nodiscard]] bool tracks_published_writes() const noexcept {
+        return validation_ == DisplayListValidation::FlushTracked ||
+            validation_ == DisplayListValidation::Audit;
+    }
 
     // Optional per-run profiler. The parser never owns this pointer; callers
     // set it only while gathering diagnostics.
@@ -722,7 +728,15 @@ private:
     bool event_classification_only_ = false;
     std::uint64_t display_list_cache_tick_ = 0;
     std::uint64_t display_list_cache_token_ = 0;
-    std::size_t last_display_list_cache_index_ = static_cast<std::size_t>(-1);
+    // Cache index + 1 of the list last found at each (address, size) slot (0 = none). A frame calls the
+    // same lists in the same order as the last one, so the slot usually names the entry without the hash
+    // map lookup; the entry's address, size and validity are checked before use.
+    static constexpr std::size_t kDisplayListMemoSlots = 1024u;
+    std::array<std::uint32_t, kDisplayListMemoSlots> display_list_memo_{};
+    [[nodiscard]] static std::size_t display_list_memo_slot(
+        std::uint32_t canonical_addr, std::uint32_t byte_size) noexcept {
+        return ((canonical_addr >> 5u) ^ (canonical_addr >> 15u) ^ byte_size) & (kDisplayListMemoSlots - 1u);
+    }
     // Gameplay touches hundreds of small display lists per frame, so a small cache
     // forces most nested lists to be re-parsed every frame.
     // Keep the fixed-capacity cache off the parser object's stack; each entry

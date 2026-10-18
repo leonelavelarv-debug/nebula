@@ -845,6 +845,28 @@ int main() {
         galaxy::gx::efb_copy_alias_texture_format(7u) ==
             static_cast<std::uint8_t>(galaxy::gx::TexFormat::I8),
         "A8 screen-alpha EFB copies alias as I8 textures");
+    {
+        galaxy::gx::XfbTexture displayed = make_xfb(0x10ea5520u, 40u);
+        galaxy::gx::XfbTexture newer = make_xfb(0x10f4eb40u, 41u);
+        galaxy::gx::XfbTexture older = make_xfb(0x10ff8160u, 39u);
+        displayed.copy_serial = 4000u;
+        newer.copy_serial = 4001u;
+        older.copy_serial = 3999u;
+        const galaxy::gx::XfbTexture* both[] = {&older, &newer};
+        const galaxy::gx::XfbTexture* old_only[] = {&older, nullptr};
+        passed &= expect(
+            galaxy::gx::newest_display_xfb(&displayed, both) == &newer,
+            "a display buffer with a newer completed copy is presented before the game names it");
+        passed &= expect(
+            galaxy::gx::newest_display_xfb(&displayed, old_only) == &displayed,
+            "an older copy in another display buffer never replaces the displayed one");
+        passed &= expect(
+            galaxy::gx::newest_display_xfb(nullptr, both) == nullptr,
+            "no copy of the displayed buffer keeps the existing missing-XFB handling");
+        passed &= expect(
+            galaxy::gx::newest_display_xfb(&displayed, {}) == &displayed,
+            "without candidates the displayed buffer is presented");
+    }
 
     if (!passed) {
         return 1;

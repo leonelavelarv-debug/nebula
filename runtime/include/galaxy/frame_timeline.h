@@ -54,6 +54,7 @@ enum class Event : std::uint16_t {
     XfbPresented = 25,     // render: XFB chosen for a present. a=guest address, b=copy serial
     GuestFrame = 26,       // sim: game frame boundary marker. a=VI retrace count
     IdleWake = 27,         // any thread: woke the waiting simulation thread. a=EventKind, 100=host (PE, IOS)
+    PresentRequested = 28, // sim: VI present requested. a=displayed guest address, b=1 with newer candidates
 };
 
 struct Record {

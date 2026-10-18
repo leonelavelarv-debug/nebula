@@ -3035,9 +3035,7 @@ void FramePeEventClassifier::configure_parser() {
 }
 
 bool FramePeEventClassifier::tracks_published_writes() const noexcept {
-    const DisplayListValidation validation = parser_.display_list_validation();
-    return validation == DisplayListValidation::FlushTracked ||
-        validation == DisplayListValidation::Audit;
+    return parser_.tracks_published_writes();
 }
 
 std::size_t FramePeEventClassifier::invalidate_display_list_cache_range(
@@ -3159,7 +3157,7 @@ void FramePeEventClassifier::on_invalidate_vertex_cache() {}
 std::size_t GxBackend::invalidate_dirty_display_list_ranges(
     FifoParser& parser,
     const std::vector<GxBackend::GuestWriteRange>& ranges) {
-    if (!display_list_dirty_invalidate_enabled()) {
+    if (!display_list_dirty_invalidate_enabled() && !parser.tracks_published_writes()) {
         return 0;
     }
     std::size_t invalidated = 0;
@@ -3185,6 +3183,12 @@ void GxBackend::reset_fifo_session_state() {
     parser_ = FifoParser{};
     parser_.set_dump_dir("generated");
     parser_.set_validation_label("render");
+    // The render thread replays a chunk after the game submitted it. A list the game rewrote and flushed
+    // since then is compared at its next replay; one it rewrote without publishing yet keeps the bytes
+    // that were current when the game called it, which is what the console's GPU executed.
+    // GALAXY_GX_DL_VALIDATE=0 restores the compare on every call.
+    parser_.set_display_list_validation(
+        configured_display_list_validation().value_or(DisplayListValidation::FlushTracked));
     pending_fifo_.clear();
 
     event_state_ = GxState{};
@@ -3433,6 +3437,9 @@ bool GxBackend::initialize(int w, int h) {
     pending_frame_effects_.clear();
     pending_pointer_depth_capture_ = {};
     if (async_render_thread_enabled()) {
+        if (render_wake_event_ == nullptr) {
+            render_wake_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        }
         render_thread_ = std::thread(&GxBackend::render_thread_main, this);
     }
     if (read_env_u64("GALAXY_FRAME_TELEMETRY", 1u) != 0u) {
@@ -3602,9 +3609,13 @@ void GxBackend::shutdown() {
             std::lock_guard<std::mutex> lock(queue_mutex_);
             stop_render_thread_ = true;
         }
-        queue_cv_.notify_one();
+        wake_render_thread();
         queue_space_cv_.notify_one();
         render_thread_.join();
+    }
+    if (render_wake_event_ != nullptr) {
+        CloseHandle(render_wake_event_);
+        render_wake_event_ = nullptr;
     }
     emit_deferred_gx_stats();
     emit_deferred_xfb_causal_trace();
@@ -6044,7 +6055,7 @@ FramePeCompletionToken GxBackend::render_frame(
         }
     }
     // Publication and token accounting precede wakeup; diagnostics do not.
-    queue_cv_.notify_one();
+    wake_render_thread();
     const std::uint64_t producer_wait_us = producer_wait_ns / 1000u;
     if (trace_gx_stalls &&
         producer_wait_us >= trace_gx_stall_threshold_us()) {
@@ -8253,7 +8264,7 @@ bool GxBackend::enqueue_pointer_depth_capture(const std::shared_ptr<PointerDepth
             chunk.pointer_depth_capture=capture;
             frame_queue_.push_back(std::move(chunk));
         }
-        queue_cv_.notify_one();
+        wake_render_thread();
         return true;
     } catch (...) {
         capture->error=std::current_exception();
@@ -8291,7 +8302,7 @@ bool GxBackend::capture_pointer_depth(std::span<std::uint32_t> pixels) {
         chunk.efb_peek_request = &request;
         frame_queue_.push_back(std::move(chunk));
     }
-    queue_cv_.notify_one();
+    wake_render_thread();
 
     {
         std::unique_lock<std::mutex> lock(request.mutex);
@@ -8337,7 +8348,7 @@ bool GxBackend::peek_efb(
         chunk.efb_peek_request = &request;
         frame_queue_.push_back(std::move(chunk));
     }
-    queue_cv_.notify_one();
+    wake_render_thread();
 
     {
         std::unique_lock<std::mutex> lock(request.mutex);
@@ -9743,10 +9754,13 @@ bool GxBackend::skip_for_present_rate() {
 
 void GxBackend::present_cached_xfb(
     std::uint32_t displayed_xfb_addr,
-    bool present_swap_chain) {
+    bool present_swap_chain,
+    const std::array<std::uint32_t, 3>& newer_candidates) {
     if (!initialized_ || !present_swap_chain) {
         return;
     }
+    galaxy::timeline::record(galaxy::timeline::Event::PresentRequested, displayed_xfb_addr,
+                             newer_candidates[0] | newer_candidates[1] | newer_candidates[2] ? 1u : 0u);
 
     if (async_render_thread_enabled()) {
         {
@@ -9763,14 +9777,16 @@ void GxBackend::present_cached_xfb(
                 FrameChunk& back = frame_queue_.back();
                 if (back.present_only) {
                     back.displayed_xfb_addr = displayed_xfb_addr;
-                    queue_cv_.notify_one();
+                    back.newer_xfb_candidates = newer_candidates;
+                    wake_render_thread();
                     return;
                 }
                 if (!back.efb_peek_only &&
                     !back.present_only && !back.present_swap_chain) {
                     back.present_swap_chain = true;
                     back.displayed_xfb_addr = displayed_xfb_addr;
-                    queue_cv_.notify_one();
+                    back.newer_xfb_candidates = newer_candidates;
+                    wake_render_thread();
                     return;
                 }
             }
@@ -9778,15 +9794,18 @@ void GxBackend::present_cached_xfb(
             chunk.present_only = true;
             chunk.present_swap_chain = true;
             chunk.displayed_xfb_addr = displayed_xfb_addr;
+            chunk.newer_xfb_candidates = newer_candidates;
             frame_queue_.push_back(std::move(chunk));
         }
-        queue_cv_.notify_one();
+        wake_render_thread();
         return;
     }
 
     present_cached_xfb_on_thread(
         displayed_xfb_addr,
-        false);
+        false,
+        true,
+        newer_candidates);
 }
 
 // Consumer loop (render thread): frames execute in submission order; queued
@@ -9892,6 +9911,12 @@ void GxBackend::render_thread_main() {
                 renderer_.any_async_peek_field_pending();
             // Draining for a stop: queued frames present without sub-frames.
             interp_stopping_ = stop_render_thread_;
+            // The render thread sleeps on render_wake_event_ (set by producers and by the frame fence)
+            // rather than on queue_cv_: the condition variable's wait spins before it blocks, and that
+            // spin was 1,217 of 9,408 running render samples (12.9%, le-dl8-new1).
+            // GALAXY_RENDER_COMPLETION_EVENT_WAIT=0 restores the condition-variable waits.
+            static const bool event_wait =
+                read_env_u64("GALAXY_RENDER_COMPLETION_EVENT_WAIT", 1u) != 0u;
             if (interp_sequence_.active && frame_queue_.empty() && !stop_render_thread_) {
                 // Coarse and interruptible to about 1.5 ms before the slot
                 // (the condition variable wakes on the 1 ms scheduler tick),
@@ -9912,9 +9937,41 @@ void GxBackend::render_thread_main() {
                 // a fence cannot observe an imminent completion; it only delays
                 // that next poll. Park once, with newly submitted work and shutdown
                 // still interrupting the wait through the existing predicate.
-                queue_cv_.wait_for(lock, std::chrono::milliseconds(1), [this] {
+                const auto woken = [this] {
                     return stop_render_thread_ || !frame_queue_.empty();
-                });
+                };
+                // Every pending completion is a frame fence: sleep until the oldest one or new work
+                // instead of polling each millisecond.
+                const std::uint64_t fence =
+                    event_wait && !idle_present ? earliest_completion_fence() : 0u;
+                bool waited = false;
+                if (fence != 0u && fence != ~std::uint64_t{0} && !woken()) {
+                    render_wake_armed_.store(true);
+                    lock.unlock();
+                    // One registration per fence value: each is a kernel call, and a wake
+                    // by new work leaves the earlier registration armed.
+                    if (fence == render_wake_fence_ ||
+                        renderer_.set_event_at_fence(fence, render_wake_event_)) {
+                        render_wake_fence_ = fence;
+                        // The timeout only bounds a lost driver signal.
+                        (void)WaitForSingleObject(render_wake_event_, 4u);
+                        waited = true;
+                    }
+                    lock.lock();
+                    render_wake_armed_.store(false, std::memory_order_relaxed);
+                }
+                if (!waited) {
+                    queue_cv_.wait_for(lock, std::chrono::milliseconds(1), woken);
+                }
+            } else if (event_wait && render_wake_event_ != nullptr) {
+                // The timeout only bounds a lost wake.
+                while (!stop_render_thread_ && frame_queue_.empty()) {
+                    render_wake_armed_.store(true);
+                    lock.unlock();
+                    (void)WaitForSingleObject(render_wake_event_, 100u);
+                    lock.lock();
+                    render_wake_armed_.store(false, std::memory_order_relaxed);
+                }
             } else {
                 queue_cv_.wait(lock, [this] {
                     return stop_render_thread_ || !frame_queue_.empty();
@@ -9966,6 +10023,7 @@ void GxBackend::render_thread_main() {
                     frame_queue_.pop_front();
                     chunk.present_swap_chain = present.present_swap_chain;
                     chunk.displayed_xfb_addr = present.displayed_xfb_addr;
+                    chunk.newer_xfb_candidates = present.newer_xfb_candidates;
                     if (interp_recording_) [[unlikely]] {
                         interp_event("merged-present", present.displayed_xfb_addr, chunk.fifo.size());
                     }
@@ -10027,7 +10085,9 @@ void GxBackend::render_thread_main() {
                     } else if (!interp_sequence_.active) {
                         present_cached_xfb_on_thread(
                             chunk.displayed_xfb_addr,
-                            false);
+                            false,
+                            true,
+                            chunk.newer_xfb_candidates);
                     } else {
                         ++interp_present_skipped_;
                     }
@@ -10052,6 +10112,7 @@ void GxBackend::render_thread_main() {
                         }
                     }
                     render_frame_on_thread(chunk);
+                    present_completed_display_copy();
                     run_pending_interp_start();
                     {
                         std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -10574,7 +10635,30 @@ void GxBackend::queue_frame_fifo_effects_fence(
         }
         chunk.fifo_effects_pending = false;
     }
+    wake_render_thread();
+}
+
+void GxBackend::wake_render_thread() noexcept {
     queue_cv_.notify_one();
+    // A waiter arms before it releases queue_mutex_ with an empty queue; a producer that queued after
+    // that release reads the flag here, so the wake cannot fall between the check and the wait.
+    if (render_wake_armed_.load() && render_wake_event_ != nullptr) {
+        (void)SetEvent(render_wake_event_);
+    }
+}
+
+// Called with queue_mutex_ held on the render thread: the oldest fence a completion poll waits on
+// (0 when none is pending, UINT64_MAX when one has no fence yet).
+std::uint64_t GxBackend::earliest_completion_fence() const noexcept {
+    std::uint64_t fence = pending_frame_effects_.empty() ? 0u : pending_frame_effects_.front().fence_value;
+    const std::uint64_t readback = renderer_.pending_readback_fence();
+    if (readback == ~std::uint64_t{0}) {
+        return readback;
+    }
+    if (readback != 0u && (fence == 0u || readback < fence)) {
+        fence = readback;
+    }
+    return fence;
 }
 
 void GxBackend::poll_completed_frame_effects() {
@@ -10654,7 +10738,17 @@ void GxBackend::deliver_pe_event(
     }
 }
 
+void GxBackend::note_display_buffers(
+    std::uint32_t displayed_xfb_addr,
+    const std::array<std::uint32_t, 3>& newer_candidates) noexcept {
+    if (newer_candidates[0] != 0u || newer_candidates[1] != 0u || newer_candidates[2] != 0u) {
+        known_display_buffers_ = {displayed_xfb_addr, newer_candidates[0], newer_candidates[1],
+                                  newer_candidates[2]};
+    }
+}
+
 void GxBackend::present_vi_black(bool in_frame) {
+    known_display_buffers_ = {};
     const XfbTexture* layout = efb_copies_.latest();
     if (layout == nullptr || (vi_black_shown_ && !native_settings_overlay_visible())) {
         return;
@@ -10685,10 +10779,44 @@ void GxBackend::present_latest_frame_on_thread() {
         false);
 }
 
+// GALAXY_PRESENT_NEWEST_XFB=2: a display copy is presented as soon as the chunk that made it is
+// recorded, not at the next VI; that VI's present then finds nothing newer and is skipped as a repeat.
+// Only a buffer the last VI present named qualifies, and never while interpolation or frame generation
+// paces the presents, while the VI shows black, or while the settings overlay is open.
+void GxBackend::present_completed_display_copy() {
+    const std::uint32_t addr = std::exchange(chunk_display_copy_addr_, 0u);
+    static const bool enabled = read_env_u64("GALAXY_PRESENT_NEWEST_XFB", 0u) >= 2u;
+    if (!enabled || addr == 0u || interp_sequence_.active || interp_recording_ ||
+        frame_generation_running() || native_settings_overlay_visible()) {
+        return;
+    }
+    // The game names its buffers by CPU address; copies are registered by physical address.
+    const XfbTexture* copy = efb_copies_.find_xfb(addr);
+    const bool display_buffer = copy != nullptr &&
+        std::any_of(known_display_buffers_.begin(), known_display_buffers_.end(),
+                    [&](std::uint32_t known) { return known != 0u && efb_copies_.find_xfb(known) == copy; });
+    if (display_buffer) {
+        present_cached_xfb_on_thread(addr, false, true);
+    }
+}
+
+const XfbTexture* GxBackend::find_display_xfb(
+    std::uint32_t displayed_xfb_addr,
+    const std::array<std::uint32_t, 3>& newer_candidates) const {
+    std::array<const XfbTexture*, 3> candidates{};
+    for (std::size_t i = 0; i < newer_candidates.size(); ++i) {
+        if (newer_candidates[i] != 0u && newer_candidates[i] != displayed_xfb_addr) {
+            candidates[i] = efb_copies_.find_xfb(newer_candidates[i]);
+        }
+    }
+    return newest_display_xfb(efb_copies_.find_xfb(displayed_xfb_addr), candidates);
+}
+
 void GxBackend::present_cached_xfb_on_thread(
     std::uint32_t displayed_xfb_addr,
     bool sleep_if_missing,
-    bool count_game_xfb_present) {
+    bool count_game_xfb_present,
+    const std::array<std::uint32_t, 3>& newer_candidates) {
     if (count_game_xfb_present) {
         ++stat_xfb_present_requests_;
     }
@@ -10707,6 +10835,7 @@ void GxBackend::present_cached_xfb_on_thread(
         }
         return;
     }
+    note_display_buffers(displayed_xfb_addr, newer_candidates);
     vi_black_shown_ = false;
     const bool requested_specific_xfb =
         displayed_xfb_addr != 0u && !display_xfb_unknown &&
@@ -10720,7 +10849,7 @@ void GxBackend::present_cached_xfb_on_thread(
     const XfbTexture* selected = display_xfb_none
         ? nullptr
         : (requested_specific_xfb
-            ? efb_copies_.find_xfb(displayed_xfb_addr)
+            ? find_display_xfb(displayed_xfb_addr, newer_candidates)
             : latest);
     const std::uint64_t current_xfb_stamp =
         latest != nullptr
@@ -11697,10 +11826,13 @@ void GxBackend::render_frame_on_thread(FrameChunk& chunk) {
     const XfbTexture* last_valid_xfb = last_presented_addr != 0u
         ? efb_copies_.find_xfb(last_presented_addr)
         : nullptr;
+    if (chunk.present_swap_chain && requested_specific_xfb) {
+        note_display_buffers(chunk.displayed_xfb_addr, chunk.newer_xfb_candidates);
+    }
     const XfbTexture* selected_xfb = display_xfb_none
         ? nullptr
         : (requested_specific_xfb
-            ? efb_copies_.find_xfb(chunk.displayed_xfb_addr)
+            ? find_display_xfb(chunk.displayed_xfb_addr, chunk.newer_xfb_candidates)
             : latest_xfb);
     const std::uint64_t current_xfb_stamp =
         latest_xfb != nullptr
@@ -16067,6 +16199,7 @@ void GxBackend::on_efb_copy(std::uint32_t exec_command) {
             xfb->prerecorded_movie=render_movie_content_;
             xfb->safety_surround=render_safety_surround_;
             efb_copies_.mark_xfb_copied(*xfb, frame_index_);
+            chunk_display_copy_addr_ = xfb->guest_addr;
             if (capture_owned) {
                 const bool owned_xfb_recorded =
                     renderer_.debug_copy_selected_xfb_to_readback(*xfb);

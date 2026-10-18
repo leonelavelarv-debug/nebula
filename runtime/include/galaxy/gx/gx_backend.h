@@ -218,7 +218,8 @@ public:
         std::uint32_t displayed_xfb_addr = 0);
     void present_cached_xfb(
         std::uint32_t displayed_xfb_addr,
-        bool present_swap_chain = true);
+        bool present_swap_chain = true,
+        const std::array<std::uint32_t, 3>& newer_candidates = {});
     void wait_for_render_idle();
     void wait_for_render_fifo_effects_idle();
     void wait_for_frame_pe_completion(FramePeCompletionToken token);
@@ -564,6 +565,7 @@ private:
         std::uint64_t producer_wait_ns = 0;
         std::uint64_t pe_classification_ns = 0;
         std::uint32_t displayed_xfb_addr = 0;
+        std::array<std::uint32_t, 3> newer_xfb_candidates{};
         bool present_swap_chain = true;
         bool present_only = false;
         bool memory_snapshot_active = false;
@@ -655,7 +657,19 @@ private:
     void present_cached_xfb_on_thread(
         std::uint32_t displayed_xfb_addr,
         bool sleep_if_missing,
-        bool count_game_xfb_present = true);
+        bool count_game_xfb_present = true,
+        const std::array<std::uint32_t, 3>& newer_candidates = {});
+    [[nodiscard]] const XfbTexture* find_display_xfb(
+        std::uint32_t displayed_xfb_addr,
+        const std::array<std::uint32_t, 3>& newer_candidates) const;
+    void present_completed_display_copy();
+    void note_display_buffers(
+        std::uint32_t displayed_xfb_addr,
+        const std::array<std::uint32_t, 3>& newer_candidates) noexcept;
+    // The display copy the current chunk made, and the game's display buffers as the last VI present
+    // named them (GALAXY_PRESENT_NEWEST_XFB=2).
+    std::uint32_t chunk_display_copy_addr_ = 0;
+    std::array<std::uint32_t, 4> known_display_buffers_{};
     void present_latest_frame_on_thread();
     // The VI shows black (displayed_xfb_addr kNoDisplayedXfbAddr): one black present per black
     // run, repeated while the settings overlay is open. `in_frame`: inside a render chunk's
@@ -1283,6 +1297,13 @@ private:
     std::mutex queue_mutex_;
     std::condition_variable queue_cv_;        // consumer: work or stop
     std::condition_variable queue_space_cv_;  // producer: slot free
+    // While the render thread waits for a GPU completion (render_wake_armed_), it sleeps on this
+    // auto-reset event, which the frame fence and wake_render_thread() set.
+    HANDLE render_wake_event_ = nullptr;
+    std::atomic<bool> render_wake_armed_{false};
+    std::uint64_t render_wake_fence_ = 0;  // render thread: the fence the event is registered at
+    void wake_render_thread() noexcept;
+    [[nodiscard]] std::uint64_t earliest_completion_fence() const noexcept;
     std::deque<FrameChunk> frame_queue_;
     // Steady-clock time the render thread has spent on its current chunk (0 between chunks), written
     // under queue_mutex_. While one chunk has run for kRenderStallNs (a burst of first-use textures or

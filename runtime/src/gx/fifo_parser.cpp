@@ -1067,9 +1067,6 @@ void FifoParser::invalidate_display_list_cache_index(std::size_t index) {
     erase_display_list_cache_index_from_maps(index);
     display_list_cache_[index].valid = false;
     display_list_free_slots_.push_back(static_cast<std::uint32_t>(index));
-    if (last_display_list_cache_index_ == index) {
-        last_display_list_cache_index_ = static_cast<std::size_t>(-1);
-    }
 }
 
 void FifoParser::index_display_list_cache_entry(std::size_t index) {
@@ -1233,7 +1230,7 @@ void FifoParser::clear_display_list_cache() {
     display_list_next_unused_ = 0;
     display_list_victim_cursor_ = 0;
     cache_bytes_ = 0u;
-    last_display_list_cache_index_ = static_cast<std::size_t>(-1);
+    display_list_memo_.fill(0u);
 }
 
 void FifoParser::store_cached_display_list(
@@ -2304,10 +2301,11 @@ void FifoParser::run_window(
             }
 
             if (depth == 0) {
-                if (last_display_list_cache_index_ <
-                    display_list_cache_.size()) {
-                    CachedDisplayList& cached =
-                        display_list_cache_[last_display_list_cache_index_];
+                std::uint32_t& memo =
+                    display_list_memo_[display_list_memo_slot(canonical_guest_addr, byte_size)];
+                const std::size_t memo_index = static_cast<std::size_t>(memo) - 1u;
+                if (memo != 0u && memo_index < display_list_cache_.size()) {
+                    CachedDisplayList& cached = display_list_cache_[memo_index];
                     if (cached.valid &&
                         cached.guest_addr == canonical_guest_addr &&
                         cached.byte_size == byte_size) {
@@ -2336,8 +2334,7 @@ void FifoParser::run_window(
                             break;
                         }
                         if (!bytes_match) {
-                            invalidate_display_list_cache_index(
-                                last_display_list_cache_index_);
+                            invalidate_display_list_cache_index(memo_index);
                         }
                     }
                 }
@@ -2347,8 +2344,7 @@ void FifoParser::run_window(
                     if (profile != nullptr) {
                         ++profile->call_dl_cache_hits;
                     }
-                    last_display_list_cache_index_ = static_cast<std::size_t>(
-                        cached - display_list_cache_.data());
+                    memo = static_cast<std::uint32_t>(cached - display_list_cache_.data()) + 1u;
                     replay_cached_display_list(
                         *cached, memory, sink, state, opcode_offset);
                     if (profile != nullptr) {

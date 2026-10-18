@@ -107,8 +107,9 @@ bool peek_efb_published(
 
 void present_cached_xfb(
     std::uint32_t displayed_xfb_addr,
-    bool present_swap_chain) {
-    backend().present_cached_xfb(displayed_xfb_addr, present_swap_chain);
+    bool present_swap_chain,
+    const std::array<std::uint32_t, 3>& newer_candidates) {
+    backend().present_cached_xfb(displayed_xfb_addr, present_swap_chain, newer_candidates);
 }
 
 void scan_pe_events(
