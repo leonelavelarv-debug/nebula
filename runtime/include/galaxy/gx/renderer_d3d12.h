@@ -624,6 +624,8 @@ public:
     [[nodiscard]] ID3D12Device* device() const { return device_.Get(); }
     [[nodiscard]] unsigned efb_scale() const noexcept { return efb_scale_; }
     // The EFB's samples per pixel as a power of two (MSAA; 0 for one sample), which its draws' pipelines share.
+    // The motion and reactive targets bind per draw here (Vulkan's EFB pass holds them: RendererVk).
+    [[nodiscard]] std::uint8_t efb_aux_targets() const noexcept { return 0u; }
     [[nodiscard]] std::uint8_t efb_samples_log2() const noexcept {
         return static_cast<std::uint8_t>(std::countr_zero(efb_msaa_.samples));
     }

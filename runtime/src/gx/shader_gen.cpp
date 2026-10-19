@@ -1558,12 +1558,12 @@ std::string ShaderGenerator::generate_ps(const PixelShaderKey& key) const {
         s << "PSOutM main(PSIn pin) {\n";
     } else if (reactive && export_depth) {
         s << "struct PSOutZ { float4 color : SV_Target0; "
-             "float reactive : SV_Target1; float depth : SV_Depth; };\n";
+             "float reactive : SV_Target" << options_.reactive_target << "; float depth : SV_Depth; };\n";
         s << "PSOutZ main(PSIn pin) {\n";
     } else if (reactive) {
         // Blended draws without dual-source alpha (that would take target 1).
         s << "struct PSOutR { float4 color : SV_Target0; "
-             "float reactive : SV_Target1; };\n";
+             "float reactive : SV_Target" << options_.reactive_target << "; };\n";
         if (early_depth) s << "[earlydepthstencil]\n";
         s << "PSOutR main(PSIn pin) {\n";
     } else if (export_depth && dual_src) {

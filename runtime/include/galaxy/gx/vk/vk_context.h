@@ -107,6 +107,10 @@ public:
     [[nodiscard]] bool depth_clamp() const noexcept { return depth_clamp_; }
     // VK_EXT_depth_clip_enable: clamping without giving up clipping (D3D's rasterizer).
     [[nodiscard]] bool depth_clip_enable() const noexcept { return depth_clip_enable_; }
+    // What the temporal upscaler's shaders need (temporal_upscaler_vk.h): SPIR-V 1.4, 16-bit floats and integers,
+    // quad subgroup operations in compute shaders, extended storage-image formats; and independent blending for the
+    // EFB pass's motion and reactive targets. Enabled when the device has all of them.
+    [[nodiscard]] bool temporal_upscaling() const noexcept { return temporal_upscaling_; }
     [[nodiscard]] bool display_timing() const noexcept { return display_timing_; }
     // The largest device-local heap's use and budget (the driver's with VK_EXT_memory_budget, else VMA's estimate).
     bool device_memory_budget(std::uint64_t& usage, std::uint64_t& budget) const noexcept;
@@ -202,6 +206,7 @@ private:
     bool display_timing_ = false;  // VK_GOOGLE_display_timing
     bool depth_clamp_ = false;
     bool depth_clip_enable_ = false;
+    bool temporal_upscaling_ = false;
     bool debug_names_ = false;
     struct Pending {
         std::uint64_t value;

@@ -23,6 +23,9 @@ struct ShaderGenOptions {
     // A zero TEV colour input A or B read from the constants (uber_ps_header.w, always zero) instead of a literal
     // (Qualcomm folds the literal wrongly).
     bool tev_zero_from_constant = false;
+    // The render target the reactive mask is written to: D3D12 binds it as target 1 in place of the motion vectors;
+    // Vulkan's EFB pass holds both (motion 1, reactive 2).
+    unsigned reactive_target = 1u;
 };
 
 class ShaderGenerator {

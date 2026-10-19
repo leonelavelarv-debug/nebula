@@ -229,7 +229,8 @@ struct RenderStateKey {
     std::uint8_t pixfmt;            // PeControl pixel format (dst-alpha cap)
     std::uint8_t primitive_topology; // D3D12_PRIMITIVE_TOPOLOGY_TYPE value
     std::uint8_t samples_log2;      // the EFB's samples per pixel (MSAA), as a power of two; 0 for one
-    std::uint8_t reserved[6];
+    std::uint8_t aux_targets;       // Vulkan: 1 when the EFB pass also holds the motion and reactive targets
+    std::uint8_t reserved[5];
 
     // Field-wise, not the byte-wise `key_bytes_equal` form.
     //
@@ -249,7 +250,8 @@ struct RenderStateKey {
             cull == other.cull &&
             pixfmt == other.pixfmt &&
             primitive_topology == other.primitive_topology &&
-            samples_log2 == other.samples_log2;
+            samples_log2 == other.samples_log2 &&
+            aux_targets == other.aux_targets;
     }
 };
 static_assert(sizeof(RenderStateKey) == 16);
@@ -283,7 +285,8 @@ struct PsoKey {
                 (static_cast<std::uint64_t>(render_state.pixfmt) << 8) |
                 (static_cast<std::uint64_t>(render_state.primitive_topology)
                  << 16) |
-                (static_cast<std::uint64_t>(render_state.samples_log2) << 24));
+                (static_cast<std::uint64_t>(render_state.samples_log2) << 24) |
+                (static_cast<std::uint64_t>(render_state.aux_targets) << 32));
         return hash;
     }
 };

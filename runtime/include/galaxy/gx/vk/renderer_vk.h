@@ -30,6 +30,7 @@
 #include "galaxy/gx/upload_ring.h"
 #include "galaxy/gx/vk/post_process_vk.h"
 #include "galaxy/gx/vk/shader_compile_vk.h"
+#include "galaxy/gx/vk/temporal_upscaler_vk.h"
 #include "galaxy/gx/vk/vk_context.h"
 #include "galaxy/gx/host_window.h"
 #include "galaxy/gx/window_owner.h"
@@ -41,6 +42,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -67,7 +69,14 @@ struct GxLayout {
     // resolved into the single-sample target as each pass ends. Index 0 is efb_pass / efb_pass_clear.
     std::array<VkRenderPass, 4> ms_passes{};
     std::array<VkRenderPass, 4> ms_passes_clear{};
-    [[nodiscard]] VkRenderPass pass_for(unsigned samples_log2, bool clear) const noexcept {
+    // Temporal upscaling's scene pass: the EFB's targets plus the motion vectors (RG16F, colour target 1) and the
+    // reactive mask (R8, colour target 2); made when the device can upscale (Context::temporal_upscaling).
+    VkRenderPass aux_pass = VK_NULL_HANDLE;
+    VkRenderPass aux_pass_clear = VK_NULL_HANDLE;
+    [[nodiscard]] VkRenderPass pass_for(unsigned samples_log2, bool clear, bool aux = false) const noexcept {
+        if (aux) {
+            return clear ? aux_pass_clear : aux_pass;
+        }
         if (samples_log2 == 0u) {
             return clear ? efb_pass_clear : efb_pass;
         }
@@ -179,7 +188,9 @@ public:
     // Diagnostics (GALAXY_INTERP_VERIFY): the next sub-frame's evaluated output, read back once its fence passed.
     void request_eval_readback() noexcept { eval_readback_requested_ = true; }
     [[nodiscard]] bool take_eval_readback(std::vector<std::uint32_t>& words, float& t);
-    [[nodiscard]] bool temporal_mode() const { return false; }
+    // Temporal upscaling (renderer_vk_temporal.cpp): the upscaler setting's temporal choice, on a device that can
+    // run it, without interpolated frames (their per-present upscale is D3D12's alone so far).
+    [[nodiscard]] bool temporal_mode() const;
     // A copy right after the display copy, from the output EFB the 2D layer drew in (the EFB itself without one).
     [[nodiscard]] bool copy_output_efb_to_texture(const EfbCopyParams& params, TextureCache& textures);
 
@@ -211,11 +222,12 @@ public:
     [[nodiscard]] bool begin_output_efb();
     void end_output_efb();
     [[nodiscard]] bool output_efb_active() const noexcept { return output_efb_active_; }
-    // Not on Vulkan yet: temporal upscaling.
-    [[nodiscard]] bool scene_temporal_begin(float&, float&) noexcept { return false; }
-    [[nodiscard]] bool begin_motion_scene() noexcept { return false; }
+    // At the 3D scene's start: its jitter (render pixels) when the scene is upscaled (RendererD3D12's contract).
+    [[nodiscard]] bool scene_temporal_begin(float& jitter_x, float& jitter_y);
+    // The scene's motion and reactive targets join the EFB pass, cleared. False without them.
+    [[nodiscard]] bool begin_motion_scene();
     void record_motion_debug_view() noexcept {}
-    void reset_temporal_history() noexcept {}
+    void reset_temporal_history() noexcept { temporal_history_valid_ = false; }
     [[nodiscard]] unsigned matrix_history_frames() const noexcept { return 0u; }
     [[nodiscard]] std::uint64_t matrix_segment_serial() const noexcept { return 0u; }
     // A completed log waits (interpolation mode); start_replay_playback makes it the playing one.
@@ -234,7 +246,9 @@ public:
         total_ms = std::exchange(subframe_gpu_ms_, 0.0);
         samples = std::exchange(subframe_gpu_samples_, 0u);
     }
-    void set_scene_camera(float, float, float) noexcept {}
+    void set_scene_camera(float near_plane, float far_plane, float fov_y) noexcept {
+        scene_camera_ = {near_plane, far_plane, fov_y};
+    }
 
     [[nodiscard]] double measured_present_hz() const noexcept {
         return measured_present_hz_.load(std::memory_order_relaxed);
@@ -277,6 +291,10 @@ public:
     // log2 of the EFB's samples per pixel (MSAA; the output EFB has one): the GX pipelines' sample count.
     [[nodiscard]] std::uint8_t efb_samples_log2() const noexcept {
         return static_cast<std::uint8_t>(std::countr_zero(efb_.samples));
+    }
+    // 1 while the EFB pass holds the motion and reactive targets (a temporal scene): the GX pipelines' targets.
+    [[nodiscard]] std::uint8_t efb_aux_targets() const noexcept {
+        return efb_aux_active_ && efb_.aux_framebuffer != VK_NULL_HANDLE ? 1u : 0u;
     }
     [[nodiscard]] const vk::GxLayout* root_signature() const noexcept { return &gx_layout_; }
     [[nodiscard]] double display_refresh_hz() const noexcept { return display_refresh_hz_; }
@@ -373,11 +391,13 @@ private:
     bool create_utility_pipelines();
     // A pipeline of the renderer's own passes: no vertex input, `strip` four-vertex quads or full-screen triangles,
     // blended over the target when `blend`, depth written (always passing) when `depth_write`.
+    // `color_targets`: the pass's colour targets, the ones after the first left unwritten (the temporal scene pass).
     [[nodiscard]] VkPipeline create_utility_pipeline(VkRenderPass pass, VkPipelineLayout layout,
                                                      std::string_view vs_source, std::string_view ps_source,
                                                      VkColorComponentFlags write_mask, bool blend, bool strip,
                                                      bool depth_write,
-                                                     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+                                                     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
+                                                     unsigned color_targets = 1u);
     [[nodiscard]] VkShaderModule utility_module(std::string_view hlsl, vk::ShaderStage stage, bool conversion);
 
     // Frame recording.
@@ -468,6 +488,8 @@ private:
         VkFramebuffer resolve_framebuffer = VK_NULL_HANDLE;
         VkDescriptorSet ms_depth_source = VK_NULL_HANDLE;
         bool depth_dirty = false;
+        // gx_layout_.aux_pass over color, depth and the scene's motion and reactive targets (temporal scenes).
+        VkFramebuffer aux_framebuffer = VK_NULL_HANDLE;
     };
     EfbSet efb_;
     // The output EFB (begin_output_efb) and its scale; they trade places with efb_ and efb_scale_ while it is active.
@@ -480,16 +502,47 @@ private:
     gpu::TextureRef efb_carry_color_;  // the previous targets, read once after a resolution change
     gpu::TextureRef efb_carry_depth_;
     bool efb_carry_clear_ = false;  // the new targets start cleared (MSAA before or after the change)
+
+    // Temporal upscaling (renderer_vk_temporal.cpp).
+    void create_aux_passes();
+    void prepare_temporal_upscaler();
+    [[nodiscard]] bool ensure_motion_targets();
+    // The scene upscaled into the output EFB, which takes the EFB's place with its depth cleared.
+    [[nodiscard]] bool record_temporal_upscale(unsigned output_scale);
+    std::unique_ptr<vk::TemporalUpscalerVk> temporal_;
+    std::future<std::unique_ptr<vk::TemporalUpscalerVk>> temporal_pending_;
+    unsigned temporal_render_w_ = 0;
+    unsigned temporal_render_h_ = 0;
+    unsigned temporal_output_w_ = 0;
+    unsigned temporal_output_h_ = 0;
+    bool temporal_history_valid_ = false;
+    bool scene_temporal_ = false;
+    bool efb_aux_active_ = false;  // the EFB pass holds the motion and reactive targets (efb_aux_targets)
+    std::uint64_t temporal_frame_ = 0;
+    std::array<float, 2> scene_jitter_{};
+    std::array<float, 3> scene_camera_{1.0f, 100000.0f, 1.0f};  // near, far, vertical field of view
+    // The INTERNAL RESOLUTION setting's scale: the upscale's output (the EFB renders below it with an upscaler).
+    unsigned upscale_output_scale_ = 0;
+    // The temporal scene's motion vectors (RG16F, render pixels, current to previous), reactive mask (R8) and its
+    // depth as R32F (the upscaler's depth input), at motion_scale_.
+    gpu::TextureRef motion_target_;
+    gpu::TextureRef reactive_target_;
+    gpu::TextureRef depth_r32_;
+    unsigned motion_scale_ = 0;
+    VkRenderPass depth_r32_pass_ = VK_NULL_HANDLE;
+    VkFramebuffer depth_r32_framebuffer_ = VK_NULL_HANDLE;
+    VkPipeline depth_r32_pipeline_ = VK_NULL_HANDLE;
     bool efb_pass_open_ = false;
     bool present_black_ = false;  // present()'s `black`, for present_xfb
     bool efb_seeded_ = false;
 
     // Pipelines the renderer owns.
     VkPipeline conversion_pipeline_ = VK_NULL_HANDLE;
-    // The renderer's own draws into the EFB pass, per EFB sample count (log2), made at first use: masked clears,
-    // and whole-colour and depth clears as draws (DeviceQuirks::clear_with_draw only; null otherwise).
+    // The renderer's own draws into the EFB pass, per EFB sample count (log2; 4: the temporal scene pass), made at
+    // first use: masked clears, and whole-colour and depth clears as draws (DeviceQuirks::clear_with_draw only; null
+    // otherwise).
     enum class EfbUtility : unsigned { ClearRgb, ClearAlpha, ClearRgba, ClearDepth, Count };
-    std::array<std::array<VkPipeline, 4>, static_cast<std::size_t>(EfbUtility::Count)> efb_utility_pipelines_{};
+    std::array<std::array<VkPipeline, 5>, static_cast<std::size_t>(EfbUtility::Count)> efb_utility_pipelines_{};
     [[nodiscard]] VkPipeline efb_utility_pipeline(EfbUtility kind);
     unsigned msaa_max_samples_ = 1u;  // create_layouts: the most the EFB's formats render and sample
     VkPipeline depth_resolve_pipeline_ = VK_NULL_HANDLE;

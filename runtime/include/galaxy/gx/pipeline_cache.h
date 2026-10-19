@@ -238,7 +238,8 @@ private:
                 static_cast<std::uint64_t>(key.render_state.cull) |
                 (static_cast<std::uint64_t>(key.render_state.pixfmt) << 8) |
                 (static_cast<std::uint64_t>(key.render_state.primitive_topology) << 16) |
-                (static_cast<std::uint64_t>(key.render_state.samples_log2) << 24));
+                (static_cast<std::uint64_t>(key.render_state.samples_log2) << 24) |
+                (static_cast<std::uint64_t>(key.render_state.aux_targets) << 32));
             return static_cast<std::size_t>(combine64(hash, key.variant));
         }
     };

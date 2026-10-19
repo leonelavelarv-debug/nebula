@@ -322,12 +322,48 @@ bool Context::initialize(bool prefer_integrated, bool validation, std::vector<co
         }
     }
     depth_clamp_ = available.depthClamp == VK_TRUE;
-    VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-    if (depth_clip_enable_) {
-        depth_clip.pNext = nullptr;
-        depth_clip.depthClipEnable = VK_TRUE;
-        device_info.pNext = &depth_clip;
+    // The temporal upscaler's shaders (Context::temporal_upscaling).
+    VkPhysicalDeviceShaderFloat16Int8Features float16{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
+    {
+        const bool extensions = has_device_extension(physical_, VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME) &&
+            has_device_extension(physical_, VK_KHR_SPIRV_1_4_EXTENSION_NAME) &&
+            has_device_extension(physical_, VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+        VkPhysicalDeviceSubgroupProperties subgroup{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+        VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        properties.pNext = &subgroup;
+        vkGetPhysicalDeviceProperties2(physical_, &properties);
+        if (extensions) {
+            VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+            features.pNext = &float16;
+            vkGetPhysicalDeviceFeatures2(physical_, &features);
+        }
+        temporal_upscaling_ = extensions && float16.shaderFloat16 == VK_TRUE && available.shaderInt16 == VK_TRUE &&
+            available.shaderStorageImageExtendedFormats == VK_TRUE && available.independentBlend == VK_TRUE &&
+            (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT) != 0u &&
+            (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0u;
+        float16 = VkPhysicalDeviceShaderFloat16Int8Features{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
+        if (temporal_upscaling_) {
+            float16.shaderFloat16 = VK_TRUE;
+            enabled.shaderInt16 = VK_TRUE;
+            enabled.shaderStorageImageExtendedFormats = VK_TRUE;
+            device_extensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+            device_extensions.push_back(VK_KHR_SPIRV_1_4_EXTENSION_NAME);
+            device_extensions.push_back(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+        }
     }
+    VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    void* features_chain = nullptr;
+    if (temporal_upscaling_) {
+        float16.pNext = features_chain;
+        features_chain = &float16;
+    }
+    if (depth_clip_enable_) {
+        depth_clip.pNext = features_chain;
+        depth_clip.depthClipEnable = VK_TRUE;
+        features_chain = &depth_clip;
+    }
+    device_info.pNext = features_chain;
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
     device_info.enabledExtensionCount = static_cast<std::uint32_t>(device_extensions.size());
@@ -356,9 +392,10 @@ bool Context::initialize(bool prefer_integrated, bool validation, std::vector<co
         allocator_ = nullptr;
         return fail("vmaCreateAllocator failed");
     }
-    std::fprintf(stderr, "[vulkan] device=\"%s\" api=%u.%u driver=0x%x validation=%d\n", device_name_.c_str(),
-                 VK_API_VERSION_MAJOR(properties_.apiVersion), VK_API_VERSION_MINOR(properties_.apiVersion),
-                 properties_.driverVersion, layers.empty() ? 0 : 1);
+    std::fprintf(stderr, "[vulkan] device=\"%s\" api=%u.%u driver=0x%x validation=%d temporal-upscaling=%d\n",
+                 device_name_.c_str(), VK_API_VERSION_MAJOR(properties_.apiVersion),
+                 VK_API_VERSION_MINOR(properties_.apiVersion), properties_.driverVersion, layers.empty() ? 0 : 1,
+                 temporal_upscaling_ ? 1 : 0);
     std::fprintf(stderr, "[vulkan] driver: %s; workarounds: %s\n", describe(identity_).c_str(),
                  describe(quirks_).c_str());
     std::fprintf(stderr,

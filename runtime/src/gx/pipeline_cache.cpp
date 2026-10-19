@@ -1440,7 +1440,7 @@ constexpr std::size_t kCacheCoverageAppendBatch = 64u;
 bool valid_pso_key(const PsoKey& key) {
     const auto& state = key.render_state;
     return state.primitive_topology >= 1u && state.primitive_topology <= 3u &&
-        state.cull <= 3u && state.pixfmt <= 7u && state.samples_log2 <= 3u &&
+        state.cull <= 3u && state.pixfmt <= 7u && state.samples_log2 <= 3u && state.aux_targets == 0u &&
         (state.blend_bits & 0x80000000u) == 0u && (state.zmode_bits & ~0x1fu) == 0u &&
         std::all_of(std::begin(state.reserved), std::end(state.reserved),
             [](std::uint8_t value) { return value == 0u; });
