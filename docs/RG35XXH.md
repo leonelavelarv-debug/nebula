@@ -154,6 +154,33 @@ Conclusión: con shaders especializados precompilados y el EFB a 320x264, la GPU
 ~900 a 30 fps. El límite es el costo por draw (~19–30 µs). El probe 0.3 separa ese costo entre el driver (CPU) y los
 vértices (GPU) y mide cuánto ahorra agrupar objetos en un draw instanciado, que es la técnica que lo bajaría.
 
+## Mediciones en el aparato (probe 0.3) y veredicto (M, H)
+
+Informe: `platform/knulli/probe/results/rg35xxh-knulli42-probe-0.3.txt`.
+
+| Medición | Resultado | Lectura |
+|---|---|---|
+| 2000 draws de 2 triángulos | envío 14,6 ms (7,3 µs de driver por draw), total 26,1 ms (~13 µs de GPU por draw) | Cada draw cuesta en los dos lados aunque no dibuje casi nada |
+| 20 draws de 10 000 triángulos | 15,8 ms → 12,7 Mtri/s | Rendimiento de vértices del G31 |
+| 1000 draws de 100 triángulos | envío 7,3 ms, total 27,4 ms | ≈ 13 µs fijos + ~8 µs de vértices por draw |
+| 1000 objetos instanciados en 1 draw | 21,6 ms frente a 26,6 ms | Agrupar ahorra ~19 %: quita el driver, no el costo de GPU |
+
+Modelo de un frame en el G31 (H): `13 µs × draws + triángulos / 12,7 M + píxeles`; el driver (7,3 µs por draw) va en
+el hilo de render, en otro núcleo. Con 600 draws y 50 000 triángulos a 320x264: ~8 + 4 + ~3 ≈ 15 ms (60 fps justos);
+con 1200 draws, ~23 ms (30 fps). Los números de draws y triángulos de una carrera de MKW están por medir (H): Dolphin
+los muestra en sus estadísticas de render con el disco del usuario.
+
+CPU: el `fmadds` encadenado del módulo optimizado es la parte lenta (34,8 ns por iteración en el A53, in-order). Bajo
+qemu, `GALAXY_SINGLE_FLOAT_ARITHMETIC=1` da los mismos bits en las sondas y ~18 % menos tiempo en ese bucle; el resto
+del sobrecoste son las comprobaciones de rango de cada acceso, que solo un fastmem para AArch64 (manejador SIGSEGV que
+decodifique LDR/STR) quitaría.
+
+**Veredicto.** Memoria, frente GX, presentación a 60 Hz y tirones de shader (binarios precompilados) ya no bloquean.
+Una versión recompilada de Mario Kart Wii en la RG35XX H es técnicamente viable apuntando a **30 fps, EFB a 320x264
+y shaders especializados precompilados**; 60 fps solo en escenas ligeras. El riesgo principal pasa a ser la lógica
+del juego en punto flotante en un solo núcleo del A53. Para jugar MKW hoy, el port NextOS (recreación nativa) sigue
+siendo el camino práctico.
+
 ## Plan propuesto
 
 0. **Medir en el aparato**: `Nebula Probe` y la autoprueba de NXAccel. Criterios para seguir con la vía
