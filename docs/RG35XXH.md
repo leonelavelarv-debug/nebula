@@ -203,3 +203,27 @@ siendo el camino práctico.
 AARCH64_CXX=... AARCH64_CC=... VULKAN_HEADERS=.../Vulkan-Headers/include VOLK=.../volk platform/knulli/build.sh
 cd platform/knulli/tools/ppc-lower && cargo build --release   # ppc-lower, opcode-coverage, ppc-histogram
 ```
+
+## Super Mario Galaxy en la RG35XX H
+
+Vía elegida: el **port nativo de Nebula** (Petari compilado, `native/`), no el módulo recompilado, porque evita el
+sobrecoste de punto flotante medido arriba.
+
+| Paso | Estado |
+|---|---|
+| Módulo del juego (`libsmg_game.so`, 1 891 unidades) para aarch64 / glibc 2.27 | **Compila y enlaza** (M) |
+| Host sin gráficos (`nebula_native_host`) para aarch64 | Compila con tres arreglos: includes de logros/Discord fuera del bloque del renderer (rotos en 0592580), `-ldl -lpthread` para glibc < 2.34, `runtime_settings.cpp` + `input_bindings.cpp` en el host (M) |
+| `nebula-pak`: `game.pak` desde el disco del usuario en Linux/Termux/macOS | `crates/nebula-import/src/bin/nebula-pak.rs` |
+| Benchmark de la lógica en el aparato (`GALAXY_BENCH=1`, `GALAXY_TEST_GALAXY_TOUR=auto`) | Port `smgbench` (`platform/knulli/smgbench`): recorre las galaxias del disco y registra fps, CPU del hilo del juego y galaxia |
+| Renderer GX para Mali-G31 (GLES 3.2) | Pendiente: el backend Vulkan de Nebula tiene ~11 900 líneas y GxBackend usa 149 métodos del renderer; KNULLI no tiene Vulkan |
+| Ventana/entrada/audio en KNULLI | Pendiente: SDL3 de Nebula no trae el driver "mali" (fbdev) que usa KNULLI; EGL directo sobre fbdev + SDL para mando y audio |
+
+Compilar el módulo y el host:
+
+```sh
+AARCH64_XTOOLS=/ruta/x-tools/aarch64-rpi3-linux-gnu cmake -S native -B build-aarch64 -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=platform/knulli/aarch64-toolchain.cmake \
+  "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld -static-libstdc++ -static-libgcc" \
+  "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld -static-libstdc++ -static-libgcc"
+ninja -C build-aarch64
+```

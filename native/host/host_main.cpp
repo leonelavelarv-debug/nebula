@@ -18,6 +18,9 @@
 #include "galaxy/atomic_file.h"
 #include "galaxy/crash_report.h"
 #include "galaxy/mods.h"
+// Both hosts report achievements and the Discord presence (the headless one too, since 0592580).
+#include "galaxy/achievements.h"
+#include "galaxy/discord_presence.h"
 #if defined(NEBULA_HOST_RENDERER)
 #include "galaxy/experimental_ultrawide_aspect.h"
 #include "galaxy/frame_timeline.h"
@@ -29,8 +32,6 @@
 #include "galaxy/native_input.h"
 #include "galaxy/native_thp_video.h"
 #include "galaxy/perf_hint.h"
-#include "galaxy/achievements.h"
-#include "galaxy/discord_presence.h"
 #include "galaxy/runtime_settings.h"
 #include "galaxy/gx/render_config.h"
 
@@ -1861,6 +1862,36 @@ void svc_vi_frame(void*, uint32_t xfb, int black, uint32_t retrace) {
     }
 #else
     (void)black;
+    // GALAXY_BENCH=1 (headless; the RG35XX H benchmark): every 600 retraces, the game frames shown (a new frame buffer
+    // address), the simulation thread's CPU time and the stage, so a tour gives the game logic's speed per galaxy.
+    static const bool bench = std::getenv("GALAXY_BENCH") != nullptr;
+    if (bench) {
+        static uint32_t last_xfb = 0, retraces = 0, frames = 0;
+        static int64_t cpu_start = -1, wall_start = 0;
+        auto thread_ns = [] {
+#if defined(_WIN32)
+            return int64_t(0);
+#else
+            timespec ts{};
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+            return int64_t(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+#endif
+        };
+        const int64_t wall = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+        if (cpu_start < 0) { cpu_start = thread_ns(); wall_start = wall; }
+        if (xfb != 0 && xfb != last_xfb) { ++frames; last_xfb = xfb; }
+        if (++retraces == 600u) {
+            const int64_t cpu = thread_ns();
+            const double seconds = double(wall - wall_start) / 1e9;
+            std::fprintf(stdout, "[bench] stage=%s fps=%.1f retraces/s=%.1f sim_cpu=%.0f%%\n",
+                         gSceneStage.empty() ? "-" : gSceneStage.c_str(), frames / seconds, retraces / seconds,
+                         100.0 * double(cpu - cpu_start) / double(wall - wall_start));
+            std::fflush(stdout);
+            retraces = frames = 0;
+            cpu_start = cpu;
+            wall_start = wall;
+        }
+    }
 #endif
 }
 
@@ -2251,6 +2282,38 @@ int svc_hbm(void*, uint32_t what, uint32_t) {
 //   GALAXY_TEST_EVENTS actors@frame: the live actors with a model, by model name and position (where to teleport).
 std::atomic<bool> gTourDone{false};
 
+// The galaxies on the disc: StageData's subfolders named "...Galaxy" (fst.bin: 12-byte entries, the root's length is
+// the entry count, names in the string table after the entries; a folder's length is the index after its last entry).
+std::vector<std::string> auto_tour_stages() {
+    std::vector<std::string> out;
+    size_t size = 0;
+    const uint8_t* fst = svc_disc_fst(nullptr, &size);
+    if (fst == nullptr || size < 12) return out;
+    auto be32 = [&](size_t at) { return uint32_t(fst[at]) << 24 | uint32_t(fst[at + 1]) << 16 | uint32_t(fst[at + 2]) << 8 | fst[at + 3]; };
+    const uint32_t count = be32(8);
+    if (uint64_t(count) * 12 > size) return out;
+    const char* names = reinterpret_cast<const char*>(fst + size_t(count) * 12);
+    const size_t names_size = size - size_t(count) * 12;
+    auto name_of = [&](uint32_t i) -> std::string {
+        const uint32_t off = be32(size_t(i) * 12) & 0x00FFFFFFu;
+        if (off >= names_size) return {};
+        return std::string(names + off, strnlen(names + off, names_size - off));
+    };
+    for (uint32_t i = 1; i < count; ++i) {
+        const bool dir = fst[size_t(i) * 12] != 0;
+        if (!dir || name_of(i) != "StageData") continue;
+        const uint32_t end = be32(size_t(i) * 12 + 8);
+        for (uint32_t j = i + 1; j < end && j < count;) {
+            const bool child_dir = fst[size_t(j) * 12] != 0;
+            const std::string name = name_of(j);
+            if (child_dir && name.size() > 6 && name.compare(name.size() - 6, 6, "Galaxy") == 0) out.push_back(name);
+            j = child_dir ? std::max(j + 1, be32(size_t(j) * 12 + 8)) : j + 1;
+        }
+        break;
+    }
+    return out;
+}
+
 int svc_test_scene_frame(void*, NebulaTestAction* action) {
     struct Stop {
         std::string stage;
@@ -2276,7 +2339,11 @@ int svc_test_scene_frame(void*, NebulaTestAction* action) {
     if (!loaded) {
         loaded = true;
         if (const char* tour = std::getenv("GALAXY_TEST_GALAXY_TOUR")) {
-            if (FILE* file = std::fopen(tour, "r")) {
+            // "auto" (the RG35XX H benchmark): every StageData folder whose name ends in "Galaxy", scenario 1, from
+            // the disc's own file table, so no list has to ship with the port.
+            if (std::strcmp(tour, "auto") == 0) {
+                for (const std::string& stage : auto_tour_stages()) stops.push_back({stage, 1});
+            } else if (FILE* file = std::fopen(tour, "r")) {
                 char stage[64];
                 int scenario = 0;
                 while (std::fscanf(file, "%63s %d", stage, &scenario) == 2) {

@@ -160,12 +160,18 @@ endif()
 # The mods' virtual disc (galaxy::mods) serves this host's disc reads as the windowed host's.
 add_executable(nebula_native_host host/host_main.cpp
     ../runtime/src/mods.cpp ../runtime/src/mod_xml.cpp ../runtime/src/virtual_disc.cpp ../runtime/src/atomic_file.cpp
-    ../runtime/src/crash_report.cpp ../runtime/src/discord_presence.cpp)
+    ../runtime/src/crash_report.cpp ../runtime/src/discord_presence.cpp ../runtime/src/achievements.cpp ../runtime/src/runtime_settings.cpp ../runtime/src/input_bindings.cpp)
 target_include_directories(nebula_native_host PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/include")
 target_compile_features(nebula_native_host PRIVATE cxx_std_20)
 target_compile_definitions(nebula_native_host PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_dependencies(nebula_native_host smg_game)
+if(NOT WIN32)
+    # glibc before 2.34 keeps dlopen and the threads in their own libraries.
+    find_package(Threads REQUIRED)
+    target_compile_options(nebula_native_host PRIVATE "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/include/galaxy/posix_compat.h")
+    target_link_libraries(nebula_native_host PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+endif()
 if(NEBULA_SANITIZE)
     target_compile_options(nebula_native_host PRIVATE -fsanitize=${NEBULA_SANITIZE} -fno-omit-frame-pointer)
     target_link_options(nebula_native_host PRIVATE -fsanitize=${NEBULA_SANITIZE})
