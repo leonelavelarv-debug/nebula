@@ -109,6 +109,31 @@ Broadway. La lógica de carrera de MKW a 60 fps probablemente no quepa en un nú
 render y el audio sí pueden ir en los otros tres núcleos. El probe en el aparato sustituye esta estimación por
 números.
 
+## Mediciones en el aparato (probe 0.1, KNULLI / Batocera 42, kernel 4.9.170) (M)
+
+Informe completo: `platform/knulli/probe/results/rg35xxh-knulli42-probe-0.1.txt`.
+
+| Medición | Resultado | Lectura |
+|---|---|---|
+| RAM | 973 MiB; 759 disponibles; 643 con la memoria Wii mapeada; 580 con un módulo de 64 MiB | Cabe con margen |
+| CPU | 4× Cortex-A53 (0xd03) a 1512 MHz, gobernador performance; memcpy 1,06 GB/s | La memoria es el cuello de la CPU |
+| Módulo optimizado, ALU | 7,28 ns por iteración de 8 instrucciones → 1,1 G instr/s (×1,21 del C nativo) | ~2× el Broadway |
+| Módulo optimizado, carga+suma | 9,30 ns por 3 instrucciones → 0,32 G/s | ~0,4× el Broadway |
+| Módulo optimizado, `fmadds` encadenado | 34,6 ns por 4 instrucciones → 0,12 G/s (×8,9 del C nativo) | ~0,15× el Broadway: el punto débil |
+| Frente GX de Nebula | 1,18 µs por draw (1000 draws = 1,2 ms) | Aceptable en un núcleo aparte |
+| GPU | Mali-G31, OpenGL ES 3.2 (driver r20p0), sin Vulkan | Backend GLES |
+| Extensiones | Sí: ARM framebuffer fetch, depth24, geometry shader, program binary, buffer storage. No: dual-source, S3TC, parallel compile, clip control | Blend dual-source y logic-op por framebuffer fetch; CMPR decodificado en CPU; rango de Z en el vertex shader |
+| Shaders | uber TEV 401 ms; especializados mediana 26,8 ms | El uber de Nebula no sirve aquí; especializados precompilados |
+| Dibujo (uber) | 100 draws 35 ms, 500 draws 62 ms; relleno 17 Mpix/s | El uber dinámico ahoga al G31 |
+| Dibujo (especializado) | 500 draws 27 ms a 640x528 | Falta separar relleno y vértices (probe 0.2) |
+| EFB | copia a textura 1,58 ms; lectura completa 2,54 ms; peek 0,008 ms | Bien para pocas copias por frame |
+| Anillo doble mapeado | "FALLO" | Falso negativo del probe 0.1 (reordenamiento del compilador); corregido en 0.2 |
+
+Conclusión provisional: memoria y frente GX no bloquean. La CPU va bien en código entero y mal en punto flotante
+encadenado, que es donde el camino `fast float` aún tiene ~9× de sobrecoste sobre el C nativo (primer objetivo de
+optimización en ARM). La GPU es el límite: sin uber shaders, con programas precompilados y probablemente con el EFB a
+media resolución (320x264; la pantalla es de 640x480). El probe 0.2 mide exactamente esas tres cosas.
+
 ## Plan propuesto
 
 0. **Medir en el aparato**: `Nebula Probe` y la autoprueba de NXAccel. Criterios para seguir con la vía

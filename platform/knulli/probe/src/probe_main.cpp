@@ -97,13 +97,14 @@ struct Gfx {
         if (!ok && log) { char b[1024] = {}; g.GetShaderInfoLog(s, sizeof b - 1, nullptr, b); *log += b; }
         return ok ? s : (g.DeleteShader(s), 0u);
     }
-    gl::GLuint program(const std::string& vs, const std::string& fs, std::string* log = nullptr) {
+    gl::GLuint program(const std::string& vs, const std::string& fs, std::string* log = nullptr, bool retrievable = false) {
         const gl::GLuint v = compile(gl::VERTEX_SHADER, vs_prefix() + vs, log);
         const gl::GLuint f = compile(gl::FRAGMENT_SHADER, fs_prefix() + fs, log);
         if (!v || !f) return 0;
         const gl::GLuint p = g.CreateProgram();
         g.AttachShader(p, v); g.AttachShader(p, f);
         g.BindAttribLocation(p, 0, "a_pos"); g.BindAttribLocation(p, 1, "a_col"); g.BindAttribLocation(p, 2, "a_tc");
+        if (retrievable && g.ProgramParameteri) g.ProgramParameteri(p, 0x8257 /*PROGRAM_BINARY_RETRIEVABLE_HINT*/, 1);
         g.LinkProgram(p);
         gl::GLint ok = 0; g.GetProgramiv(p, gl::LINK_STATUS, &ok);
         if (!ok && log) { char b[1024] = {}; g.GetProgramInfoLog(p, sizeof b - 1, nullptr, b); *log += b; }
@@ -270,8 +271,9 @@ std::string specialised_fs(int variant, int stages) {
 
 struct Scene {
     gl::GLuint vbo = 0, ibo = 0, tex[2] = {}, efb_fbo = 0, efb_tex = 0, efb_depth = 0, copy_tex = 0;
+    gl::GLuint half_fbo = 0, half_tex = 0, half_depth = 0;  // the EFB at half size per axis (320x264)
     gl::GLsizei index_count = 0;
-    static constexpr int kEfbW = 640, kEfbH = 528;
+    static constexpr int kEfbW = 640, kEfbH = 528, kHalfW = 320, kHalfH = 264;
 };
 
 void bind_mesh(Gfx& x, Scene& s) {
@@ -311,10 +313,10 @@ void set_common_uniforms(Gfx& x, gl::GLuint p, int stages) {
 }
 
 // Draws `draws` GX-like draw calls (100 triangles each, a uniform change per draw) into the EFB. Returns ms.
-double render_efb_frame(Gfx& x, Scene& s, gl::GLuint p, int draws) {
+double render_efb_frame(Gfx& x, Scene& s, gl::GLuint p, int draws, bool half = false) {
     const double t0 = now();
-    x.g.BindFramebuffer(gl::FRAMEBUFFER, s.efb_fbo);
-    x.g.Viewport(0, 0, Scene::kEfbW, Scene::kEfbH);
+    x.g.BindFramebuffer(gl::FRAMEBUFFER, half ? s.half_fbo : s.efb_fbo);
+    x.g.Viewport(0, 0, half ? Scene::kHalfW : Scene::kEfbW, half ? Scene::kHalfH : Scene::kEfbH);
     x.g.ClearColor(0.1f, 0.1f, 0.2f, 1); x.g.Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
     x.g.Enable(gl::DEPTH_TEST); x.g.DepthFunc(gl::LEQUAL); x.g.Disable(gl::BLEND);
     x.g.UseProgram(p);
@@ -329,13 +331,13 @@ double render_efb_frame(Gfx& x, Scene& s, gl::GLuint p, int draws) {
     return 1e3 * (now() - t0);
 }
 
-void present_efb(Gfx& x, Scene& s) {
+void present_efb(Gfx& x, Scene& s, bool half = false) {
     x.g.BindFramebuffer(gl::FRAMEBUFFER, 0);
     x.g.Viewport(0, 0, x.width, x.height);
     x.g.Disable(gl::DEPTH_TEST); x.g.Disable(gl::BLEND);
     x.g.UseProgram(x.blit_prog);
     x.g.Uniform1i(x.g.GetUniformLocation(x.blit_prog, "u_tex"), 0);
-    x.g.ActiveTexture(gl::TEXTURE0); x.g.BindTexture(gl::TEXTURE_2D, s.efb_tex);
+    x.g.ActiveTexture(gl::TEXTURE0); x.g.BindTexture(gl::TEXTURE_2D, half ? s.half_tex : s.efb_tex);
     static gl::GLuint vbo = 0;
     if (!vbo) {
         const float v[] = {-1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1, 1, 1, 1, 1};
@@ -437,6 +439,35 @@ void run_gpu_tests(Gfx& x, Report& R, bool quick) {
     R.line("  %d pipelines especializados: mediana %.1f ms, max %.1f ms por programa", variants, spec_med, spec_max);
     R.line("  -> a 60 fps un frame dura 16.7 ms: cada programa nuevo en el hilo de render es %s", spec_med > 8 ? "un tiron visible" : "tolerable");
     R.num("specialised_compile_median_ms", spec_med); R.num("specialised_compile_max_ms", spec_max);
+    // Program binaries: compile once (at install or first launch), then load. This is what removes the stutter
+    // when the driver has no parallel compile.
+    if (x.es_major >= 3 && g.GetProgramBinary && g.ProgramBinary) {
+        std::vector<double> load_ms; std::size_t bytes = 0; int ok = 0;
+        for (int v = 0; v < (quick ? 6 : 12); ++v) {
+            const gl::GLuint src = x.program(kVs, specialised_fs(100 + v, 4 + v % 5), nullptr, true);
+            if (!src) continue;
+            gl::GLint len = 0; g.GetProgramiv(src, 0x8741 /*PROGRAM_BINARY_LENGTH*/, &len);
+            std::vector<unsigned char> blob(std::size_t(len > 0 ? len : 0));
+            gl::GLsizei got = 0; gl::GLenum fmt = 0;
+            if (len > 0) g.GetProgramBinary(src, len, &got, &fmt, blob.data());
+            g.DeleteProgram(src);
+            if (got <= 0) continue;
+            bytes += std::size_t(got);
+            const double t = now();
+            const gl::GLuint dst = g.CreateProgram();
+            g.ProgramBinary(dst, fmt, blob.data(), got);
+            gl::GLint linked = 0; g.GetProgramiv(dst, gl::LINK_STATUS, &linked);
+            g.UseProgram(dst); g.Finish();
+            load_ms.push_back(1e3 * (now() - t));
+            ok += linked != 0;
+            g.DeleteProgram(dst);
+        }
+        if (!load_ms.empty()) {
+            R.line("  binarios de programa: %d/%zu cargan, mediana %.2f ms por programa (%.1f KiB cada uno) vs %.1f ms compilando",
+                   ok, load_ms.size(), median(load_ms), bytes / 1024.0 / load_ms.size(), spec_med);
+            R.num("program_binary_load_ms", median(load_ms)); R.num("program_binary_kib", bytes / 1024.0 / load_ms.size());
+        } else R.line("  binarios de programa: el driver no devolvio ninguno");
+    }
     if (!uber || !spec) { R.line("  sin programas validos: se omiten pruebas de dibujo"); return; }
 
     // ---- scene resources
@@ -485,6 +516,16 @@ void run_gpu_tests(Gfx& x, Report& R, bool quick) {
         g.GenTextures(1, &s.copy_tex); g.BindTexture(gl::TEXTURE_2D, s.copy_tex);
         g.TexImage2D(gl::TEXTURE_2D, 0, gl::RGBA, Scene::kEfbW, Scene::kEfbH, 0, gl::RGBA, gl::UNSIGNED_BYTE, nullptr);
         g.TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR);
+        g.GenTextures(1, &s.half_tex); g.BindTexture(gl::TEXTURE_2D, s.half_tex);
+        g.TexImage2D(gl::TEXTURE_2D, 0, gl::RGBA, Scene::kHalfW, Scene::kHalfH, 0, gl::RGBA, gl::UNSIGNED_BYTE, nullptr);
+        g.TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR); g.TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR);
+        g.TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE); g.TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE);
+        g.GenRenderbuffers(1, &s.half_depth); g.BindRenderbuffer(gl::RENDERBUFFER, s.half_depth);
+        g.RenderbufferStorage(gl::RENDERBUFFER, d24 ? gl::DEPTH_COMPONENT24 : gl::DEPTH_COMPONENT16, Scene::kHalfW, Scene::kHalfH);
+        g.GenFramebuffers(1, &s.half_fbo); g.BindFramebuffer(gl::FRAMEBUFFER, s.half_fbo);
+        g.FramebufferTexture2D(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, gl::TEXTURE_2D, s.half_tex, 0);
+        g.FramebufferRenderbuffer(gl::FRAMEBUFFER, gl::DEPTH_ATTACHMENT, gl::RENDERBUFFER, s.half_depth);
+        R.line("  EFB a la mitad 320x264: %s", g.CheckFramebufferStatus(gl::FRAMEBUFFER) == gl::FRAMEBUFFER_COMPLETE ? "completo" : "INCOMPLETO");
     }
     set_common_uniforms(x, uber, 4);
     set_common_uniforms(x, spec, 4);
@@ -516,6 +557,47 @@ void run_gpu_tests(Gfx& x, Report& R, bool quick) {
     if (fit12 > 0) R.line("  costo marginal %.4f ms/draw, fijo %.2f ms -> ~%.0f draws caben en 12 ms", per_draw, fixed, fit12);
     else R.line("  costo marginal %.4f ms/draw, fijo %.2f ms -> ni 100 draws caben en 12 ms", per_draw, fixed);
     R.num("draw_marginal_ms", per_draw); R.num("draws_in_12ms", fit12);
+
+    // ---- separating the costs: empty frames, a trivial shader, the specialised TEV shader, full and half EFB
+    status("GPU: separar costos (fijo, vertices, pixeles; EFB completo y a la mitad)", 0.58);
+    {
+        const gl::GLuint flat = x.program(kVs, "varying vec4 v_col; varying vec2 v_tc0; varying vec2 v_tc1; void main(){ gl_FragColor=v_col; }\n");
+        if (flat) set_common_uniforms(x, flat, 0);
+        const int reps = quick ? 4 : 8;
+        auto med = [&](gl::GLuint p, int draws, bool half) { std::vector<double> t; for (int f = 0; f < reps; ++f) t.push_back(render_efb_frame(x, s, p, draws, half)); return median(t); };
+        const double empty_full = med(spec, 0, false), empty_half = med(spec, 0, true);
+        R.line("  frame vacio (clear + resolve): %.2f ms a 640x528, %.2f ms a 320x264", empty_full, empty_half);
+        R.num("empty_frame_ms", empty_full); R.num("empty_frame_half_ms", empty_half);
+        if (flat) {
+            const double f1000 = med(flat, 1000, true);
+            R.line("  shader trivial, 1000 draws a 320x264: %.2f ms -> costo de draw+vertices ~%.3f ms/draw", f1000, (f1000 - empty_half) / 1000.0);
+            R.num("flat_1000_half_ms", f1000);
+        }
+        for (int draws : {100, 500, 1000}) {
+            const double full = med(spec, draws, false), half = med(spec, draws, true);
+            R.line("  especializado %4d draws: %6.2f ms a 640x528, %6.2f ms a 320x264", draws, full, half);
+            R.num(("spec_full_" + std::to_string(draws)).c_str(), full); R.num(("spec_half_" + std::to_string(draws)).c_str(), half);
+        }
+        present_efb(x, s, true); draw_log_screen();
+        // Fill with the specialised and the trivial shader (blended full-screen layers).
+        auto fill = [&](gl::GLuint p, bool half) {
+            const int w = half ? Scene::kHalfW : Scene::kEfbW, h = half ? Scene::kHalfH : Scene::kEfbH;
+            x.g.BindFramebuffer(gl::FRAMEBUFFER, half ? s.half_fbo : s.efb_fbo); x.g.Viewport(0, 0, w, h);
+            x.g.Disable(gl::DEPTH_TEST); x.g.Enable(gl::BLEND); x.g.BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+            x.g.UseProgram(p); bind_mesh(x, s);
+            g.Uniform1f(g.GetUniformLocation(p, "u_mtxidx"), 0); g.Uniform4f(g.GetUniformLocation(p, "u_ofs"), 0, 0, 1.0f, 0);
+            g.Finish();
+            const double t0 = now();
+            for (int l = 0; l < 40; ++l) g.DrawElements(gl::TRIANGLES, s.index_count, gl::UNSIGNED_SHORT, nullptr);
+            g.Finish();
+            return 40.0 * w * h / (now() - t0) / 1e6;
+        };
+        const double fs = fill(spec, false), fsh = fill(spec, true), ff = flat ? fill(flat, false) : 0;
+        R.line("  relleno: especializado %.0f Mpix/s (EFB) / %.0f Mpix/s (mitad); trivial %.0f Mpix/s", fs, fsh, ff);
+        R.line("  -> capas por frame a 60 fps: especializado %.1f en 640x528, %.1f en 320x264", fs * 1e6 / 60 / (640.0 * 528), fsh * 1e6 / 60 / (320.0 * 264));
+        R.num("fill_spec_mpix", fs); R.num("fill_spec_half_mpix", fsh); R.num("fill_flat_mpix", ff);
+        if (flat) g.DeleteProgram(flat);
+    }
 
     // ---- fill rate at EFB size, blended full-screen layers
     status("GPU: tasa de relleno (capas a pantalla completa)", 0.62);
@@ -577,12 +659,32 @@ void run_gpu_tests(Gfx& x, Report& R, bool quick) {
     }
 
     // ---- frame pacing with vsync
-    status("GPU: ritmo de presentacion con vsync (3 s)", 0.78);
+    status("GPU: ritmo de presentacion con vsync", 0.78);
     {
         x.sdl.GL_SetSwapInterval(1);
+        // Light load: only the blit, to see the panel's own cadence.
+        std::vector<double> lv; double l0 = now();
+        for (int f = 0; f < 90 && !x.quit; ++f) {
+            present_efb(x, s, true); x.sdl.GL_SwapWindow(x.window); x.pump();
+            const double t = now(); lv.push_back(1e3 * (t - l0)); l0 = t;
+        }
+        lv.erase(lv.begin());
+        double lm = 0; int llate = 0; for (double v : lv) { lm += v; llate += v > 20.0; } lm /= lv.size();
+        R.line("  solo presentar: intervalo medio %.2f ms (%.1f Hz), frames >20 ms: %d de %zu", lm, 1000 / lm, llate, lv.size());
+        R.num("present_light_mean_ms", lm); R.num("present_light_late", llate);
+        // 300 specialised draws at half size: a light Wii-like frame.
+        std::vector<double> hv; double h0 = now();
+        for (int f = 0; f < 90 && !x.quit; ++f) {
+            render_efb_frame(x, s, spec, 300, true); present_efb(x, s, true); x.sdl.GL_SwapWindow(x.window); x.pump();
+            const double t = now(); hv.push_back(1e3 * (t - h0)); h0 = t;
+        }
+        hv.erase(hv.begin());
+        double hm = 0; int hlate = 0; for (double v : hv) { hm += v; hlate += v > 20.0; } hm /= hv.size();
+        R.line("  300 draws especializados a 320x264: intervalo medio %.2f ms (%.1f Hz), frames >20 ms: %d de %zu", hm, 1000 / hm, hlate, hv.size());
+        R.num("present_spec_half_mean_ms", hm); R.num("present_spec_half_late", hlate);
         std::vector<double> iv;
         double last = now();
-        const int frames = quick ? 90 : 180;
+        const int frames = quick ? 45 : 90;
         for (int f = 0; f < frames && !x.quit; ++f) {
             render_efb_frame(x, s, uber, 300);
             present_efb(x, s);
@@ -596,7 +698,7 @@ void run_gpu_tests(Gfx& x, Report& R, bool quick) {
         std::vector<double> sorted = iv; std::sort(sorted.begin(), sorted.end());
         double mean = 0; int late = 0; for (double v : iv) { mean += v; late += v > 20.0; }
         mean /= iv.size();
-        R.line("  intervalo medio %.2f ms (%.1f Hz), p95 %.2f ms, max %.2f ms, frames >20 ms: %d de %zu", mean, 1000 / mean, sorted[sorted.size() * 95 / 100], sorted.back(), late, iv.size());
+        R.line("  uber 300 draws a 640x528: intervalo medio %.2f ms (%.1f Hz), p95 %.2f ms, max %.2f ms, frames >20 ms: %d de %zu", mean, 1000 / mean, sorted[sorted.size() * 95 / 100], sorted.back(), late, iv.size());
         R.num("present_mean_ms", mean); R.num("present_p95_ms", sorted[sorted.size() * 95 / 100]); R.num("present_late", late);
     }
 }
@@ -656,7 +758,7 @@ int main(int argc, char** argv) {
     }
     Report R; R.open(out); g_report = &R;
     Gfx gfx; g_gfx = &gfx;
-    R.line("Nebula probe 0.1 - viabilidad de un port recompilado (Wii -> RG35XX H)");
+    R.line("Nebula probe 0.2 - viabilidad de un port recompilado (Wii -> RG35XX H)");
     R.block(sys_summary());
     const MemSnapshot m0 = mem_snapshot();
     R.line("  RAM total %ld MiB, disponible %ld MiB, swap %ld/%ld MiB libres", m0.mem_total_kib / 1024, m0.mem_available_kib / 1024, m0.swap_free_kib / 1024, m0.swap_total_kib / 1024);

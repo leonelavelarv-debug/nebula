@@ -98,8 +98,12 @@ GuestMemReport run_guest_memory_test(std::size_t module_estimate_mib) {
             void* c = mmap(s + ring, ring, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
             if (a != MAP_FAILED && c != MAP_FAILED) {
                 for (std::size_t i = 0; i < ring; i += 4096) s[i] = 2;
-                s[ring - 1] = 0x5A; s[0] = 0xA5;
-                r.ring_alias = s[2 * ring - 1] == 0x5A && s[ring] == 0xA5;
+                // The two halves are the same pages: without a barrier the compiler may read s[ring] before the
+                // store to s[0] reaches memory (0.1 reported a false failure that way on the device and under qemu).
+                volatile unsigned char* v = s;
+                v[ring - 1] = 0x5A; v[0] = 0xA5;
+                __asm__ volatile("" ::: "memory");
+                r.ring_alias = v[2 * ring - 1] == 0x5A && v[ring] == 0xA5;
             }
             r.ring_ms = 1e3 * (now() - t1);
             const MemSnapshot mid = mem_snapshot();
