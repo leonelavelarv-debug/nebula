@@ -1,0 +1,19 @@
+{
+  "version": 4,
+  "name": "nebulaprobe.zip",
+  "items": ["Nebula Probe.sh", "nebulaprobe/"],
+  "items_opt": [],
+  "attr": {
+    "title": "Nebula Probe",
+    "desc": "Mide memoria, CPU (codigo PowerPC recompilado por Nebula, frente GX) y GPU GLES (shaders, draws, EFB, vsync) para evaluar un port recompilado de Wii.",
+    "inst": "Copiar 'Nebula Probe.sh' y la carpeta nebulaprobe a ports. Ejecutar; el informe queda en nebulaprobe/nebula-probe-report.txt.",
+    "genres": ["other"],
+    "porter": ["leonelavelarv-debug"],
+    "runtime": null,
+    "reqs": [],
+    "rtr": true,
+    "exp": true,
+    "arch": ["aarch64"],
+    "min_glibc": "2.18"
+  }
+}

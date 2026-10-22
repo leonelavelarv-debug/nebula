@@ -21974,3 +21974,28 @@ extern \"C\" std::uint32_t galaxy_module_transfer_flags() {
         }
     }
 }
+}
+
+// ---- Nebula -> RG35XX H audit harness (not upstream) ---------------------------------------------------
+/// Lowers one standalone code range with the module's per-function options (native/fast float, flat RAM
+/// views, register residency), the way `translate_module_with_options` lowers each game function, without a
+/// game disc. Used to measure the optimised code shape on other hosts (aarch64).
+pub fn audit_lower_ppc_code_range_with_module_options(
+    address: u32,
+    bytes: &[u8],
+    options: &ModuleTranslationOptions,
+) -> Result<String, TranslationError> {
+    let entries = BTreeSet::new();
+    let body = lower_words_for_module_with_call_return_entries_and_exact_fpu_flat_reads(
+        address,
+        bytes,
+        &entries,
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+        options,
+    )?;
+    Ok(apply_residency_to_body(address, body, &entries, options, None))
+}

@@ -1,0 +1,15 @@
+# Audit tools for the RG35XX H work (not a workspace member; build with `cargo build --release` here).
+#   ppc-lower      lowers a PowerPC code range with Nebula's translator (exact, --native or --fast module options)
+#   opcode-coverage  which Broadway opcodes the translator lowers
+#   ppc-histogram  opcode histogram of a game's main.dol / *.rel and the opcodes the translator lacks
+[package]
+name = "ppc-lower"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[dependencies]
+nebula-recomp-core = { path = "../../../../crates/nebula-recomp-core" }
+powerpc = "0.4.1"
+
+[workspace]

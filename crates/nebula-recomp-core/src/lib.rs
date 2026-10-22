@@ -84,6 +84,7 @@ pub use translate::{
     lower_ppc_code_range, lower_ppc_code_range_with_entries_and_immediate_overrides,
     translate_module, translate_module_with_options, translate_module_with_source_budget,
     translate_one, translation_coverage, validate_module_options, GeneratedSource,
+    audit_lower_ppc_code_range_with_module_options,
     ModuleTranslationOptions, PpcImmediateKind, PpcImmediateOverride, TranslationCoverage,
     TranslationError, TranslationModule, TranslationUnit, ABI_CONTRACT_FILE,
     DEFAULT_MODULE_SHARD_SOURCE_KIB,
