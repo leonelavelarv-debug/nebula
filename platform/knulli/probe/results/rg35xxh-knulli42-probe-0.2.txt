@@ -1,0 +1,107 @@
+Nebula probe 0.2 - viabilidad de un port recompilado (Wii -> RG35XX H)
+  kernel: Linux 4.9.170 aarch64
+  sistema: "Batocera.linux 42"
+  CFW (PortMaster): knulli
+  dispositivo (PortMaster): RG35XX-H
+  device-tree: Anbernic RG35XX-H
+  RAM total 973 MiB, disponible 749 MiB, swap 0/0 MiB libres
+== video
+  SDL 2.32.8 cargado de libSDL2-2.0.so.0
+  driver de video SDL: mali
+  pantalla: 640x480 @ 60 Hz
+  contexto GLES 3.0 creado, superficie 640x480
+  mando 0: Anbernic RG35XX-H Controller
+  memoria tras crear el contexto: RSS 35 MiB, PSS 19 MiB
+== CPU: informacion, ancho de banda y nucleos
+  CPU part=0xd03
+  4 nucleos, MHz actual/max: 1512/1704 1512/1704 1512/1704 1512/1704  gobernador=performance
+  temperatura: 51.7C 50.9C 50.9C 50.8C 30.0C
+  memcpy 32 MiB: 1.04 GB/s; ALU 1 hilo 6.03 ns/iter, 4 hilos 6.53 ns/iter/hilo
+== CPU: codigo PowerPC recompilado por Nebula
+  lwzu/add (big-endian)          OK   1CB27800
+  fmadds (single, exacto)        OK   17.81927 (418E8DE0)
+  rlwinm/xor/mullw               OK   366239DD
+  divw (INT_MIN/-1, x/0)         OK   sin trampa en ARM64
+  lwzu/stwu copia                OK   
+  ns/iter recompilado vs nativo: suma 18.04/0.91 (x19.7), fmadds 204.24/3.85 (x53.0), ALU 10.70/5.96 (x1.8)
+  (forma simple de lower_ppc_code_range: registros en memoria; el modulo completo los mantiene en locales)
+  -- modulo optimizado (native+fast float, vista plana, registros en locales):
+  XARCH ps_loop f1=4010FAE9C0000000/4010FAE9C0000000 f3=C02A0D4AE0000000/C02A0D4AE0000000
+  fctiwz (NaN/inf/overflow)          PASS 80000000 7FFFFFFF 80000000 7FFFFFFF 80000000 80000000 7FFFFFFF 00000000 00000001 80000000 FFFFFFF9 
+  bench sum_words    guest=  15.395 ms native=   1.538 ms ratio=10.01x  guest=  9.40 ns/iter
+  bench dot_f32      guest=  56.645 ms native=   6.305 ms ratio= 8.98x  guest= 34.57 ns/iter
+  bench hash_loop    guest=  14.566 ms native=  11.923 ms ratio= 1.22x  guest=  7.28 ns/iter
+  ALL PROBES PASSED
+== CPU: frente GX de Nebula (FifoParser + claves de shader)
+   300 draws/frame (133 KB de FIFO): OK 0.36 ms/frame, 1193 ns/draw, 381 MB/s 
+  1000 draws/frame (444 KB de FIFO): OK 1.19 ms/frame, 1189 ns/draw, 383 MB/s 
+== Memoria: espacio de direcciones Wii y anillo GX
+  reserva 4 GiB de direcciones (PROT_NONE): OK
+  MEM1 24 MiB OK, MEM2 64 MiB OK, primer toque 80.5 ms
+  anillo GX 16 MiB doble mapeo (memfd): OK, 26.2 ms
+  PSS +106496 KiB; MemAvailable despues: 636 MiB; con modulo simulado de 64 MiB: 575 MiB
+== Vulkan
+  libvulkan.so.1 no existe: el backend Vulkan de Nebula no es opcion; usar GLES.
+== GPU: cadenas y limites
+  GL_VERSION  OpenGL ES 3.2 v1.r20p0-01rel0.8ec337de4ddab3365a32cff58063a9da
+  GL_RENDERER Mali-G31
+  GL_VENDOR   ARM
+  GLSL        OpenGL ES GLSL ES 3.20
+  TEXTURE_SIZE=8192 TEXTURE_IMAGE_UNITS=16 VERTEX_UNIFORM_VECTORS=1024 FRAGMENT_UNIFORM_VECTORS=1024 VARYING_VECTORS=15 VERTEX_ATTRIBS=16 RENDERBUFFER_SIZE=8192 SAMPLES=16 DRAW_BUFFERS=4
+  highp float en fragment: rango 2^127, precision 23 bits
+  [no] GL_EXT_blend_func_extended         blend dual-source (alfa SRC1 de TEV)
+  [no] GL_EXT_shader_framebuffer_fetch    logic-op/blend en shader
+  [SI] GL_ARM_shader_framebuffer_fetch    logic-op/blend en shader (ARM)
+  [no] GL_EXT_texture_compression_s3tc    texturas CMPR sin decodificar
+  [no] GL_EXT_texture_compression_dxt1    CMPR (DXT1)
+  [SI] GL_OES_depth24                     profundidad 24 bits (EFB Z24)
+  [SI] GL_OES_packed_depth_stencil        Z24S8
+  [SI] GL_EXT_geometry_shader             lineas/puntos anchos GX
+  [SI] GL_OES_texture_npot                texturas NPOT con mip/repeat
+  [SI] GL_EXT_disjoint_timer_query        medicion GPU real
+  [no] GL_KHR_parallel_shader_compile     compilar shaders sin bloquear
+  [SI] GL_OES_get_program_binary          cache de programas en disco
+  [SI] GL_EXT_buffer_storage              anillos persistentes
+  [no] GL_EXT_clip_control                rango de profundidad GX
+  [SI] GL_EXT_color_buffer_half_float     EFB de alta precision
+  [SI] GL_OES_EGL_image_external          presentacion zero-copy
+  formatos de binario de programa (ES3): 1
+== GPU: compilacion de shaders (tirones)
+  uber TEV (8 etapas dinamicas): OK en 390.0 ms 
+  24 pipelines especializados: mediana 27.4 ms, max 32.5 ms por programa
+  -> a 60 fps un frame dura 16.7 ms: cada programa nuevo en el hilo de render es un tiron visible
+  binarios de programa: 12/12 cargan, mediana 0.30 ms por programa (5.8 KiB cada uno) vs 27.4 ms compilando
+  EFB 640x528 RGBA8 + Z24: completo
+  EFB a la mitad 320x264: completo
+  memoria tras crear recursos GL: RSS 52 MiB, PSS 27 MiB, MemAvailable 737 MiB
+== GPU: llamadas de dibujo en el EFB (uber vs especializado)
+  uber:  100 draws x 100 tri ->  40.80 ms/frame
+  uber:  250 draws x 100 tri ->  44.35 ms/frame
+  uber:  500 draws x 100 tri ->  62.08 ms/frame
+  uber: 1000 draws x 100 tri ->  93.18 ms/frame
+  uber: 2000 draws x 100 tri -> 140.09 ms/frame
+  especializado: 500 draws ->  26.15 ms/frame (uber 62.08)
+  costo marginal 0.0523 ms/draw, fijo 35.58 ms -> ni 100 draws caben en 12 ms
+== GPU: separar costos (fijo, vertices, pixeles; EFB completo y a la mitad)
+  frame vacio (clear + resolve): 0.12 ms a 640x528, 0.12 ms a 320x264
+  shader trivial, 1000 draws a 320x264: 18.98 ms -> costo de draw+vertices ~0.019 ms/draw
+  especializado  100 draws:   7.65 ms a 640x528,   4.31 ms a 320x264
+  especializado  500 draws:  28.60 ms a 640x528,  16.33 ms a 320x264
+  especializado 1000 draws:  49.37 ms a 640x528,  28.71 ms a 320x264
+  relleno: especializado 187 Mpix/s (EFB) / 54 Mpix/s (mitad); trivial 520 Mpix/s
+  -> capas por frame a 60 fps: especializado 9.2 en 640x528, 10.6 en 320x264
+== GPU: tasa de relleno (capas a pantalla completa)
+  uber 4 etapas + 2 texturas + blend: 17 Mpix/s (= 0.9 capas EFB por frame a 60 fps)
+== GPU: subida de texturas y decodificacion GX en CPU
+  RGB5A3 256x256 -> RGBA8 en CPU: 0.74 ms/textura (354 MB/s salida)
+  glTexSubImage2D 256x256 RGBA8: 0.19 ms/textura (1363 MB/s)
+== GPU: copias EFB a textura y lecturas a RAM
+  copia EFB->textura 640x528: 1.52 ms; lectura completa a RAM: 2.47 ms; peek de 1 pixel: 0.008 ms
+  (suma de control de la lectura: 128700; 0 indicaria que no se dibujo nada)
+== GPU: ritmo de presentacion con vsync
+  solo presentar: intervalo medio 16.54 ms (60.5 Hz), frames >20 ms: 0 de 89
+  300 draws especializados a 320x264: intervalo medio 16.80 ms (59.5 Hz), frames >20 ms: 1 de 89
+  uber 300 draws a 640x528: intervalo medio 50.66 ms (19.7 Hz), p95 50.87 ms, max 101.21 ms, frames >20 ms: 89 de 89
+== resumen
+  pico RSS 207 MiB; MemAvailable al final 729 MiB
+  informe: /userdata/roms/ports/nebulaprobe/nebula-probe-report.txt y .json

@@ -134,6 +134,26 @@ encadenado, que es donde el camino `fast float` aún tiene ~9× de sobrecoste so
 optimización en ARM). La GPU es el límite: sin uber shaders, con programas precompilados y probablemente con el EFB a
 media resolución (320x264; la pantalla es de 640x480). El probe 0.2 mide exactamente esas tres cosas.
 
+## Mediciones en el aparato (probe 0.2) (M)
+
+Informe: `platform/knulli/probe/results/rg35xxh-knulli42-probe-0.2.txt`. Lo nuevo respecto a 0.1:
+
+| Medición | Resultado | Lectura |
+|---|---|---|
+| Anillo GX doble mapeado | OK | El fallo de 0.1 era del probe |
+| Binarios de programa | 12/12 cargan, 0,30 ms cada uno (5,8 KiB) frente a 27,4 ms compilando | Los tirones de shader se eliminan con una caché precompilada |
+| Frame vacío (clear + resolve) | 0,12 ms a 640x528 y a 320x264 | El costo fijo no es el framebuffer |
+| Shader trivial, 1000 draws de 100 triángulos a 320x264 | 18,98 ms (~19 µs por draw) | El costo dominante es por draw/vértices, no por píxel |
+| TEV especializado a 640x528 | 100 draws 7,65 ms; 500 → 28,6; 1000 → 49,4 | ~180 draws caben en 12 ms |
+| TEV especializado a 320x264 | 100 draws 4,31 ms; 500 → 16,3; 1000 → 28,7 | ~350 draws en 12 ms; ~900 en 28 ms (30 fps) |
+| Relleno TEV especializado | ~9–11 capas por frame a 60 fps | El píxel no es el límite |
+| Vsync, solo presentar | 16,54 ms (60,5 Hz), 0 frames tarde | El panel y el swap van a 60 Hz |
+| Vsync, 300 draws TEV a 320x264 | 16,80 ms (59,5 Hz), 1 tarde de 89 | Un frame ligero tipo Wii se sostiene a 60 fps |
+
+Conclusión: con shaders especializados precompilados y el EFB a 320x264, la GPU sostiene ~300 draws a 60 fps o
+~900 a 30 fps. El límite es el costo por draw (~19–30 µs). El probe 0.3 separa ese costo entre el driver (CPU) y los
+vértices (GPU) y mide cuánto ahorra agrupar objetos en un draw instanciado, que es la técnica que lo bajaría.
+
 ## Plan propuesto
 
 0. **Medir en el aparato**: `Nebula Probe` y la autoprueba de NXAccel. Criterios para seguir con la vía

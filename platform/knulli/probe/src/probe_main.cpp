@@ -230,6 +230,17 @@ void draw_log_screen(bool final_screen = false) {
 void status(const char* s, double p) { g_status = s; g_progress = p; g_report->line("== %s", s); draw_log_screen(); }
 
 // ------------------------------------------------------------ GX-like GPU ---
+// The same transform, one instance per object: the matrix index and placement come from gl_InstanceID (GLES 3).
+const char* kVsInstanced =
+    "attribute vec3 a_pos; attribute vec4 a_col; attribute vec2 a_tc;\n"
+    "uniform vec4 u_mtx[30]; uniform float u_mtxidx; uniform vec4 u_ofs;\n"
+    "varying vec4 v_col; varying vec2 v_tc0; varying vec2 v_tc1;\n"
+    "void main(){ int d=gl_InstanceID; int m=(d%10)*3; vec4 p=vec4(a_pos,1.0);\n"
+    "  vec3 w=vec3(dot(u_mtx[m],p), dot(u_mtx[m+1],p), dot(u_mtx[m+2],p));\n"
+    "  vec2 o=vec2(-0.9+1.8*float(d%16)/15.0, -0.9+1.8*float((d/16)%16)/15.0);\n"
+    "  v_col=a_col; v_tc0=a_tc; v_tc1=a_tc*2.0+w.xy*0.1;\n"
+    "  gl_Position=vec4(w.xy*0.18+o, 0.5+0.4*w.z+u_mtxidx*0.0+u_ofs.w, 1.0); }\n";
+
 const char* kVs =
     "attribute vec3 a_pos; attribute vec4 a_col; attribute vec2 a_tc;\n"
     "uniform vec4 u_mtx[30]; uniform float u_mtxidx; uniform vec4 u_ofs;\n"
@@ -273,6 +284,8 @@ struct Scene {
     gl::GLuint vbo = 0, ibo = 0, tex[2] = {}, efb_fbo = 0, efb_tex = 0, efb_depth = 0, copy_tex = 0;
     gl::GLuint half_fbo = 0, half_tex = 0, half_depth = 0;  // the EFB at half size per axis (320x264)
     gl::GLsizei index_count = 0;
+    gl::GLuint big_vbo = 0, big_ibo = 0;  // one 10 000-triangle mesh, for vertex throughput
+    gl::GLsizei big_count = 0;
     static constexpr int kEfbW = 640, kEfbH = 528, kHalfW = 320, kHalfH = 264;
 };
 
@@ -491,6 +504,26 @@ void run_gpu_tests(Gfx& x, Report& R, bool quick) {
         s.index_count = static_cast<gl::GLsizei>(idx.size());  // 100 triangles
         g.GenBuffers(1, &s.vbo); g.BindBuffer(gl::ARRAY_BUFFER, s.vbo); g.BufferData(gl::ARRAY_BUFFER, verts.size() * 4, verts.data(), gl::STATIC_DRAW);
         g.GenBuffers(1, &s.ibo); g.BindBuffer(gl::ELEMENT_ARRAY_BUFFER, s.ibo); g.BufferData(gl::ELEMENT_ARRAY_BUFFER, idx.size() * 2, idx.data(), gl::STATIC_DRAW);
+        {
+            std::vector<float> bv; std::vector<std::uint16_t> bi;
+            const int bx = 101, by = 51;  // 100 x 50 quads = 10 000 triangles
+            for (int y = 0; y < by; ++y)
+                for (int xx = 0; xx < bx; ++xx) {
+                    const float fx = xx / float(bx - 1) * 2 - 1, fy = y / float(by - 1) * 2 - 1;
+                    std::uint32_t col = 0xFF000000u | (std::uint32_t(xx * 2) << 16) | (std::uint32_t(y * 5) << 8) | 0x80u;
+                    float colf; std::memcpy(&colf, &col, 4);
+                    const float v[6] = {fx, fy, 0.3f * std::sin(fx * 9.0f + fy * 4.0f), colf, (fx + 1) * 2, (fy + 1) * 2};
+                    bv.insert(bv.end(), v, v + 6);
+                }
+            for (int y = 0; y + 1 < by; ++y)
+                for (int xx = 0; xx + 1 < bx; ++xx) {
+                    const std::uint16_t a = std::uint16_t(y * bx + xx), b = std::uint16_t(a + 1), c = std::uint16_t(a + bx), d = std::uint16_t(c + 1);
+                    const std::uint16_t q[6] = {a, b, c, b, d, c}; bi.insert(bi.end(), q, q + 6);
+                }
+            s.big_count = static_cast<gl::GLsizei>(bi.size());
+            g.GenBuffers(1, &s.big_vbo); g.BindBuffer(gl::ARRAY_BUFFER, s.big_vbo); g.BufferData(gl::ARRAY_BUFFER, bv.size() * 4, bv.data(), gl::STATIC_DRAW);
+            g.GenBuffers(1, &s.big_ibo); g.BindBuffer(gl::ELEMENT_ARRAY_BUFFER, s.big_ibo); g.BufferData(gl::ELEMENT_ARRAY_BUFFER, bi.size() * 2, bi.data(), gl::STATIC_DRAW);
+        }
         std::vector<std::uint8_t> texel(256 * 256 * 4);
         for (int i = 0; i < 256 * 256; ++i) { texel[i * 4] = std::uint8_t(i); texel[i * 4 + 1] = std::uint8_t(i >> 8); texel[i * 4 + 2] = std::uint8_t((i >> 3) ^ i); texel[i * 4 + 3] = 255; }
         g.GenTextures(2, s.tex);
@@ -597,6 +630,82 @@ void run_gpu_tests(Gfx& x, Report& R, bool quick) {
         R.line("  -> capas por frame a 60 fps: especializado %.1f en 640x528, %.1f en 320x264", fs * 1e6 / 60 / (640.0 * 528), fsh * 1e6 / 60 / (320.0 * 264));
         R.num("fill_spec_mpix", fs); R.num("fill_spec_half_mpix", fsh); R.num("fill_flat_mpix", ff);
         if (flat) g.DeleteProgram(flat);
+    }
+
+    // ---- where the per-draw cost goes: driver (CPU submission) or vertices (GPU), and what batching saves
+    status("GPU: costo por draw (driver vs vertices) e instancing", 0.60);
+    {
+        const gl::GLuint flat = x.program(kVs, "varying vec4 v_col; varying vec2 v_tc0; varying vec2 v_tc1; void main(){ gl_FragColor=v_col; }\n");
+        if (flat) set_common_uniforms(x, flat, 0);
+        struct Timing { double submit, total; };
+        // `draws` draws of `count` indices from the bound mesh at 320x264; submit = time until the last draw call
+        // returns (driver CPU), total = until glFinish (GPU done).
+        auto run = [&](gl::GLuint p, int draws, gl::GLsizei count, bool big) {
+            std::vector<double> sub, tot;
+            for (int f = 0; f < (quick ? 3 : 6); ++f) {
+                x.g.BindFramebuffer(gl::FRAMEBUFFER, s.half_fbo); x.g.Viewport(0, 0, Scene::kHalfW, Scene::kHalfH);
+                x.g.ClearColor(0.1f, 0.1f, 0.2f, 1); x.g.Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+                x.g.Enable(gl::DEPTH_TEST); x.g.Disable(gl::BLEND); x.g.UseProgram(p);
+                bind_mesh(x, s);
+                if (big) {
+                    x.g.BindBuffer(gl::ARRAY_BUFFER, s.big_vbo); x.g.BindBuffer(gl::ELEMENT_ARRAY_BUFFER, s.big_ibo);
+                    x.g.VertexAttribPointer(0, 3, gl::FLOAT, 0, 24, reinterpret_cast<void*>(0));
+                    x.g.VertexAttribPointer(1, 4, gl::UNSIGNED_BYTE, 1, 24, reinterpret_cast<void*>(12));
+                    x.g.VertexAttribPointer(2, 2, gl::FLOAT, 0, 24, reinterpret_cast<void*>(16));
+                }
+                const gl::GLint idx = x.g.GetUniformLocation(p, "u_mtxidx"), ofs = x.g.GetUniformLocation(p, "u_ofs");
+                x.g.Finish();
+                const double t0 = now();
+                for (int d = 0; d < draws; ++d) {
+                    x.g.Uniform1f(idx, float(d % 10));
+                    x.g.Uniform4f(ofs, -0.9f + 1.8f * float(d % 16) / 15.0f, -0.9f + 1.8f * float((d / 16) % 16) / 15.0f, big ? 0.9f : 0.18f, 0);
+                    x.g.DrawElements(gl::TRIANGLES, count, gl::UNSIGNED_SHORT, nullptr);
+                }
+                const double t1 = now();
+                x.g.Finish();
+                sub.push_back(1e3 * (t1 - t0)); tot.push_back(1e3 * (now() - t0));
+            }
+            return Timing{median(sub), median(tot)};
+        };
+        if (flat) {
+            const Timing tiny = run(flat, 2000, 6, false);
+            R.line("  2000 draws de 2 triangulos: envio %.2f ms, total %.2f ms -> %.1f us de driver por draw", tiny.submit, tiny.total, 1e3 * tiny.submit / 2000);
+            R.num("tiny_2000_submit_ms", tiny.submit); R.num("tiny_2000_total_ms", tiny.total);
+            const Timing mid = run(flat, 1000, s.index_count, false);
+            R.line("  1000 draws de 100 triangulos: envio %.2f ms, total %.2f ms", mid.submit, mid.total);
+            R.num("mid_1000_submit_ms", mid.submit); R.num("mid_1000_total_ms", mid.total);
+            const Timing big = run(flat, 20, s.big_count, true);
+            const double mtri = 20.0 * (s.big_count / 3) / (big.total / 1e3) / 1e6;
+            R.line("  20 draws de 10 000 triangulos: envio %.2f ms, total %.2f ms -> %.1f Mtri/s", big.submit, big.total, mtri);
+            R.num("big_20_total_ms", big.total); R.num("vertex_mtri_s", mtri);
+        }
+        const Timing spec_tiny = run(spec, 2000, 6, false);
+        R.line("  TEV especializado, 2000 draws de 2 triangulos: envio %.2f ms, total %.2f ms", spec_tiny.submit, spec_tiny.total);
+        R.num("spec_tiny_2000_total_ms", spec_tiny.total);
+        if (x.es_major >= 3 && g.DrawElementsInstanced) {
+            const gl::GLuint inst = x.program(kVsInstanced, specialised_fs(1, 4));
+            if (inst) {
+                set_common_uniforms(x, inst, 4);
+                std::vector<double> tot;
+                for (int f = 0; f < (quick ? 3 : 6); ++f) {
+                    x.g.BindFramebuffer(gl::FRAMEBUFFER, s.half_fbo); x.g.Viewport(0, 0, Scene::kHalfW, Scene::kHalfH);
+                    x.g.Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT); x.g.Enable(gl::DEPTH_TEST); x.g.UseProgram(inst); bind_mesh(x, s);
+                    x.g.Uniform4f(x.g.GetUniformLocation(inst, "u_ofs"), 0, 0, 0, 0);
+                    x.g.Finish();
+                    const double t0 = now();
+                    g.DrawElementsInstanced(gl::TRIANGLES, s.index_count, gl::UNSIGNED_SHORT, nullptr, 1000);
+                    x.g.Finish();
+                    tot.push_back(1e3 * (now() - t0));
+                }
+                const double per = median(tot);
+                const double sep = run(spec, 1000, s.index_count, false).total;
+                R.line("  1000 objetos de 100 triangulos: 1 draw instanciado %.2f ms vs 1000 draws %.2f ms (TEV especializado, 320x264)", per, sep);
+                R.num("instanced_1000_ms", per); R.num("separate_1000_ms", sep);
+                g.DeleteProgram(inst);
+            } else R.line("  shader instanciado no compilo");
+        }
+        if (flat) g.DeleteProgram(flat);
+        draw_log_screen();
     }
 
     // ---- fill rate at EFB size, blended full-screen layers
@@ -758,7 +867,7 @@ int main(int argc, char** argv) {
     }
     Report R; R.open(out); g_report = &R;
     Gfx gfx; g_gfx = &gfx;
-    R.line("Nebula probe 0.2 - viabilidad de un port recompilado (Wii -> RG35XX H)");
+    R.line("Nebula probe 0.3 - viabilidad de un port recompilado (Wii -> RG35XX H)");
     R.block(sys_summary());
     const MemSnapshot m0 = mem_snapshot();
     R.line("  RAM total %ld MiB, disponible %ld MiB, swap %ld/%ld MiB libres", m0.mem_total_kib / 1024, m0.mem_available_kib / 1024, m0.swap_free_kib / 1024, m0.swap_total_kib / 1024);
