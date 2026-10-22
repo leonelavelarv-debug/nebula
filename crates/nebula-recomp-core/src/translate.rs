@@ -21974,7 +21974,6 @@ extern \"C\" std::uint32_t galaxy_module_transfer_flags() {
         }
     }
 }
-}
 
 // ---- Nebula -> RG35XX H audit harness (not upstream) ---------------------------------------------------
 /// Lowers one standalone code range with the module's per-function options (native/fast float, flat RAM
