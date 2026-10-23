@@ -19,9 +19,9 @@
 namespace galaxy::gx {
 
 #if defined(NEBULA_GPU_GLES)
-// A tiler GPU (Mali) runs a frame's passes well after they are recorded, and a game frame is often two or three
-// renderer frames (one per GX token): four keep the render thread recording while the GPU finishes the last game frame.
-inline constexpr unsigned kFramesInFlight = 4;
+// A tiler GPU (Mali) runs a frame's passes well after they are recorded: a third frame keeps the render thread
+// recording while the GPU still finishes the one before.
+inline constexpr unsigned kFramesInFlight = 3;
 #else
 inline constexpr unsigned kFramesInFlight = 2;
 #endif
@@ -32,7 +32,7 @@ inline constexpr unsigned kRingSegments = kFramesInFlight + 2u;
 // sampler heaps per game frame, for the frame being recorded, the completed
 // log waiting for its present and the log whose sub-frames play. A segment
 // is reused only after its fence (the oldest log is then invalidated).
-inline constexpr unsigned kInterpSegments = kFramesInFlight > 3u ? kFramesInFlight : 3u;
+inline constexpr unsigned kInterpSegments = 3u;
 inline constexpr unsigned kSamplerHeapSlots = 2048;
 
 inline constexpr unsigned kEfbWidth = 640;

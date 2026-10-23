@@ -11502,13 +11502,6 @@ void GxBackend::submit_async_peek_fields_if_requested() {
         if (key == kAsyncPeekUnbound || (key & 0xFFFFu) != 0u) {
             continue;
         }
-#if defined(NEBULA_GPU_GLES)
-        // Once published, a channel's fields come at the display copy (the whole frame drawn, one a game frame):
-        // a field at every chunk was read back several times a frame on a tiler's uncached mapping.
-        if ((state.published.load(std::memory_order_relaxed) & 0xFFFFFFFFu) != 0u) {
-            continue;
-        }
-#endif
         if (renderer_.async_peek_field_pending(index)) {
             // Keep the request alive for the next rendered chunk.
             continue;
@@ -17460,8 +17453,6 @@ void GxBackend::on_efb_copy(std::uint32_t exec_command) {
             if (frameskip_skipping_) {
                 renderer_.repeat_next_display_copy();
             }
-            // The frame's EFB is complete: the untokened peek channels take their field now.
-            record_async_peek_fields_at_token(0u);
 #endif
             renderer_.copy_efb_to_xfb(params, *xfb);
             frameskip_after_display_copy();
