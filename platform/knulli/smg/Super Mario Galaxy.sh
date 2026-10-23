@@ -32,6 +32,8 @@ export GALAXY_GLES_PENDING="${GALAXY_GLES_PENDING:-wait}"
 export NEBULA_PAD_SCHEME="${NEBULA_PAD_SCHEME:-nintendo}"
 #   GALAXY_EXPERIMENTAL_NATIVE_4_3=1     el modo 4:3 del propio juego (la pantalla es 4:3); 0: 16:9 con franjas
 export GALAXY_EXPERIMENTAL_NATIVE_4_3="${GALAXY_EXPERIMENTAL_NATIVE_4_3:-1}"
+# El host SDL activa el aspecto dinamico por defecto, que no se combina con el 4:3 fijo.
+if [ "$GALAXY_EXPERIMENTAL_NATIVE_4_3" = "1" ]; then export GALAXY_EXPERIMENTAL_DYNAMIC_ASPECT=0; fi
 #   NEBULA_SHOTS=1                       una captura (shots/present_N.ppm) cada 30 s, 10 como mucho (diagnostico)
 if [ "${NEBULA_SHOTS:-1}" = "1" ]; then
   mkdir -p "$GAMEDIR/shots"
