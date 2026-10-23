@@ -11393,6 +11393,20 @@ bool GxBackend::peek_efb_published(
     if (!initialized_ || !async_render_thread_enabled()) {
         return false;
     }
+    // GALAXY_PEEK_MODE: sync (default) waits for the GPU when no field answers; async answers from the last field
+    // and, without one, as an untouched EFB would (far depth, black); off never reads the EFB back at all.
+    static const int peek_mode = [] {
+        const char* mode = std::getenv("GALAXY_PEEK_MODE");
+        if (mode == nullptr) return 0;
+        if (std::strcmp(mode, "async") == 0) return 1;
+        if (std::strcmp(mode, "off") == 0) return 2;
+        return 0;
+    }();
+    const std::uint32_t untouched = kind == EfbPeekKind::Depth ? 0x00FFFFFFu : 0u;
+    if (peek_mode == 2) {
+        value = untouched;
+        return true;
+    }
     if (x >= kEfbWidth || y >= kEfbHeight) {
 #if defined(NEBULA_GPU_GLES)
         // What the synchronous peek answers outside the EFB, without its FIFO drain and GPU round trip.
@@ -11427,6 +11441,10 @@ bool GxBackend::peek_efb_published(
         if (read_async_peek_field(*others[i], x, y, kind, value)) {
             return true;
         }
+    }
+    if (peek_mode == 1) {
+        value = untouched;
+        return true;
     }
 #if defined(NEBULA_GPU_GLES)
     // Why the game waits (diagnostics): nothing published on the channel yet, or a binding newer than its field.

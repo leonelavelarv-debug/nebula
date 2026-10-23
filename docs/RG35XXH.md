@@ -270,6 +270,10 @@ ninja -C build-aarch64
   sus esperas al juego) de los frames dibujados y saltados, elige el n más bajo cuyo ciclo cabe en n+1 frames de 60 Hz
   (tolerando un 5 % de lentitud), sube n tras ~10 frames dibujados que no caben (al instante si va >25 % atrasado) y lo
   baja solo con margen durante ~1 s. `[frameskip]` en log.txt da el ritmo y los costes cada 600 frames.
+- **Peeks sin espera** (`GALAXY_PEEK_MODE=async`): los peeks del juego (destellos del sol, puntero) se contestan con
+  el último campo asíncrono, o como un EFB sin tocar (profundidad lejana, negro) si aún no hay ninguno; nunca vacían el
+  FIFO ni esperan a la GPU. `sync` es el comportamiento exacto; `off` no lee el EFB nunca (como Galaxy-Android, que
+  contesta siempre lejano/negro).
 - Cachés más pequeñas: display lists 192 MiB, copias EFB 64 MiB, pool de texturas 128 MiB, prefetch de disco 2 MiB.
 - CPU, GPU y memoria en `performance` mientras se juega (`NEBULA_PERF=1`), restaurados al salir.
 - `memoria:` en log.txt cada 60 s (RSS de nebula y memoria libre).

@@ -32,6 +32,9 @@ if [ "$NEBULA_PERFIL" = "bajo" ]; then
   #                                      cueste dibujar (GALAXY_FRAMESKIP_MAX=2: 20 como minimo); 1: siempre 30
   export GALAXY_FRAMESKIP="${GALAXY_FRAMESKIP:-auto}"
   export GALAXY_FRAMESKIP_MAX="${GALAXY_FRAMESKIP_MAX:-2}"
+  #   GALAXY_PEEK_MODE=async|sync|off    lo que el juego lee de la imagen (destellos del sol, puntero): async usa el
+  #                                      frame anterior sin esperar a la GPU; sync espera (exacto, lento); off no lee
+  export GALAXY_PEEK_MODE="${GALAXY_PEEK_MODE:-async}"
   export GALAXY_GX_DISPLAY_LIST_CACHE_MB="${GALAXY_GX_DISPLAY_LIST_CACHE_MB:-192}"
   export GALAXY_EFB_COPY_DEST_BUDGET_MB="${GALAXY_EFB_COPY_DEST_BUDGET_MB:-64}"
   export GALAXY_TEXTURE_POOL_MB="${GALAXY_TEXTURE_POOL_MB:-128}"
@@ -39,7 +42,7 @@ if [ "$NEBULA_PERFIL" = "bajo" ]; then
 else
   export GALAXY_FRAMESKIP="${GALAXY_FRAMESKIP:-0}"
 fi
-echo "perfil: $NEBULA_PERFIL (frameskip $GALAXY_FRAMESKIP)"
+echo "perfil: $NEBULA_PERFIL (frameskip $GALAXY_FRAMESKIP, peeks ${GALAXY_PEEK_MODE:-sync})"
 #   GALAXY_GLES_PENDING=wait|skip|uber  shaders nuevos: esperar (tirones la 1a vez), saltar el dibujo, o uber
 #   NEBULA_PAD_SCHEME=nintendo|xbox      A a la derecha (nintendo) o abajo (xbox)
 export NEBULA_DATA_DIR="$GAMEDIR/data"
