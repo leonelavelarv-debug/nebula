@@ -5,7 +5,7 @@ de Nebula y su renderer GX en OpenGL ES 3.2 (Mali-G31). Primera versión de prue
 
 1. Copia `Super Mario Galaxy.sh` y la carpeta `smg/` a `ports` (el zip ya viene así: se descomprime dentro de `ports`).
 2. Copia tu `game.pak` (el mismo de `smgbench`) a `smg/gamedata/`.
-3. Ejecuta **Super Mario Galaxy** desde Ports. SELECT+START sale.
+3. Ejecuta **Super Mario Galaxy** desde Ports. MENU (Function) + START sale, como en el resto de KNULLI.
 4. Portada y ficha: el primer arranque con red baja la portada, la captura y la pantalla de título de
    libretro-thumbnails a `smg/` y escribe la ficha (descripción, desarrollador, fecha...) en `ports/gamelist.xml`
    (`smg/gamelist.py`; la primera vez guarda una copia en `gamelist.xml.antes-smg`). Luego en EmulationStation:

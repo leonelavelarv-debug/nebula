@@ -136,6 +136,12 @@ void sample_gamepads() {
         if (button(SDL_CONTROLLER_BUTTON_X)) bits |= pad::bit(pad::kWestBit);
         if (button(SDL_CONTROLLER_BUTTON_Y)) bits |= pad::bit(pad::kNorthBit);
         sample.buttons = bits;
+        // KNULLI's quit combination: Function (MENU on the RG35XX H, SDL's guide) + Start ends the game cleanly
+        // (the launcher's gptokeyb kills on the same buttons, HOTKEY=guide, if this does not answer).
+        if (button(SDL_CONTROLLER_BUTTON_GUIDE) && button(SDL_CONTROLLER_BUTTON_START) &&
+            !galaxy::gx::host_window::quit_request.exchange(true, std::memory_order_acq_rel)) {
+            std::fprintf(stderr, "[input] Function + Start: quit\n");
+        }
         // SDL's Y axes grow downward; the unified layout's grow upward.
         sample.axes[0] = axis(gamepad, SDL_CONTROLLER_AXIS_LEFTX);
         sample.axes[1] = -axis(gamepad, SDL_CONTROLLER_AXIS_LEFTY);

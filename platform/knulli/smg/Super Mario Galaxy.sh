@@ -2,7 +2,7 @@
 # PORTMASTER: smg.zip, Super Mario Galaxy.sh
 # Super Mario Galaxy (Nebula: el codigo de Petari compilado nativo, graficos OpenGL ES en la Mali-G31) para la
 # Anbernic RG35XX H con KNULLI. Necesita gamedata/game.pak hecho de TU disco (RMGE01) con nebula-pak. GPL-3.0.
-#   SELECT+START: salir.   Controles: docs/RG35XXH.md ("Super Mario Galaxy").
+#   MENU (Function) + START: salir.   Controles: docs/RG35XXH.md ("Super Mario Galaxy").
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 if [ -d "/opt/system/Tools/PortMaster/" ]; then controlfolder="/opt/system/Tools/PortMaster"
 elif [ -d "/opt/tools/PortMaster/" ]; then controlfolder="/opt/tools/PortMaster"
@@ -120,6 +120,8 @@ if [ "${NEBULA_PERF:-1}" = "1" ]; then
   trap perf_restore EXIT
 fi
 
+# Salir: Function (MENU) + Start, la combinacion de KNULLI. Sin HOTKEY, gptokeyb tambien cerraria con SELECT + Start.
+export HOTKEY=guide
 $GPTOKEYB "nebula" &
 pm_platform_helper "$GAMEDIR/nebula"
 # Memoria del juego y libre en el sistema, cada 60 s (diagnostico para el perfil bajo).
