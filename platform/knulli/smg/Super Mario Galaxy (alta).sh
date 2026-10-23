@@ -51,8 +51,8 @@ export NEBULA_DATA_DIR="$GAMEDIR/data"
 export GALAXY_CRASH_DUMP_DIR="$GAMEDIR/crashes"
 export GALAXY_RUNTIME_SETTINGS_PATH="$GAMEDIR/settings.ini"
 export GALAXY_GLES_PENDING="${GALAXY_GLES_PENDING:-wait}"
-#   GALAXY_GLES_EFB_DIVISOR=2            resolucion interna 320x264 (mas rapido); 1: 640x528 (la del Wii)
-export GALAXY_GLES_EFB_DIVISOR="${GALAXY_GLES_EFB_DIVISOR:-1}"
+#   GALAXY_GLES_RESOLUTION=50            resolucion interna en %: 50 = 320x264 (mas rapido), 75 = 480x396, 100 = 640x528
+export GALAXY_GLES_RESOLUTION="${GALAXY_GLES_RESOLUTION:-100}"
 #   GALAXY_GLES_SHARPEN=0.8              nitidez al ampliar la imagen interna (0: apagada, 0.5 suave, 1.5 fuerte; sin halos)
 export GALAXY_GLES_SHARPEN="${GALAXY_GLES_SHARPEN:-0.8}"
 export NEBULA_PAD_SCHEME="${NEBULA_PAD_SCHEME:-nintendo}"

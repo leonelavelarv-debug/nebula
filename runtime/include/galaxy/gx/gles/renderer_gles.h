@@ -314,8 +314,10 @@ private:
         std::uint64_t fence = 0;
         std::vector<std::uint8_t> data;  // what the mapping held (a field: always 640x528)
         // A field read at the divided EFB size: the mapping holds width x height texels, copied to staging (the
-        // mapping is uncached, so it is read once in bulk) and expanded into data by divisor.
-        unsigned divisor = 1;
+        // mapping is uncached, so it is read once in bulk) and expanded into data (logical x -> texel x*num/den).
+        bool expand = false;
+        unsigned num = 1;
+        unsigned den = 1;
         unsigned width = 0;
         unsigned height = 0;
         std::vector<std::uint8_t> staging;
@@ -334,8 +336,13 @@ private:
     };
 
     bool make_current();
-    [[nodiscard]] unsigned efb_width() const noexcept { return kEfbWidth * efb_scale_ / efb_divisor_; }
-    [[nodiscard]] unsigned efb_height() const noexcept { return kEfbHeight * efb_scale_ / efb_divisor_; }
+    [[nodiscard]] unsigned efb_width() const noexcept { return kEfbWidth * efb_scale_ * efb_num_ / efb_den_; }
+    [[nodiscard]] unsigned efb_height() const noexcept { return kEfbHeight * efb_scale_ * efb_num_ / efb_den_; }
+    [[nodiscard]] bool efb_divided() const noexcept { return efb_num_ != efb_den_; }
+    // Physical texels per logical pixel (1, 3/4, 1/2...).
+    [[nodiscard]] float efb_factor() const noexcept {
+        return static_cast<float>(efb_num_) / static_cast<float>(efb_den_);
+    }
     [[nodiscard]] std::array<int, 4> physical_rect(const std::array<int, 4>& rect) const noexcept;
     void to_physical(EfbConversionShaderConstants& constants, bool peek) const noexcept;
     bool create_efb(unsigned scale);
@@ -378,7 +385,9 @@ private:
 
     // The EFB.
     unsigned efb_scale_ = 1;
-    unsigned efb_divisor_ = 1;  // GALAXY_GLES_EFB_DIVISOR: the EFB's texels are this many logical pixels a side
+    // GALAXY_GLES_RESOLUTION (percent) or GALAXY_GLES_EFB_DIVISOR: the EFB is num/den of the Wii's size a side.
+    unsigned efb_num_ = 1;
+    unsigned efb_den_ = 1;
     gpu::TextureRef efb_color_;
     gpu::TextureRef efb_depth_;
     GLuint efb_framebuffer_ = 0;

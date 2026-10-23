@@ -21,6 +21,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <numeric>
 #include <stdexcept>
 #include <thread>
 
@@ -133,12 +134,28 @@ bool RendererGles::initialize(int window_width, int window_height, unsigned efb_
             --efb_scale_;
         }
         efb_scale_ = std::min(efb_scale_, host_window::display_efb_scale_cap());
-        // GALAXY_GLES_EFB_DIVISOR=2: the EFB drawn at half the Wii's resolution (320x264), a quarter of the pixels
-        // (the Mali-G31's fill rate); copies, peeks and the picture keep the Wii's sizes.
+        // GALAXY_GLES_RESOLUTION=75|50 (percent; or GALAXY_GLES_EFB_DIVISOR=2): the EFB drawn at a fraction of the
+        // Wii's resolution (480x396, 320x264), for the Mali-G31's fill rate; copies, peeks and the picture keep the
+        // Wii's sizes. A percent that does not give whole EFB sizes falls back to the next one that does.
         {
-            const char* divisor = std::getenv("GALAXY_GLES_EFB_DIVISOR");
-            efb_divisor_ = divisor != nullptr && efb_scale_ == 1u ? std::clamp<unsigned>(
-                static_cast<unsigned>(std::strtoul(divisor, nullptr, 10)), 1u, 4u) : 1u;
+            unsigned percent = 100u;
+            if (const char* divisor = std::getenv("GALAXY_GLES_EFB_DIVISOR"); divisor != nullptr) {
+                percent = 100u / std::clamp<unsigned>(static_cast<unsigned>(std::strtoul(divisor, nullptr, 10)), 1u, 4u);
+            }
+            if (const char* resolution = std::getenv("GALAXY_GLES_RESOLUTION"); resolution != nullptr) {
+                percent = std::clamp<unsigned>(static_cast<unsigned>(std::strtoul(resolution, nullptr, 10)), 25u, 100u);
+            }
+            if (efb_scale_ != 1u) {
+                percent = 100u;
+            }
+            for (;; ++percent) {
+                const unsigned g = std::gcd(percent, 100u);
+                efb_num_ = percent / g;
+                efb_den_ = 100u / g;
+                if (kEfbWidth * efb_num_ % efb_den_ == 0u && kEfbHeight * efb_num_ % efb_den_ == 0u) {
+                    break;
+                }
+            }
         }
         if (!create_efb(efb_scale_) || !create_utility_programs()) {
             shutdown();
@@ -432,7 +449,7 @@ bool RendererGles::create_utility_programs() {
     const char* sharpen_env = std::getenv("GALAXY_GLES_SHARPEN");
     const float sharpen = std::clamp(sharpen_env != nullptr ? static_cast<float>(std::atof(sharpen_env)) : 0.5f,
                                      0.0f, 2.0f);
-    if (conversion_program_ != 0u && efb_divisor_ > 1u && sharpen > 0.0f) {
+    if (conversion_program_ != 0u && efb_divided() && sharpen > 0.0f) {
         std::string source(efb_conversion_shader_source());
         const std::string tap = "tex_sample = srctex.SampleLevel(s_lin, sample_pos * inv, 0);";
         const std::size_t at = source.find(tap);
@@ -476,45 +493,47 @@ GLuint RendererGles::framebuffer_for(gles::Texture& texture) {
 }
 
 std::array<int, 4> RendererGles::physical_rect(const std::array<int, 4>& rect) const noexcept {
-    if (efb_divisor_ == 1u) {
+    if (!efb_divided()) {
         return rect;
     }
-    const int d = static_cast<int>(efb_divisor_);
-    const int left = rect[0] / d;
-    const int top = rect[1] / d;
-    const int right = (rect[0] + rect[2] + d - 1) / d;
-    const int bottom = (rect[1] + rect[3] + d - 1) / d;
+    const int n = static_cast<int>(efb_num_);
+    const int d = static_cast<int>(efb_den_);
+    const int left = rect[0] * n / d;
+    const int top = rect[1] * n / d;
+    const int right = ((rect[0] + rect[2]) * n + d - 1) / d;
+    const int bottom = ((rect[1] + rect[3]) * n + d - 1) / d;
     return {left, top, right - left, bottom - top};
 }
 
 // The conversion shader's EFB coordinates (src_xform, the copy's row clamps and filter offset; a peek's texel and block)
 // in the divided EFB's texels.
 void RendererGles::to_physical(EfbConversionShaderConstants& c, bool peek) const noexcept {
-    if (efb_divisor_ == 1u) {
+    if (!efb_divided()) {
         return;
     }
-    const float d = static_cast<float>(efb_divisor_);
+    const float f = efb_factor();  // exact in binary for 3/4, 1/2, 1/4
     auto& v = c.values;
     if (peek) {
-        v[0] = std::floor(v[0] / d);
-        v[1] = std::floor(v[1] / d);
-        v[2] /= d;
-        v[3] /= d;
-        v[11] /= d;
-        v[12] /= d;
-        v[14] /= d;
+        // The texel under the logical pixel: floor(x * num / den), as the fields' expansion maps it.
+        v[0] = static_cast<float>(static_cast<unsigned>(v[0]) * efb_num_ / efb_den_);
+        v[1] = static_cast<float>(static_cast<unsigned>(v[1]) * efb_num_ / efb_den_);
+        v[2] *= f;
+        v[3] *= f;
+        v[11] *= f;
+        v[12] *= f;
+        v[14] *= f;
         if (v[15] >= 0.0f) {
             v[15] = 1.0f;  // one texel holds the whole logical pixel
         }
         return;
     }
-    v[0] /= d;
-    v[1] /= d;
-    v[2] /= d;
-    v[3] /= d;
-    v[11] /= d;
-    v[12] /= d;
-    v[14] /= d;
+    v[0] *= f;
+    v[1] *= f;
+    v[2] *= f;
+    v[3] *= f;
+    v[11] *= f;
+    v[12] *= f;
+    v[14] *= f;
 }
 
 void RendererGles::bind_efb_framebuffer() {
@@ -779,7 +798,7 @@ void RendererGles::bind_efb(const float xf_vp[6]) {
     float x = 0.0f, y = 0.0f;
     float w = static_cast<float>(kEfbWidth * efb_scale_);
     float h = static_cast<float>(kEfbHeight * efb_scale_);
-    const float divide = 1.0f / static_cast<float>(efb_divisor_);
+    const float divide = efb_factor();
     if (xf_vp != nullptr) {
         const float scale = static_cast<float>(efb_scale_);
         const float hw = std::abs(xf_vp[0]) * scale;
@@ -1145,7 +1164,7 @@ void RendererGles::draw(const DrawCall& call) {
     if (call.has_viewport) {
         const ScaledGxViewport scaled = compute_scaled_gx_viewport(call.xf_viewport, efb_scale_);
         if (scaled.valid()) {
-            const float divide = 1.0f / static_cast<float>(efb_divisor_);
+            const float divide = efb_factor();
             const std::array<int, 4> viewport{
                 static_cast<int>(std::lround(scaled.x * divide)), static_cast<int>(std::lround(scaled.y * divide)),
                 static_cast<int>(std::lround(scaled.width * divide)),
@@ -1369,7 +1388,7 @@ bool RendererGles::copy_efb_to_texture(const EfbCopyParams& params, TextureCache
     EfbCopyDest& current = efb_copy_dests_[dest_key];
     gles::Texture& texture = *current.texture;
     const auto identity = efb_identity_copy_rect(params, is_depth_copy, efb_scale_, w, h);
-    if (const auto& box = identity; box && efb_divisor_ == 1u) {
+    if (const auto& box = identity; box && !efb_divided()) {
         // An exact colour copy: the EFB's texels as they are.
         const GLuint target = framebuffer_for(texture);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, efb_framebuffer_);
@@ -1489,18 +1508,20 @@ void RendererGles::record_peek_field(gles::Texture& target, EfbPeekKind kind,
     const GLuint framebuffer = framebuffer_for(target);
     EfbConversionShaderConstants physical = constants;
     to_physical(physical, true);
-    // A whole field of a divided EFB repeats each physical texel divisor x divisor times. Convert one texel per
-    // physical texel instead and expand on the CPU: a quarter of the GPU work and of the uncached readback.
+    // A whole field of a divided EFB repeats physical texels over several logical pixels. Convert one texel per
+    // physical texel instead and expand on the CPU: less GPU work and less of the uncached readback.
     const bool field = constants.values[15] < 0.0f;
-    const unsigned divisor = field && efb_divisor_ > 1u && width % efb_divisor_ == 0u &&
-            height % efb_divisor_ == 0u ? efb_divisor_ : 1u;
-    if (divisor > 1u) {
-        physical.values[2] = constants.values[2];
-        physical.values[3] = constants.values[3];
+    const bool expand = field && efb_divided() && width * efb_num_ % efb_den_ == 0u &&
+        height * efb_num_ % efb_den_ == 0u;
+    if (expand) {
+        physical.values[2] = 1.0f;  // one physical texel a destination pixel
+        physical.values[3] = 1.0f;
     }
-    const unsigned read_width = width / divisor;
-    const unsigned read_height = height / divisor;
-    readback.divisor = divisor;
+    const unsigned read_width = expand ? width * efb_num_ / efb_den_ : width;
+    const unsigned read_height = expand ? height * efb_num_ / efb_den_ : height;
+    readback.expand = expand;
+    readback.num = efb_num_;
+    readback.den = efb_den_;
     readback.width = read_width;
     readback.height = read_height;
     conversion_draw(framebuffer, read_width, read_height, kind == EfbPeekKind::Depth, physical);
@@ -1523,7 +1544,7 @@ bool RendererGles::complete_readback(Readback& readback) {
     }
     const std::int64_t start = monotonic_ns();
     const std::size_t read_bytes = static_cast<std::size_t>(readback.width) * readback.height * 4u;
-    const bool expand = readback.divisor > 1u;
+    const bool expand = readback.expand;
     glBindBuffer(GL_PIXEL_PACK_BUFFER, readback.buffer);
     const void* mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, static_cast<GLsizeiptr>(read_bytes),
                                           GL_MAP_READ_BIT);
@@ -1538,23 +1559,24 @@ bool RendererGles::complete_readback(Readback& readback) {
     }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     if (mapped != nullptr && expand) {
-        const unsigned d = readback.divisor;
-        const std::size_t out_width = static_cast<std::size_t>(readback.width) * d;
+        // Logical pixel x reads texel x * num / den (to_physical's peek texel); a row repeating the row above
+        // (same texel row) is a copy of it.
+        const std::size_t out_width = static_cast<std::size_t>(readback.width) * readback.den / readback.num;
         const std::size_t out_row = out_width * 4u;
         const std::size_t out_rows = readback.data.size() / out_row;
+        std::size_t previous = ~std::size_t{0};
         for (std::size_t y = 0; y < out_rows; ++y) {
             std::uint8_t* out = readback.data.data() + y * out_row;
-            if (y % d != 0u) {
+            const std::size_t ty = std::min<std::size_t>(y * readback.num / readback.den, readback.height - 1u);
+            if (ty == previous) {
                 std::memcpy(out, out - out_row, out_row);
                 continue;
             }
-            const std::uint8_t* in = readback.staging.data() + (y / d) * readback.width * 4u;
-            for (unsigned x = 0; x < readback.width; ++x) {
-                std::uint32_t texel;
-                std::memcpy(&texel, in + x * 4u, 4u);
-                for (unsigned i = 0; i < d; ++i) {
-                    std::memcpy(out + (static_cast<std::size_t>(x) * d + i) * 4u, &texel, 4u);
-                }
+            previous = ty;
+            const std::uint8_t* in = readback.staging.data() + ty * readback.width * 4u;
+            for (std::size_t x = 0; x < out_width; ++x) {
+                const std::size_t tx = std::min<std::size_t>(x * readback.num / readback.den, readback.width - 1u);
+                std::memcpy(out + x * 4u, in + tx * 4u, 4u);
             }
         }
     }
