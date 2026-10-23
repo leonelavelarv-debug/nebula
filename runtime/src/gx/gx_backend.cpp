@@ -17347,6 +17347,13 @@ void GxBackend::on_efb_copy(std::uint32_t exec_command) {
                   << '\n';
     }
 
+#if defined(NEBULA_GPU_GLES)
+    // A display copy that clears the whole EFB's depth afterwards: the depth before it is never read again.
+    if (params.copy_to_xfb && params.clear && state_.z_mode().update_enable && params.src_x == 0u &&
+        params.src_y == 0u && params.src_width >= kEfbWidth && params.src_height >= kEfbHeight) {
+        renderer_.discard_efb_depth_at_next_copy();
+    }
+#endif
     if (params.copy_to_xfb) {
         static const bool capture_before_xfb = [] {
             char value[8]{};

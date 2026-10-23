@@ -207,6 +207,9 @@ public:
     [[nodiscard]] bool begin_output_efb() { return false; }
     void end_output_efb() {}
     [[nodiscard]] bool output_efb_active() const noexcept { return false; }
+    // The display copy about to run is followed by a clear of the whole EFB depth: a tiled GPU need not store
+    // the depth it leaves behind.
+    void discard_efb_depth_at_next_copy() noexcept { discard_depth_at_copy_ = true; }
     [[nodiscard]] bool scene_temporal_begin(float&, float&) noexcept { return false; }
     [[nodiscard]] bool begin_motion_scene() noexcept { return false; }
     void record_motion_debug_view() noexcept {}
@@ -481,9 +484,26 @@ private:
         double gpu_ms = 0.0;
         double gpu_max_ms = 0.0;
         unsigned gpu_frames = 0;
+        std::array<double, 5> gpu_part_ms{};  // GpuPart order
+        std::uint64_t vertices = 0;
+        std::uint64_t depth_discards = 0;
     } window_stats_;
-    std::array<GLuint, kFramesInFlight> timer_queries_{};
-    std::array<bool, kFramesInFlight> timer_pending_{};
+    // GPU time by part of the frame: one GL_TIME_ELAPSED query per stretch of commands of one part (a frame's
+    // queries sum to its time), read when the frame slot comes round.
+    enum GpuPart : int { kGpuScene = 0, kGpuCopies, kGpuXfb, kGpuPeeks, kGpuPresent, kGpuNone = -1 };
+    struct GpuSegments {
+        std::vector<GLuint> queries;
+        std::vector<std::uint8_t> parts;
+        std::size_t used = 0;
+        bool pending = false;
+    };
+    void gpu_part(int part);
+    void read_gpu_parts(GpuSegments& segments);
+    std::array<GpuSegments, kFramesInFlight> gpu_segments_{};
+    int gpu_part_ = kGpuNone;
+    bool gpu_in_frame_ = false;
+    bool timer_queries_ = false;
+    bool discard_depth_at_copy_ = false;
 };
 
 using Renderer = RendererGles;

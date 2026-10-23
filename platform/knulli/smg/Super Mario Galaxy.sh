@@ -45,8 +45,36 @@ fi
 export NEBULA_PROFILE="${NEBULA_PROFILE:-60}"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 
+#   NEBULA_PERF=1                        CPU, GPU y memoria a su frecuencia maxima mientras se juega (0: lo que tenga el sistema)
+PERF_SAVED=""
+perf_restore() {
+  for entry in $PERF_SAVED; do echo "${entry#*=}" > "${entry%%=*}" 2>/dev/null; done
+  PERF_SAVED=""
+}
+if [ "${NEBULA_PERF:-1}" = "1" ]; then
+  for gov in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor /sys/class/devfreq/*/governor; do
+    [ -w "$gov" ] || continue
+    dir=$(dirname "$gov")
+    case "$gov" in
+      /sys/class/devfreq/*) case "$(basename "$dir")" in *gpu*|*mali*|*1800000*|*dmc*) ;; *) continue ;; esac
+        avail="$dir/available_governors" ;;
+      *) avail="$dir/scaling_available_governors" ;;
+    esac
+    grep -qw performance "$avail" 2>/dev/null || continue
+    old=$(cat "$gov")
+    [ "$old" = "performance" ] && continue
+    echo performance > "$gov" 2>/dev/null && PERF_SAVED="$PERF_SAVED $gov=$old"
+    echo "rendimiento: $gov $old -> performance"
+  done
+  for f in /sys/class/devfreq/*/cur_freq; do
+    case "$f" in *gpu*|*mali*|*1800000*) echo "gpu: $(cat "$f" 2>/dev/null) Hz (max $(cat "$(dirname "$f")/max_freq" 2>/dev/null))" ;; esac
+  done
+  trap perf_restore EXIT
+fi
+
 $GPTOKEYB "nebula" &
 pm_platform_helper "$GAMEDIR/nebula"
 ./nebula --pak "$GAMEDIR/gamedata/game.pak" --nand "$GAMEDIR/nand"
 echo "terminado: status $?"
+perf_restore
 pm_finish

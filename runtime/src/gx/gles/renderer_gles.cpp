@@ -184,9 +184,8 @@ bool RendererGles::initialize(int window_width, int window_height, unsigned efb_
             shutdown();
             return false;
         }
-        if (caps.timer_query && glGenQueries != nullptr && glBeginQuery != nullptr) {
-            glGenQueries(static_cast<GLsizei>(timer_queries_.size()), timer_queries_.data());
-        }
+        timer_queries_ = caps.timer_query && glGenQueries != nullptr && glBeginQuery != nullptr &&
+            glGetQueryObjectui64vEXT != nullptr && glGetQueryObjectuiv != nullptr;
         refresh_default_sampler_table();
         host_window::gles_drawable_size(window_, drawable_width_, drawable_height_);
         display_refresh_hz_ = host_window::display_refresh_hz(window_);
@@ -261,8 +260,17 @@ void RendererGles::shutdown() {
         if (read_framebuffer_ != 0u) glDeleteFramebuffers(1, &read_framebuffer_);
         if (palette_texture_ != 0u) glDeleteTextures(1, &palette_texture_);
         if (conversion_program_ != 0u) glDeleteProgram(conversion_program_);
-        if (timer_queries_[0] != 0u && glDeleteQueries != nullptr) {
-            glDeleteQueries(static_cast<GLsizei>(timer_queries_.size()), timer_queries_.data());
+        if (glDeleteQueries != nullptr) {
+            if (gpu_part_ != kGpuNone) {
+                glEndQuery(GL_TIME_ELAPSED_EXT);
+                gpu_part_ = kGpuNone;
+            }
+            for (GpuSegments& segments : gpu_segments_) {
+                if (!segments.queries.empty()) {
+                    glDeleteQueries(static_cast<GLsizei>(segments.queries.size()), segments.queries.data());
+                }
+                segments = GpuSegments{};
+            }
         }
         destroy_efb();
         context.collect();
@@ -272,7 +280,7 @@ void RendererGles::shutdown() {
     sampler_tables_.clear();
     sampler_table_ids_.clear();
     linear_clamp_ = point_clamp_ = vao_ = empty_vao_ = read_framebuffer_ = palette_texture_ = conversion_program_ = 0u;
-    timer_queries_ = {};
+    timer_queries_ = false;
     if (window_ != nullptr) {
         host_window::gles_destroy_context(window_);
         host_window::close_game_window(window_owner_);
@@ -522,6 +530,65 @@ void RendererGles::bind_utility_constants(const void* data, std::size_t bytes) {
 // Frames
 // ---------------------------------------------------------------------------------------------------------------------
 
+void RendererGles::gpu_part(int part) {
+    if (!timer_queries_ || part == gpu_part_ || (!gpu_in_frame_ && part != kGpuNone)) {
+        return;
+    }
+    GpuSegments& segments = gpu_segments_[frame_slot_];
+    static constexpr std::size_t kMaxSegments = 96u;
+    if (gpu_part_ != kGpuNone) {
+        if (part != kGpuNone && segments.used >= kMaxSegments) {
+            return;  // the rest of the frame counts as the running part
+        }
+        glEndQuery(GL_TIME_ELAPSED_EXT);
+        gpu_part_ = kGpuNone;
+    }
+    if (part == kGpuNone) {
+        return;
+    }
+    if (segments.used == segments.queries.size()) {
+        GLuint query = 0;
+        glGenQueries(1, &query);
+        if (query == 0u) {
+            return;
+        }
+        segments.queries.push_back(query);
+        segments.parts.push_back(0u);
+    }
+    glBeginQuery(GL_TIME_ELAPSED_EXT, segments.queries[segments.used]);
+    segments.parts[segments.used] = static_cast<std::uint8_t>(part);
+    ++segments.used;
+    gpu_part_ = part;
+}
+
+void RendererGles::read_gpu_parts(GpuSegments& segments) {
+    if (segments.pending && segments.used != 0u) {
+        GLuint available = GL_FALSE;
+        glGetQueryObjectuiv(segments.queries[segments.used - 1u], GL_QUERY_RESULT_AVAILABLE, &available);
+        GLint disjoint = 0;
+        glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+        if (available == GL_TRUE && disjoint == 0) {
+            std::array<double, 5> parts{};
+            double total = 0.0;
+            for (std::size_t i = 0; i < segments.used; ++i) {
+                GLuint64 ns = 0;
+                glGetQueryObjectui64vEXT(segments.queries[i], GL_QUERY_RESULT, &ns);
+                const double ms = ns < 1'000'000'000ull ? static_cast<double>(ns) / 1e6 : 0.0;
+                parts[segments.parts[i]] += ms;
+                total += ms;
+            }
+            for (std::size_t i = 0; i < parts.size(); ++i) {
+                window_stats_.gpu_part_ms[i] += parts[i];
+            }
+            window_stats_.gpu_ms += total;
+            window_stats_.gpu_max_ms = std::max(window_stats_.gpu_max_ms, total);
+            ++window_stats_.gpu_frames;
+        }
+    }
+    segments.used = 0u;
+    segments.pending = false;
+}
+
 void RendererGles::begin_frame(bool) {
     if (!make_current()) {
         throw std::runtime_error("the OpenGL ES context could not be made current on the render thread");
@@ -537,23 +604,7 @@ void RendererGles::begin_frame(bool) {
     last_frame_slot_wait_us_ =
         static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(waited).count());
     window_stats_.frame_wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(waited).count();
-    GLuint available = GL_FALSE;
-    if (timer_pending_[frame_slot_] && glGetQueryObjectuiv != nullptr) {
-        glGetQueryObjectuiv(timer_queries_[frame_slot_], GL_QUERY_RESULT_AVAILABLE, &available);
-    }
-    if (timer_pending_[frame_slot_] && available == GL_TRUE && glGetQueryObjectui64vEXT != nullptr) {
-        GLuint64 ns = 0;
-        glGetQueryObjectui64vEXT(timer_queries_[frame_slot_], GL_QUERY_RESULT, &ns);
-        GLint disjoint = 0;
-        glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
-        if (disjoint == 0 && ns < 1'000'000'000ull) {
-            const double ms = static_cast<double>(ns) / 1e6;
-            window_stats_.gpu_ms += ms;
-            window_stats_.gpu_max_ms = std::max(window_stats_.gpu_max_ms, ms);
-            ++window_stats_.gpu_frames;
-        }
-    }
-    timer_pending_[frame_slot_] = false;
+    read_gpu_parts(gpu_segments_[frame_slot_]);
     context.collect();
     frame.retired.clear();
     refresh_default_sampler_table();
@@ -569,9 +620,8 @@ void RendererGles::begin_frame(bool) {
     reset_gx_bindings();
     bound_.framebuffer = ~0u;
     bind_efb_framebuffer();
-    if (timer_queries_[frame_slot_] != 0u) {
-        glBeginQuery(GL_TIME_ELAPSED_EXT, timer_queries_[frame_slot_]);
-    }
+    gpu_in_frame_ = true;
+    gpu_part(kGpuScene);
     {
         const std::uint64_t resize = host_window::pending_resize_extent.exchange(0u, std::memory_order_acq_rel);
         if (resize != 0u) {
@@ -586,10 +636,9 @@ void RendererGles::begin_frame(bool) {
 std::uint64_t RendererGles::end_frame(bool present_swap_chain, SubmissionCallback on_submitted,
                                       void* submission_context) {
     gles::Context& context = gles::Context::get();
-    if (timer_queries_[frame_slot_] != 0u) {
-        glEndQuery(GL_TIME_ELAPSED_EXT);
-        timer_pending_[frame_slot_] = true;
-    }
+    gpu_part(kGpuNone);
+    gpu_in_frame_ = false;
+    gpu_segments_[frame_slot_].pending = gpu_segments_[frame_slot_].used != 0u;
     const std::uint64_t fence = context.submit();
     frames_[frame_slot_].fence = fence;
     if (pointer_depth_in_frame_) {
@@ -647,10 +696,14 @@ void RendererGles::report_stats() {
     const double seconds = std::chrono::duration<double>(now - last_time).count();
     if (last_cpu != 0 && seconds > 0.0) {
         const double frames = 600.0;
+        const auto gpu_part_average = [this](std::size_t part) {
+            return window_stats_.gpu_frames != 0u ? window_stats_.gpu_part_ms[part] / window_stats_.gpu_frames : 0.0;
+        };
         std::fprintf(stderr,
                      "[gles] %.1f frames/s; render thread %.1f ms/s (swap waits %.1f, frame-slot waits %.1f ms/s, readbacks %.1f ms/s); a frame: %.0f draws, "
                      "%.1f copies, %.1f clears, %.1f peeks (%.2f waited, %.2f whole fields), %.0f program changes, %.1f "
-                     "draws skipped; in draw() %.1f ms/s, waited peeks %.1f ms/s; GPU %.2f ms average, %.2f longest; "
+                     "draws skipped, %.0f vertices, %.2f depth discards; in draw() %.1f ms/s, waited peeks %.1f ms/s; GPU %.2f ms "
+                     "average (scene %.2f, copies %.2f, xfb %.2f, peeks %.2f, present %.2f), %.2f longest; "
                      "rings peak KiB v=%zu i=%zu c=%zu m=%zu; textures %llu KiB uploaded\n",
                      frames / seconds, static_cast<double>(cpu - last_cpu) / 1e6 / seconds,
                      static_cast<double>(window_stats_.present_wait_ns) / 1e6 / seconds,
@@ -662,9 +715,13 @@ void RendererGles::report_stats() {
                      static_cast<double>(window_stats_.sync_fields) / frames,
                      static_cast<double>(window_stats_.pipeline_changes) / frames,
                      static_cast<double>(window_stats_.skipped_draws) / frames,
+                     static_cast<double>(window_stats_.vertices) / frames,
+                     static_cast<double>(window_stats_.depth_discards) / frames,
                      static_cast<double>(window_stats_.draw_ns) / 1e6 / seconds,
                      static_cast<double>(window_stats_.sync_peek_ns) / 1e6 / seconds,
                      window_stats_.gpu_frames != 0u ? window_stats_.gpu_ms / window_stats_.gpu_frames : 0.0,
+                     gpu_part_average(0), gpu_part_average(1), gpu_part_average(2), gpu_part_average(3),
+                     gpu_part_average(4),
                      window_stats_.gpu_max_ms, vertex_ring_.take_peak_bytes_per_frame() >> 10u,
                      index_ring_.take_peak_bytes_per_frame() >> 10u, constant_ring_.take_peak_bytes_per_frame() >> 10u,
                      matrix_ring_.take_peak_bytes_per_frame() >> 10u,
@@ -1081,6 +1138,7 @@ void RendererGles::draw(const DrawCall& call) {
     if (call.index_count == 0u) {
         return;
     }
+    window_stats_.vertices += call.index_count;
     if (call.index_view.BufferLocation != 0u) {
         const gles::Context::BufferOffset indices = context.resolve(call.index_view.BufferLocation);
         if (indices.buffer != bound_.index_buffer) {
@@ -1159,14 +1217,29 @@ void RendererGles::copy_efb_to_xfb(const EfbCopyParams& params, XfbTexture& dest
         throw std::runtime_error("XFB copy has no destination texture");
     }
     ++window_stats_.copies;
+    if (discard_depth_at_copy_) {
+        // The clear after this copy rewrites the whole depth buffer: the pass ending here need not store it.
+        discard_depth_at_copy_ = false;
+        bind_efb_framebuffer();
+        const GLenum depth = GL_DEPTH_ATTACHMENT;
+        glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, &depth);
+        ++window_stats_.depth_discards;
+    }
+    gpu_part(kGpuXfb);
     const EfbCopySamplingGeometry sampling = compute_xfb_sampling_geometry(params, dest.width, dest.height,
                                                                            efb_scale_);
     record_conversion_blit(*dest.texture, dest.width, dest.height, params, false, false, true, 15u, sampling.src_x,
                            sampling.src_y, sampling.step_x, sampling.step_y, sampling.filter_row_offset);
+    gpu_part(kGpuScene);
 }
 
 bool RendererGles::copy_efb_to_texture(const EfbCopyParams& params, TextureCache& textures, bool is_depth_copy) {
     ++window_stats_.copies;
+    gpu_part(kGpuCopies);
+    struct BackToScene {
+        RendererGles& r;
+        ~BackToScene() { r.gpu_part(kGpuScene); }
+    } back_to_scene{*this};
     const unsigned dw_unscaled = params.half_scale ? std::max(1u, params.src_width / 2u) : params.src_width;
     const unsigned dh_unscaled = params.half_scale ? std::max(1u, params.src_height / 2u) : params.src_height;
     const EffectCopyPolicy policy = effect_copy_policy();
@@ -1276,6 +1349,7 @@ bool RendererGles::present(const XfbTexture* source, bool capture_backbuffer, bo
     }
     (void)galaxy::g_presentation_content.publish(bb_w, bb_h, content);
 
+    gpu_part(kGpuPresent);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     bound_.framebuffer = 0u;
     glDisable(GL_SCISSOR_TEST);
@@ -1305,6 +1379,7 @@ bool RendererGles::present(const XfbTexture* source, bool capture_backbuffer, bo
     reset_gx_bindings();
     bound_.state_valid = false;
     presented_this_frame_ = true;
+    gpu_part(kGpuScene);
     return captured;
 }
 
@@ -1338,6 +1413,7 @@ void RendererGles::record_peek_field(gles::Texture& target, EfbPeekKind kind,
                                      const EfbConversionShaderConstants& constants, unsigned width, unsigned height,
                                      Readback& readback) {
     ++window_stats_.peeks;
+    gpu_part(kGpuPeeks);
     const GLuint framebuffer = framebuffer_for(target);
     EfbConversionShaderConstants physical = constants;
     to_physical(physical, true);
@@ -1366,6 +1442,7 @@ void RendererGles::record_peek_field(gles::Texture& target, EfbPeekKind kind,
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, efb_framebuffer_);
     bound_.framebuffer = efb_framebuffer_;
+    gpu_part(kGpuScene);
 }
 
 bool RendererGles::complete_readback(Readback& readback) {
