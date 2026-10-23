@@ -29,6 +29,8 @@ screen_message() {
   fi
 }
 for tool in nebula-pak cactus-galaxy-wrapper; do [ -f "$GAMEDIR/$tool" ] && chmod +x "$GAMEDIR/$tool"; done
+# El wrapper ya no tiene entrada propia en Ports: se quita la de versiones anteriores.
+rm -f "/$directory/ports/Cactus Galaxy Wrapper.sh" "$GAMEDIR/cactus.png"
 cactus=0
 if [ -x "$GAMEDIR/cactus-galaxy-wrapper" ]; then
   wrapper=0
@@ -139,7 +141,7 @@ export GALAXY_GLES_AA="${GALAXY_GLES_AA:-1}"
 export NEBULA_PAD_SCHEME="${NEBULA_PAD_SCHEME:-nintendo}"
 #   GALAXY_LANGUAGE=spanish|english|french  idioma del juego (textos y menus; el disco USA trae los tres). Sin fijarlo
 #                                         aqui vale el que se eligio al instalar con Cactus Galaxy Wrapper
-# El idioma elegido en Cactus Galaxy Wrapper (smg/idioma.txt; ◄► en su menu lo cambia), si no se fija aqui.
+# El idioma elegido en Cactus Galaxy Wrapper (smg/idioma.txt; SELECT mantenido al abrir lo cambia), si no se fija aqui.
 if [ -z "${GALAXY_LANGUAGE:-}" ] && [ -f "$GAMEDIR/idioma.txt" ]; then
   # "english" o "english ptbr" (el portugues del parche PT-BR va en ese idioma del juego)
   read -r GALAXY_LANGUAGE game_variant < "$GAMEDIR/idioma.txt"
