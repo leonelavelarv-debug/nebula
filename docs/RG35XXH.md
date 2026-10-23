@@ -229,6 +229,9 @@ sobrecoste de punto flotante medido arriba.
 - Campos de peek enteros con el EFB dividido: se convierte un texel por texel físico (320x264) y la CPU lo expande a
   640x528; el mapeo del PBO no tiene caché, así que se copia una sola vez en bloque (antes: 1.35 MB por campo, ~20 % del
   hilo de render en el aparato).
+- Además cada canal de peek lee solo la caja de los píxeles que el juego pidió desde el campo anterior (más un margen,
+  `GALAXY_GLES_PEEK_MARGIN`, 32 px); un slot responde solo dentro de su caja. Los peeks fuera del EFB se contestan con 0
+  (lo mismo que el peek síncrono) sin parar el FIFO. `[peek] sync` en log.txt cuenta por qué el juego aún espera.
 - El EFB es RGBA8 + profundidad `D32F` (exacta para el z24 invertido de GX: los peeks devuelven el valor escrito). Se dibuja
   con la fila superior de D3D primero (el vertex shader niega y), así copias, texturas y peeks conservan la orientación de
   D3D y solo la presentación voltea (`glBlitFramebuffer`).

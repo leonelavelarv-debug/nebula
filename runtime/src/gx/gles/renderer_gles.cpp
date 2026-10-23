@@ -1336,7 +1336,7 @@ void RendererGles::ensure_readback(Readback& readback, std::size_t bytes, std::s
 
 void RendererGles::record_peek_field(gles::Texture& target, EfbPeekKind kind,
                                      const EfbConversionShaderConstants& constants, unsigned width, unsigned height,
-                                     Readback& readback) {
+                                     Readback& readback, const std::array<unsigned, 4>* region) {
     ++window_stats_.peeks;
     const GLuint framebuffer = framebuffer_for(target);
     EfbConversionShaderConstants physical = constants;
@@ -1350,19 +1350,35 @@ void RendererGles::record_peek_field(gles::Texture& target, EfbPeekKind kind,
         physical.values[2] = constants.values[2];
         physical.values[3] = constants.values[3];
     }
-    const unsigned read_width = width / divisor;
-    const unsigned read_height = height / divisor;
+    const unsigned texels_x = width / divisor;
+    const unsigned texels_y = height / divisor;
+    // Only the box asked for leaves the GPU (in texels: the logical box rounded out).
+    unsigned x0 = 0u, y0 = 0u, x1 = texels_x, y1 = texels_y;
+    if (field && region != nullptr) {
+        x0 = std::min((*region)[0] / divisor, texels_x);
+        y0 = std::min((*region)[1] / divisor, texels_y);
+        x1 = std::min(((*region)[2] + divisor - 1u) / divisor, texels_x);
+        y1 = std::min(((*region)[3] + divisor - 1u) / divisor, texels_y);
+        if (x1 <= x0 || y1 <= y0) {
+            x0 = y0 = 0u;
+            x1 = texels_x;
+            y1 = texels_y;
+        }
+    }
     readback.divisor = divisor;
-    readback.width = read_width;
-    readback.height = read_height;
-    conversion_draw(framebuffer, read_width, read_height, kind == EfbPeekKind::Depth, physical);
-    ensure_readback(readback, static_cast<std::size_t>(read_width) * read_height * 4u,
+    readback.origin_x = x0;
+    readback.origin_y = y0;
+    readback.width = x1 - x0;
+    readback.height = y1 - y0;
+    readback.field_width = field ? width : 0u;
+    conversion_draw(framebuffer, texels_x, texels_y, kind == EfbPeekKind::Depth, physical);
+    ensure_readback(readback, static_cast<std::size_t>(readback.width) * readback.height * 4u,
                     static_cast<std::size_t>(width) * height * 4u);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, readback.buffer);
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
-    glReadPixels(0, 0, static_cast<GLsizei>(read_width), static_cast<GLsizei>(read_height), GL_RGBA,
-                 GL_UNSIGNED_BYTE, nullptr);
+    glReadPixels(static_cast<GLint>(x0), static_cast<GLint>(y0), static_cast<GLsizei>(readback.width),
+                 static_cast<GLsizei>(readback.height), GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, efb_framebuffer_);
     bound_.framebuffer = efb_framebuffer_;
@@ -1374,38 +1390,48 @@ bool RendererGles::complete_readback(Readback& readback) {
     }
     const std::int64_t start = monotonic_ns();
     const std::size_t read_bytes = static_cast<std::size_t>(readback.width) * readback.height * 4u;
-    const bool expand = readback.divisor > 1u;
+    // Straight into data only when the texels read are data's layout; a box or a divided field goes through
+    // staging (the mapping is read once, in bulk) and is placed or expanded from there.
+    const bool direct = readback.field_width == 0u ||
+        (readback.divisor == 1u && readback.origin_x == 0u && readback.origin_y == 0u &&
+         readback.width == readback.field_width);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, readback.buffer);
     const void* mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, static_cast<GLsizeiptr>(read_bytes),
                                           GL_MAP_READ_BIT);
     if (mapped != nullptr) {
-        if (expand) {
+        if (direct) {
+            std::memcpy(readback.data.data(), mapped, std::min(read_bytes, readback.data.size()));
+        } else {
             readback.staging.resize(read_bytes);
             std::memcpy(readback.staging.data(), mapped, read_bytes);
-        } else {
-            std::memcpy(readback.data.data(), mapped, std::min(read_bytes, readback.data.size()));
         }
         glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
     }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    if (mapped != nullptr && expand) {
+    if (mapped != nullptr && !direct) {
         const unsigned d = readback.divisor;
-        const std::size_t out_width = static_cast<std::size_t>(readback.width) * d;
-        const std::size_t out_row = out_width * 4u;
-        const std::size_t out_rows = readback.data.size() / out_row;
-        for (std::size_t y = 0; y < out_rows; ++y) {
-            std::uint8_t* out = readback.data.data() + y * out_row;
-            if (y % d != 0u) {
-                std::memcpy(out, out - out_row, out_row);
+        const std::size_t out_width = readback.field_width;
+        const std::size_t out_rows = readback.data.size() / (out_width * 4u);
+        const std::size_t first_x = static_cast<std::size_t>(readback.origin_x) * d;
+        const std::size_t end_x = std::min<std::size_t>((readback.origin_x + readback.width) * std::size_t{d},
+                                                        out_width);
+        const std::size_t row_bytes = (end_x - first_x) * 4u;
+        for (unsigned ty = 0; ty < readback.height; ++ty) {
+            const std::size_t first_y = (static_cast<std::size_t>(readback.origin_y) + ty) * d;
+            if (first_y >= out_rows) {
+                break;
+            }
+            std::uint8_t* out = readback.data.data() + (first_y * out_width + first_x) * 4u;
+            const std::uint8_t* in = readback.staging.data() + static_cast<std::size_t>(ty) * readback.width * 4u;
+            if (d == 1u) {
+                std::memcpy(out, in, row_bytes);
                 continue;
             }
-            const std::uint8_t* in = readback.staging.data() + (y / d) * readback.width * 4u;
-            for (unsigned x = 0; x < readback.width; ++x) {
-                std::uint32_t texel;
-                std::memcpy(&texel, in + x * 4u, 4u);
-                for (unsigned i = 0; i < d; ++i) {
-                    std::memcpy(out + (static_cast<std::size_t>(x) * d + i) * 4u, &texel, 4u);
-                }
+            for (std::size_t x = first_x; x < end_x; ++x) {
+                std::memcpy(out + (x - first_x) * 4u, in + ((x / d) - readback.origin_x) * 4u, 4u);
+            }
+            for (unsigned i = 1; i < d && first_y + i < out_rows; ++i) {
+                std::memcpy(out + i * out_width * 4u, out, row_bytes);
             }
         }
     }
@@ -1534,7 +1560,7 @@ std::uint64_t RendererGles::submit_async_peek_field(std::size_t channel, EfbPeek
     EfbConversionShaderConstants constants =
         make_efb_peek_conversion_constants(compute_efb_peek_sampling_geometry(0u, 0u, efb_scale_), kind);
     constants.values[15] = -1.0f;
-    record_peek_field(*field.target, kind, constants, kEfbWidth, kEfbHeight, field.readbacks[slot]);
+    record_peek_field(*field.target, kind, constants, kEfbWidth, kEfbHeight, field.readbacks[slot], &field.region);
     field.readbacks[slot].fence = gles::Context::get().submit();
     field.fence = field.readbacks[slot].fence;
     field.pending_slot = slot;
@@ -1550,7 +1576,7 @@ bool RendererGles::record_async_peek_field_in_frame(std::size_t channel, EfbPeek
     EfbConversionShaderConstants constants =
         make_efb_peek_conversion_constants(compute_efb_peek_sampling_geometry(0u, 0u, efb_scale_), kind);
     constants.values[15] = -1.0f;
-    record_peek_field(*field.target, kind, constants, kEfbWidth, kEfbHeight, field.readbacks[slot]);
+    record_peek_field(*field.target, kind, constants, kEfbWidth, kEfbHeight, field.readbacks[slot], &field.region);
     field.fence = kAsyncPeekInFrame;  // fenced at end_frame
     field.pending_slot = slot;
     return true;
@@ -1565,6 +1591,14 @@ bool RendererGles::try_complete_async_peek_field(std::size_t channel) {
     complete_readback(field.readbacks[field.pending_slot]);
     field.fence = 0u;
     return true;
+}
+
+void RendererGles::set_async_peek_field_region(std::size_t channel, unsigned x0, unsigned y0, unsigned x1,
+                                               unsigned y1) noexcept {
+    if (channel < async_fields_.size()) {
+        async_fields_[channel].region = {std::min(x0, kEfbWidth), std::min(y0, kEfbHeight), std::min(x1, kEfbWidth),
+                                         std::min(y1, kEfbHeight)};
+    }
 }
 
 const std::uint8_t* RendererGles::async_peek_field_rgba(std::size_t channel, std::size_t slot) const noexcept {

@@ -11370,6 +11370,14 @@ bool GxBackend::read_async_peek_field(
     if (field == nullptr) {
         return false;
     }
+#if defined(NEBULA_GPU_GLES)
+    {
+        const auto& region = state.slot_region[static_cast<std::size_t>((published & 0xFFFFFFFFu) - 1u)];
+        if (x < region[0] || y < region[1] || x >= region[2] || y >= region[3]) {
+            return false;
+        }
+    }
+#endif
     // Same packing the full-field conversion produced: 0x00RRGGBB for depth,
     // 0xAARRGGBB for colour.
     const std::uint8_t* pixel =
@@ -11387,30 +11395,107 @@ bool GxBackend::peek_efb_published(
     EfbPeekKind kind,
     std::uint16_t token,
     std::uint32_t& value) {
-    if (!initialized_ || !async_render_thread_enabled() ||
-        x >= kEfbWidth || y >= kEfbHeight) {
+    if (!initialized_ || !async_render_thread_enabled()) {
         return false;
     }
+#if defined(NEBULA_GPU_GLES)
+    if (x >= kEfbWidth || y >= kEfbHeight) {
+        // What the synchronous peek answers outside the EFB, without its FIFO drain and GPU round trip.
+        value = 0u;
+        return true;
+    }
+#else
+    if (x >= kEfbWidth || y >= kEfbHeight) {
+        return false;
+    }
+#endif
     AsyncPeekFieldState& state = async_peek_[async_peek_channel(kind, token)];
     state.last_request = ++async_peek_requests_;
+#if defined(NEBULA_GPU_GLES)
+    {
+        const auto lower = [](std::atomic<std::uint16_t>& a, std::uint16_t v) {
+            std::uint16_t cur = a.load(std::memory_order_relaxed);
+            while (v < cur && !a.compare_exchange_weak(cur, v, std::memory_order_relaxed)) {
+            }
+        };
+        const auto raise = [](std::atomic<std::uint16_t>& a, std::uint16_t v) {
+            std::uint16_t cur = a.load(std::memory_order_relaxed);
+            while (v > cur && !a.compare_exchange_weak(cur, v, std::memory_order_relaxed)) {
+            }
+        };
+        lower(state.want_x0, x);
+        lower(state.want_y0, y);
+        raise(state.want_x1, static_cast<std::uint16_t>(x + 1u));
+        raise(state.want_y1, static_cast<std::uint16_t>(y + 1u));
+    }
+#endif
     state.requested.store(true, std::memory_order_release);
     if (read_async_peek_field(state, x, y, kind, value)) {
         return true;
     }
-    // A channel just bound: the latest field of the kind, so a new token never stalls on the
-    // synchronous path.
-    AsyncPeekFieldState* latest = nullptr;
+    // A channel just bound: the other fields of the kind, most recently asked first, so a new token never stalls
+    // on the synchronous path.
+    std::array<AsyncPeekFieldState*, Renderer::kAsyncPeekFieldChannels> others{};
+    std::size_t count = 0;
     for (AsyncPeekFieldState& other : async_peek_) {
         const std::uint32_t key = other.key.load(std::memory_order_relaxed);
         if (&other != &state && key != kAsyncPeekUnbound && async_peek_key_kind(key) == kind &&
-            (latest == nullptr || other.last_request > latest->last_request) &&
             (other.published.load(std::memory_order_acquire) & 0xFFFFFFFFu) != 0u) {
-            latest = &other;
+            others[count++] = &other;
         }
     }
-    return latest != nullptr &&
-        read_async_peek_field(*latest, x, y, kind, value);
+    std::sort(others.begin(), others.begin() + static_cast<std::ptrdiff_t>(count),
+              [](const AsyncPeekFieldState* a, const AsyncPeekFieldState* b) {
+                  return a->last_request > b->last_request;
+              });
+    for (std::size_t i = 0; i < count; ++i) {
+        if (read_async_peek_field(*others[i], x, y, kind, value)) {
+            return true;
+        }
+    }
+#if defined(NEBULA_GPU_GLES)
+    // Why the game waits (diagnostics): 0 nothing published yet, 1 a stale binding, 2 outside the read box.
+    {
+        const std::uint64_t published = state.published.load(std::memory_order_acquire);
+        const unsigned reason = (published & 0xFFFFFFFFu) == 0u ? 0u
+            : (published >> 32u) != state.generation.load(std::memory_order_acquire) ? 1u : 2u;
+        const std::uint64_t n = ++sync_peek_reasons_[reason];
+        const std::uint64_t total = sync_peek_reasons_[0] + sync_peek_reasons_[1] + sync_peek_reasons_[2];
+        if (total <= 24u || total % 500u == 0u) {
+            std::fprintf(stderr,
+                         "[peek] sync %llu: %s (%u,%u) token %u: unpublished %llu, stale %llu, outside %llu\n",
+                         static_cast<unsigned long long>(total), kind == EfbPeekKind::Depth ? "depth" : "colour",
+                         static_cast<unsigned>(x), static_cast<unsigned>(y), static_cast<unsigned>(token),
+                         static_cast<unsigned long long>(sync_peek_reasons_[0]),
+                         static_cast<unsigned long long>(sync_peek_reasons_[1]),
+                         static_cast<unsigned long long>(sync_peek_reasons_[2]));
+        }
+        (void)n;
+    }
+#endif
+    return false;
 }
+
+#if defined(NEBULA_GPU_GLES)
+void GxBackend::take_async_peek_region(AsyncPeekFieldState& state, std::size_t channel) {
+    // The peeks since the last field, widened for motion; none: the last box again.
+    static const unsigned margin = static_cast<unsigned>(read_env_u64("GALAXY_GLES_PEEK_MARGIN", 32u));
+    const unsigned x0 = state.want_x0.exchange(0xFFFFu, std::memory_order_relaxed);
+    const unsigned y0 = state.want_y0.exchange(0xFFFFu, std::memory_order_relaxed);
+    const unsigned x1 = state.want_x1.exchange(0u, std::memory_order_relaxed);
+    const unsigned y1 = state.want_y1.exchange(0u, std::memory_order_relaxed);
+    std::array<std::uint16_t, 4> region = state.last_region;
+    if (x0 < x1 && y0 < y1) {
+        region = {static_cast<std::uint16_t>(x0 > margin ? x0 - margin : 0u),
+                  static_cast<std::uint16_t>(y0 > margin ? y0 - margin : 0u),
+                  static_cast<std::uint16_t>(std::min<unsigned>(x1 + margin, kEfbWidth)),
+                  static_cast<std::uint16_t>(std::min<unsigned>(y1 + margin, kEfbHeight))};
+    }
+    state.last_region = region;
+    state.pending_region = region;
+    renderer_.set_async_peek_field_region(channel, region[0], region[1], region[2], region[3]);
+}
+#endif
 
 void GxBackend::poll_async_peek_fields() {
     for (std::size_t index = 0; index < async_peek_.size(); ++index) {
@@ -11423,6 +11508,9 @@ void GxBackend::poll_async_peek_fields() {
             continue;
         }
         if (renderer_.try_complete_async_peek_field(index)) {
+#if defined(NEBULA_GPU_GLES)
+            state.slot_region[static_cast<std::size_t>(slot)] = state.pending_region;
+#endif
             state.pending_slot = -1;
             ++state.completed;
             state.published.store(
@@ -11453,6 +11541,9 @@ void GxBackend::submit_async_peek_fields_if_requested() {
         const int slot = (published & 0xFFFFFFFFu) == 0u
             ? 0 : static_cast<int>(published & 0xFFFFFFFFu) % 3;
         const std::uint32_t generation = state.generation.load(std::memory_order_acquire);
+#if defined(NEBULA_GPU_GLES)
+        take_async_peek_region(state, index);
+#endif
         if (renderer_.submit_async_peek_field(
                 index, async_peek_key_kind(key), static_cast<std::size_t>(slot)) != 0u) {
             // The slot pointers are fixed once the resources exist; record
@@ -17572,6 +17663,9 @@ void GxBackend::record_async_peek_fields_at_token(std::uint16_t token) {
         const int slot = (published & 0xFFFFFFFFu) == 0u
             ? 0 : static_cast<int>(published & 0xFFFFFFFFu) % 3;
         const std::uint32_t generation = state.generation.load(std::memory_order_acquire);
+#if defined(NEBULA_GPU_GLES)
+        take_async_peek_region(state, index);
+#endif
         if (renderer_.record_async_peek_field_in_frame(
                 index, async_peek_key_kind(key), static_cast<std::size_t>(slot))) {
             state.requested.store(false, std::memory_order_relaxed);
