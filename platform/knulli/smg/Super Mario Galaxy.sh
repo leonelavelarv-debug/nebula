@@ -55,10 +55,10 @@ export NEBULA_DATA_DIR="$GAMEDIR/data"
 export GALAXY_CRASH_DUMP_DIR="$GAMEDIR/crashes"
 export GALAXY_RUNTIME_SETTINGS_PATH="$GAMEDIR/settings.ini"
 export GALAXY_GLES_PENDING="${GALAXY_GLES_PENDING:-wait}"
-#   GALAXY_GLES_RESOLUTION=auto          resolucion interna dinamica: baja a 50 % (320x264) cuando la GPU no llega y sube
-#                                        hasta 100 % (640x528) cuando le sobra; o fija: 50, 75 (480x396) o 100
+#   GALAXY_GLES_RESOLUTION=100           resolucion interna: 100 = 640x528 (alta definicion, la del Wii); 75 = 480x396;
+#                                        50 = 320x264; auto = dinamica (baja cuando la GPU no llega, sube cuando le sobra)
 #   GALAXY_GLES_RESOLUTION_MIN/MAX/START  los limites de la dinamica (50/100) y donde empieza (75)
-export GALAXY_GLES_RESOLUTION="${GALAXY_GLES_RESOLUTION:-auto}"
+export GALAXY_GLES_RESOLUTION="${GALAXY_GLES_RESOLUTION:-100}"
 export GALAXY_GLES_RESOLUTION_MIN="${GALAXY_GLES_RESOLUTION_MIN:-50}"
 export GALAXY_GLES_RESOLUTION_MAX="${GALAXY_GLES_RESOLUTION_MAX:-100}"
 export GALAXY_GLES_RESOLUTION_START="${GALAXY_GLES_RESOLUTION_START:-75}"
