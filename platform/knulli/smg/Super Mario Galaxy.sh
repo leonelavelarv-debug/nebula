@@ -55,8 +55,13 @@ export NEBULA_DATA_DIR="$GAMEDIR/data"
 export GALAXY_CRASH_DUMP_DIR="$GAMEDIR/crashes"
 export GALAXY_RUNTIME_SETTINGS_PATH="$GAMEDIR/settings.ini"
 export GALAXY_GLES_PENDING="${GALAXY_GLES_PENDING:-wait}"
-#   GALAXY_GLES_RESOLUTION=75            resolucion interna en %: 75 = 480x396; 50 = 320x264 (mas rapido); 100 = 640x528
-export GALAXY_GLES_RESOLUTION="${GALAXY_GLES_RESOLUTION:-75}"
+#   GALAXY_GLES_RESOLUTION=auto          resolucion interna dinamica: baja a 50 % (320x264) cuando la GPU no llega y sube
+#                                        hasta 100 % (640x528) cuando le sobra; o fija: 50, 75 (480x396) o 100
+#   GALAXY_GLES_RESOLUTION_MIN/MAX/START  los limites de la dinamica (50/100) y donde empieza (75)
+export GALAXY_GLES_RESOLUTION="${GALAXY_GLES_RESOLUTION:-auto}"
+export GALAXY_GLES_RESOLUTION_MIN="${GALAXY_GLES_RESOLUTION_MIN:-50}"
+export GALAXY_GLES_RESOLUTION_MAX="${GALAXY_GLES_RESOLUTION_MAX:-100}"
+export GALAXY_GLES_RESOLUTION_START="${GALAXY_GLES_RESOLUTION_START:-75}"
 #   GALAXY_GLES_SHARPEN=0.8              nitidez al ampliar la imagen interna (0: apagada, 0.5 suave, 1.5 fuerte; sin halos)
 export GALAXY_GLES_SHARPEN="${GALAXY_GLES_SHARPEN:-0.8}"
 export NEBULA_PAD_SCHEME="${NEBULA_PAD_SCHEME:-nintendo}"
@@ -71,8 +76,8 @@ if [ "${NEBULA_SHOTS:-1}" = "1" ]; then
   mkdir -p "$GAMEDIR/shots"
   export GALAXY_PRESENT_SNAPSHOT_DIR="$GAMEDIR/shots" GALAXY_PRESENT_SNAPSHOT_EVERY=1800 GALAXY_PRESENT_SNAPSHOT_LAST=18000
 fi
-#   NEBULA_PROFILE=60                    a los 60 s (y 30 y 60 s despues) anota en log.txt donde gastan su tiempo los hilos
-export NEBULA_PROFILE="${NEBULA_PROFILE:-60}"
+#   NEBULA_PROFILE=150                   a los 150 s (y 30 y 60 s despues) anota en log.txt donde gastan su tiempo los hilos
+export NEBULA_PROFILE="${NEBULA_PROFILE:-150}"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 
 #   NEBULA_PERF=1                        CPU, GPU y memoria a su frecuencia maxima mientras se juega (0: lo que tenga el sistema)

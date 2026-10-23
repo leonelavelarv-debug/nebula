@@ -212,6 +212,8 @@ public:
     void discard_efb_depth_at_next_copy() noexcept { discard_depth_at_copy_ = true; }
     // The display copy about to run belongs to a skipped frame: the EFB has not changed since the last one.
     void repeat_next_display_copy() noexcept { xfb_repeat_ = true; }
+    // Tests: what the dynamic resolution does at a level change (the EFB rebuilt at `percent`, its picture kept).
+    bool resize_efb_for_tests(unsigned percent) { return resize_efb(percent); }
     [[nodiscard]] bool scene_temporal_begin(float&, float&) noexcept { return false; }
     [[nodiscard]] bool begin_motion_scene() noexcept { return false; }
     void record_motion_debug_view() noexcept {}
@@ -388,6 +390,18 @@ private:
     // GALAXY_GLES_RESOLUTION (percent) or GALAXY_GLES_EFB_DIVISOR: the EFB is num/den of the Wii's size a side.
     unsigned efb_num_ = 1;
     unsigned efb_den_ = 1;
+    // GALAXY_GLES_RESOLUTION=auto: the levels (percent) the EFB moves between and the state of that choice.
+    std::vector<unsigned> dynamic_levels_;
+    std::size_t dynamic_level_ = 0;
+    std::int64_t dynamic_window_start_ns_ = 0;
+    std::int64_t dynamic_changed_ns_ = 0;
+    std::int64_t dynamic_raised_ns_ = 0;
+    std::int64_t dynamic_raise_after_ns_ = 0;
+    std::int64_t dynamic_backoff_ns_ = 0;
+    std::int64_t dynamic_wait_ns_ = 0;
+    double dynamic_gpu_ms_ = 0.0;
+    void update_dynamic_resolution();
+    bool resize_efb(unsigned percent);
     unsigned peek_field_num_ = 1;  // GALAXY_GLES_PEEK_FIELD: the async peek fields' size, num/den of the Wii's
     unsigned peek_field_den_ = 1;
     gpu::TextureRef efb_color_;

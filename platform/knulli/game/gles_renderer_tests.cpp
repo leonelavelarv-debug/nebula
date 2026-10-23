@@ -89,6 +89,25 @@ int main() {
     (void)renderer.peek_efb(600, 10, EfbPeekKind::Depth, value);
     expect(value == 0xFFFFFFu || value == 0xFFFFFEu, "peek depth (600,10) far", value, 0xFFFFFFu);
 
+    // A resolution change keeps the picture and the depth (the dynamic resolution's rebuild): to 50 % and back.
+    for (const unsigned percent : {50u, 100u}) {
+        const bool resized = renderer.resize_efb_for_tests(percent);
+        std::printf("  resized to %u%%: %d\n", percent, resized ? 1 : 0);
+        (void)renderer.peek_efb(10, 10, EfbPeekKind::Color, value);
+        expect(value == argb(0xFF, 0xFF, 0, 0), "resized peek colour (10,10) red", value, argb(0xFF, 0xFF, 0, 0));
+        (void)renderer.peek_efb(10, 500, EfbPeekKind::Color, value);
+        expect(value == argb(0xFF, 0, 0, 0xFF), "resized peek colour (10,500) blue", value, argb(0xFF, 0, 0, 0xFF));
+        (void)renderer.peek_efb(10, 10, EfbPeekKind::Depth, value);
+        expect(value == 0x123456u, "resized peek depth (10,10)", value, 0x123456u);
+        (void)renderer.peek_efb(600, 10, EfbPeekKind::Depth, value);
+        expect(value >= 0xFFFFFEu, "resized peek depth (600,10) far", value, 0xFFFFFFu);
+    }
+    // The scaling blurred the red/blue edge (a game frame redraws it): the clears again for the exact checks below.
+    renderer.clear_efb(0x0000u, 0x0000u, 0xFFFFFFu, true, true, true);
+    renderer.clear_efb(0xFF00u | 0xFFu, 0x0000u, 0u, true, true, false, 0, 0, 640, 264, 1u);
+    renderer.clear_efb(0xFF00u, 0x00FFu, 0u, true, true, false, 0, 264, 640, 264, 1u);
+    renderer.clear_efb(0u, 0u, 0x123456u, false, false, true, 0, 0, 320, 528, 1u);
+
     // The pointer's depth field: the whole EFB at once.
     std::vector<std::uint32_t> field(kEfbWidth * kEfbHeight);
     if (renderer.capture_pointer_depth(field)) {

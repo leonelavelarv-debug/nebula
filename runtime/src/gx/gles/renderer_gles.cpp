@@ -143,10 +143,38 @@ bool RendererGles::initialize(int window_width, int window_height, unsigned efb_
                 percent = 100u / std::clamp<unsigned>(static_cast<unsigned>(std::strtoul(divisor, nullptr, 10)), 1u, 4u);
             }
             if (const char* resolution = std::getenv("GALAXY_GLES_RESOLUTION"); resolution != nullptr) {
-                percent = std::clamp<unsigned>(static_cast<unsigned>(std::strtoul(resolution, nullptr, 10)), 25u, 100u);
+                if (std::strcmp(resolution, "auto") == 0) {
+                    // Dynamic: 50, 75 or 100 % (GALAXY_GLES_RESOLUTION_MIN/MAX), from GALAXY_GLES_RESOLUTION_START.
+                    const auto env_percent = [](const char* name, unsigned fallback) {
+                        const char* value = std::getenv(name);
+                        return value != nullptr ? static_cast<unsigned>(std::strtoul(value, nullptr, 10)) : fallback;
+                    };
+                    const unsigned low = env_percent("GALAXY_GLES_RESOLUTION_MIN", 50u);
+                    const unsigned high = env_percent("GALAXY_GLES_RESOLUTION_MAX", 100u);
+                    for (const unsigned level : {50u, 75u, 100u}) {
+                        if (level >= low && level <= high) {
+                            dynamic_levels_.push_back(level);
+                        }
+                    }
+                    if (dynamic_levels_.empty()) {
+                        dynamic_levels_.push_back(75u);
+                    }
+                    const unsigned start = env_percent("GALAXY_GLES_RESOLUTION_START", 75u);
+                    dynamic_level_ = 0u;
+                    for (std::size_t i = 0; i < dynamic_levels_.size(); ++i) {
+                        if (dynamic_levels_[i] <= start) {
+                            dynamic_level_ = i;
+                        }
+                    }
+                    percent = dynamic_levels_[dynamic_level_];
+                } else {
+                    percent = std::clamp<unsigned>(static_cast<unsigned>(std::strtoul(resolution, nullptr, 10)), 25u,
+                                                   100u);
+                }
             }
             if (efb_scale_ != 1u) {
                 percent = 100u;
+                dynamic_levels_.clear();
             }
             for (;; ++percent) {
                 const unsigned g = std::gcd(percent, 100u);
@@ -465,7 +493,7 @@ bool RendererGles::create_utility_programs() {
     const char* sharpen_env = std::getenv("GALAXY_GLES_SHARPEN");
     const float sharpen = std::clamp(sharpen_env != nullptr ? static_cast<float>(std::atof(sharpen_env)) : 0.5f,
                                      0.0f, 2.0f);
-    if (conversion_program_ != 0u && efb_divided() && sharpen > 0.0f) {
+    if (conversion_program_ != 0u && (efb_divided() || !dynamic_levels_.empty()) && sharpen > 0.0f) {
         std::string source(efb_conversion_shader_source());
         const std::string tap = "tex_sample = srctex.SampleLevel(s_lin, sample_pos * inv, 0);";
         const std::size_t at = source.find(tap);
@@ -652,6 +680,7 @@ void RendererGles::read_gpu_parts(GpuSegments& segments) {
                 window_stats_.gpu_part_ms[i] += parts[i];
             }
             window_stats_.gpu_ms += total;
+            dynamic_gpu_ms_ += total;
             window_stats_.gpu_max_ms = std::max(window_stats_.gpu_max_ms, total);
             ++window_stats_.gpu_frames;
         }
@@ -675,6 +704,7 @@ void RendererGles::begin_frame(bool) {
     last_frame_slot_wait_us_ =
         static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(waited).count());
     window_stats_.frame_wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(waited).count();
+    dynamic_wait_ns_ += std::chrono::duration_cast<std::chrono::nanoseconds>(waited).count();
     read_gpu_parts(gpu_segments_[frame_slot_]);
     context.collect();
     frame.retired.clear();
@@ -1329,7 +1359,7 @@ void RendererGles::copy_efb_to_xfb(const EfbCopyParams& params, XfbTexture& dest
     } else {
         const EfbCopySamplingGeometry sampling = compute_xfb_sampling_geometry(params, dest.width, dest.height,
                                                                                efb_scale_);
-        conversion_override_ = xfb_program_;
+        conversion_override_ = efb_divided() ? xfb_program_ : 0u;
         record_conversion_blit(*dest.texture, dest.width, dest.height, params, false, false, true, 15u,
                                sampling.src_x, sampling.src_y, sampling.step_x, sampling.step_y,
                                sampling.filter_row_offset);
@@ -1338,6 +1368,117 @@ void RendererGles::copy_efb_to_xfb(const EfbCopyParams& params, XfbTexture& dest
     last_xfb_ = dest.texture;
     last_xfb_key_ = key;
     gpu_part(kGpuScene);
+    if (!dynamic_levels_.empty()) {
+        update_dynamic_resolution();
+    }
+}
+
+// Dynamic resolution (GALAXY_GLES_RESOLUTION=auto), decided at a display copy (between game frames) about every
+// 1.5 s: the GPU's share of the wall time (its timer queries) and the render thread's waits for it. A GPU that does
+// not keep up (waits over 12 % or busy over 70 %) takes the next lower level; one with room for the next higher level
+// (waits under 4 %, the busy time scaled by the pixel count under 50 %) takes it after 4 s at least, and after a
+// rise that had to come back down within 10 s, rises wait longer (15 s, doubling to 2 min).
+void RendererGles::update_dynamic_resolution() {
+    const std::int64_t now = monotonic_ns();
+    if (dynamic_window_start_ns_ == 0) {
+        dynamic_window_start_ns_ = now;
+        dynamic_changed_ns_ = now;
+        dynamic_gpu_ms_ = 0.0;
+        dynamic_wait_ns_ = 0;
+        return;
+    }
+    const double wall_ms = static_cast<double>(now - dynamic_window_start_ns_) / 1e6;
+    if (wall_ms < 1500.0) {
+        return;
+    }
+    const double busy = dynamic_gpu_ms_ / wall_ms;
+    const double wait = static_cast<double>(dynamic_wait_ns_) / 1e6 / wall_ms;
+    dynamic_window_start_ns_ = now;
+    dynamic_gpu_ms_ = 0.0;
+    dynamic_wait_ns_ = 0;
+    const auto pixels = [this](std::size_t level) {
+        const double f = static_cast<double>(dynamic_levels_[level]) / 100.0;
+        return f * f;
+    };
+    std::size_t next = dynamic_level_;
+    const char* why = nullptr;
+    if ((wait > 0.12 || busy > 0.70) && dynamic_level_ > 0u) {
+        next = dynamic_level_ - 1u;
+        why = "the GPU does not keep up";
+        if (now - dynamic_raised_ns_ < 10'000'000'000ll) {
+            dynamic_backoff_ns_ = std::min<std::int64_t>(std::max<std::int64_t>(dynamic_backoff_ns_ * 2,
+                                                                                15'000'000'000ll),
+                                                         120'000'000'000ll);
+            dynamic_raise_after_ns_ = now + dynamic_backoff_ns_;
+        }
+    } else if (dynamic_level_ + 1u < dynamic_levels_.size() && wait < 0.04 &&
+               busy * pixels(dynamic_level_ + 1u) / pixels(dynamic_level_) < 0.50 &&
+               now - dynamic_changed_ns_ >= 4'000'000'000ll && now >= dynamic_raise_after_ns_) {
+        next = dynamic_level_ + 1u;
+        why = "the GPU has room";
+        dynamic_raised_ns_ = now;
+    }
+    if (next == dynamic_level_) {
+        return;
+    }
+    const unsigned from = dynamic_levels_[dynamic_level_];
+    const unsigned to = dynamic_levels_[next];
+    if (!resize_efb(to)) {
+        return;
+    }
+    dynamic_level_ = next;
+    dynamic_changed_ns_ = now;
+    std::fprintf(stderr, "[gles] dynamic resolution %u%% -> %u%% (%ux%u): %s (GPU busy %.0f%%, waits %.0f%%)\n",
+                 from, to, efb_width(), efb_height(), why, busy * 100.0, wait * 100.0);
+}
+
+// A new EFB at `percent` of the Wii's size, the old one's picture and depth scaled into it (no visible jump);
+// nothing else holds the EFB's size (viewports, scissors and conversions read it at each use).
+bool RendererGles::resize_efb(unsigned percent) {
+    const unsigned g = std::gcd(percent, 100u);
+    const unsigned num = percent / g;
+    const unsigned den = 100u / g;
+    if (kEfbWidth * num % den != 0u || kEfbHeight * num % den != 0u || (num == efb_num_ && den == efb_den_)) {
+        return false;
+    }
+    const unsigned old_w = efb_width();
+    const unsigned old_h = efb_height();
+    gpu::TextureRef old_color = std::move(efb_color_);
+    gpu::TextureRef old_depth = std::move(efb_depth_);
+    const GLuint old_framebuffer = efb_framebuffer_;
+    efb_framebuffer_ = 0u;
+    const unsigned old_num = efb_num_;
+    const unsigned old_den = efb_den_;
+    efb_num_ = num;
+    efb_den_ = den;
+    if (!create_efb(efb_scale_)) {
+        if (efb_framebuffer_ != 0u) {
+            glDeleteFramebuffers(1, &efb_framebuffer_);
+        }
+        efb_num_ = old_num;
+        efb_den_ = old_den;
+        efb_color_ = std::move(old_color);
+        efb_depth_ = std::move(old_depth);
+        efb_framebuffer_ = old_framebuffer;
+        bound_ = Bound{};
+        bind_efb_framebuffer();
+        return false;
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, old_framebuffer);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, efb_framebuffer_);
+    glDisable(GL_SCISSOR_TEST);
+    const GLint w = static_cast<GLint>(efb_width());
+    const GLint h = static_cast<GLint>(efb_height());
+    glBlitFramebuffer(0, 0, static_cast<GLint>(old_w), static_cast<GLint>(old_h), 0, 0, w, h, GL_COLOR_BUFFER_BIT,
+                      GL_LINEAR);
+    glBlitFramebuffer(0, 0, static_cast<GLint>(old_w), static_cast<GLint>(old_h), 0, 0, w, h, GL_DEPTH_BUFFER_BIT,
+                      GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, efb_framebuffer_);
+    glDeleteFramebuffers(1, &old_framebuffer);
+    bound_ = Bound{};
+    bound_.framebuffer = efb_framebuffer_;
+    reset_gx_bindings();
+    return true;
 }
 
 bool RendererGles::copy_efb_to_texture(const EfbCopyParams& params, TextureCache& textures, bool is_depth_copy) {
