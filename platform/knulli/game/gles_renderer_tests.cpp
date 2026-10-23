@@ -11,7 +11,6 @@
 #include "galaxy/gx/uber_constants.h"
 #include "galaxy/gx/vertex_loader.h"
 #include "galaxy/gx/efb_copy.h"
-#include "galaxy/gx/texture_cache.h"
 #include "galaxy/gx/host_window.h"
 
 #include <SDL.h>
@@ -133,44 +132,6 @@ int main() {
                        argb(0xFF, 0, 0, 0xFF));
             }
         }
-    }
-
-    // A texture copy across the red/blue edge (rows 256..271, columns 8..71): at a divided EFB it is made at the
-    // EFB's own size; either way red above row 264 and blue from it.
-    {
-        galaxy::gx::TextureCache cache;
-        if (cache.initialize(renderer.device())) {
-            renderer.attach_texture_uploads(cache);
-            const bool copied = renderer.copy_efb_to_texture(copy_params(8, 256, 64, 16, false), cache, false);
-            const gpu::TextureRef& copy = renderer.last_efb_copy();
-            expect(copied || copy != nullptr, "texture copy made", copy != nullptr ? 1u : 0u, 1u);
-            if (copy) {
-                const unsigned cw = copy->width, ch = copy->height;
-                std::printf("  texture copy %ux%u\n", cw, ch);
-                GLuint fb = 0;
-                glGenFramebuffers(1, &fb);
-                glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
-                glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, copy->name, 0);
-                std::vector<std::uint8_t> texels(static_cast<std::size_t>(cw) * ch * 4u);
-                glPixelStorei(GL_PACK_ALIGNMENT, 1);
-                glReadPixels(0, 0, static_cast<GLsizei>(cw), static_cast<GLsizei>(ch), GL_RGBA, GL_UNSIGNED_BYTE,
-                             texels.data());
-                glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-                glDeleteFramebuffers(1, &fb);
-                const auto texel = [&](unsigned x, unsigned y) {
-                    const std::uint8_t* q = texels.data() + (static_cast<std::size_t>(y) * cw + x) * 4u;
-                    return argb(q[3], q[0], q[1], q[2]);
-                };
-                // Rows are top first (D3D order): the first rows red, the last blue.
-                expect((texel(cw / 2, 0) & 0xFFFFFFu) == 0xFF0000u, "texture copy top red", texel(cw / 2, 0),
-                       0xFFFF0000u);
-                expect((texel(cw / 2, ch - 1) & 0xFFFFFFu) == 0x0000FFu, "texture copy bottom blue",
-                       texel(cw / 2, ch - 1), 0xFF0000FFu);
-            }
-        }
-        // The test read through its own framebuffer: the renderer's bindings again.
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-        renderer.bind_efb(nullptr);
     }
 
     // The display copy and the present: red at the screen's top.

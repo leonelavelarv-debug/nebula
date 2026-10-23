@@ -212,8 +212,6 @@ public:
     void discard_efb_depth_at_next_copy() noexcept { discard_depth_at_copy_ = true; }
     // The display copy about to run belongs to a skipped frame: the EFB has not changed since the last one.
     void repeat_next_display_copy() noexcept { xfb_repeat_ = true; }
-    // The texture the last converted EFB copy wrote (tests).
-    [[nodiscard]] const gpu::TextureRef& last_efb_copy() const noexcept { return last_efb_copy_; }
     [[nodiscard]] bool scene_temporal_begin(float&, float&) noexcept { return false; }
     [[nodiscard]] bool begin_motion_scene() noexcept { return false; }
     void record_motion_debug_view() noexcept {}
@@ -407,7 +405,6 @@ private:
         std::uint32_t width = 0, height = 0;
     };
     gpu::TextureRef last_xfb_;
-    gpu::TextureRef last_efb_copy_;
     XfbKey last_xfb_key_{};
     bool xfb_repeat_ = false;
     GLuint clear_program_ = 0;        // colour (masked by glColorMask) and depth clears as draws
