@@ -145,17 +145,53 @@ def set_text(game, tag, value):
 
 
 CACTUS_SCRIPT = "./Cactus Galaxy Wrapper.sh"
-CACTUS_INFO = {
-    "name": "Cactus Galaxy Wrapper",
-    "desc": ("Convierte tu disco de Super Mario Galaxy (USA) en ISO, RVZ, WIA, WBFS, GCZ o CISO en el game.pak del "
-             "port, aquí mismo en la consola: busca el disco en roms/ports/smg/gamedata y en roms/wii, pregunta en qué "
-             "idioma instalar el juego, muestra el avance y el saguaro florece cuando termina. Cruceta para elegir, A para convertir, B para salir."),
-    "developer": "Nebula",
-    "publisher": "Nebula",
-    "genre": "Herramienta",
-    "players": "1",
-    "lang": "es",
+CACTUS_TEXT = {  # by KNULLI's system.language, as Cactus Galaxy Wrapper itself
+    "es": ("Herramienta", "Convierte tu disco de Super Mario Galaxy (USA) en ISO, RVZ, WIA, WBFS, GCZ o CISO en el "
+           "game.pak del port, aquí mismo en la consola: busca el disco en roms/ports/smg/gamedata y en roms/wii, "
+           "pregunta en qué idioma instalar el juego, muestra el avance y el saguaro florece cuando termina."),
+    "en": ("Tool", "Turns your Super Mario Galaxy (USA) disc, as ISO, RVZ, WIA, WBFS, GCZ or CISO, into the port's "
+           "game.pak right here on the console: it finds the disc in roms/ports/smg/gamedata and roms/wii, asks which "
+           "language to install the game in, shows the progress, and the saguaro blooms when it is done."),
+    "fr": ("Outil", "Transforme ton disque de Super Mario Galaxy (USA), en ISO, RVZ, WIA, WBFS, GCZ ou CISO, en game.pak "
+           "du port, directement sur la console : il trouve le disque dans roms/ports/smg/gamedata et roms/wii, "
+           "demande la langue du jeu, montre l'avancement, et le saguaro fleurit à la fin."),
+    "pt": ("Ferramenta", "Converte seu disco de Super Mario Galaxy (USA), em ISO, RVZ, WIA, WBFS, GCZ ou CISO, no "
+           "game.pak do port, aqui mesmo no console: procura o disco em roms/ports/smg/gamedata e roms/wii, pergunta "
+           "o idioma do jogo, mostra o progresso e o saguaro floresce no final."),
+    "it": ("Strumento", "Converte il tuo disco di Super Mario Galaxy (USA), in ISO, RVZ, WIA, WBFS, GCZ o CISO, nel "
+           "game.pak del port, direttamente sulla console: cerca il disco in roms/ports/smg/gamedata e roms/wii, "
+           "chiede la lingua del gioco, mostra l'avanzamento e il saguaro fiorisce alla fine."),
+    "de": ("Werkzeug", "Wandelt deine Super-Mario-Galaxy-Disc (USA) als ISO, RVZ, WIA, WBFS, GCZ oder CISO direkt auf "
+           "der Konsole in die game.pak des Ports um: findet die Disc in roms/ports/smg/gamedata und roms/wii, fragt "
+           "nach der Spielsprache, zeigt den Fortschritt, und der Saguaro blüht am Ende."),
 }
+
+
+def system_language():
+    """The first two letters of KNULLI's system.language (es, en, fr...), 'es' if it cannot be read."""
+    for path in ("/userdata/system/batocera.conf", "/userdata/system/knulli.conf", "/userdata/system/system.conf"):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("system.language="):
+                        code = line.split("=", 1)[1].strip()[:2].lower()
+                        if code in CACTUS_TEXT:
+                            return code
+        except OSError:
+            continue
+    for var in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        code = os.environ.get(var, "")[:2].lower()
+        if code in CACTUS_TEXT:
+            return code
+    return "es"
+
+
+def cactus_info():
+    code = system_language()
+    genre, desc = CACTUS_TEXT[code]
+    return {"name": "Cactus Galaxy Wrapper", "desc": desc, "developer": "Nebula", "publisher": "Nebula",
+            "genre": genre, "players": "1", "lang": code}
 
 
 def main():
@@ -165,7 +201,7 @@ def main():
     if os.path.isfile(os.path.join(ports, CACTUS_SCRIPT[2:])) and os.path.isfile(os.path.join(smg, "cactus.png")):
         entry = ET.Element("game")
         set_text(entry, "path", os.path.join(ports, CACTUS_SCRIPT[2:]))
-        for tag, value in CACTUS_INFO.items():
+        for tag, value in cactus_info().items():
             set_text(entry, tag, value)
         for tag in ("image", "thumbnail", "boxart"):
             set_text(entry, tag, os.path.join(smg, "cactus.png"))

@@ -10,6 +10,11 @@ terminar. La conversión la hace `nebula-pak` (`platform/knulli/pak`) como proce
 - Idioma del juego: al convertir pregunta Español, English o Français (lo que trae el disco USA) y lo guarda en
   `smg/idioma.txt`, que el lanzador del juego pasa como `GALAXY_LANGUAGE`. En el menú, ◄► lo cambia en cualquier
   momento, también con el `game.pak` ya hecho.
+- Idioma de la interfaz: el de KNULLI (`system.language` de `/userdata/system/batocera.conf`; si no, el de
+  EmulationStation o `LANG`): español, English, français, português, italiano o Deutsch; si no se encuentra, español.
+  `CACTUS_LANG=xx` o `--lang xx` lo fijan. Los errores habituales de nebula-pak (espacio, FAT32, imagen dañada,
+  main.dol, cancelado) también salen traducidos; en una instalación nueva, el idioma del juego propuesto sigue al
+  de la interfaz (español, francés o, para el resto, inglés).
 - Controles: cruceta para elegir, A (derecha) convertir, B (abajo) salir o cancelar, X borrar el disco al terminar,
   MENU + START salir. `CACTUS_SWAP_AB=1` cambia A y B.
 - `cactus-galaxy-wrapper --demo <carpeta>` escribe capturas PNG de cada pantalla y los fotogramas del cactus

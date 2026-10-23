@@ -14,6 +14,7 @@
 #include <cerrno>
 #include <cmath>
 #include <csignal>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -48,6 +49,8 @@
 #include "font8x8/font8x8_basic.h"
 #include "font8x8/font8x8_ext_latin.h"
 #undef char
+
+#include "strings.h"
 
 namespace {
 
@@ -526,13 +529,93 @@ void progress_bar(Canvas& cv, int x, int y, int w, int h, float p, float time) {
   }
 }
 
+// The interface's language: KNULLI's (system.language), CACTUS_LANG to force one.
+int g_ui = UI_ES;
+const char* T(Str s) { return kText[g_ui][s]; }
+
+std::string format(const char* pattern, ...) __attribute__((format(printf, 1, 2)));
+std::string format(const char* pattern, ...) {
+  char b[512];
+  va_list args;
+  va_start(args, pattern);
+  vsnprintf(b, sizeof(b), pattern, args);
+  va_end(args);
+  return b;
+}
+
+int ui_from_code(std::string code) {
+  for (char& c : code) c = char(tolower((unsigned char)c));
+  for (int i = 0; i < UI_COUNT; ++i) if (code.compare(0, 2, kUiCodes[i]) == 0) return i;
+  return -1;
+}
+
+// "es_MX" from `key=value` files (batocera.conf / knulli.conf) or ES's es_settings.cfg.
+std::string read_setting(const char* path, const char* key) {
+  FILE* f = fopen(path, "r");
+  if (f == nullptr) return "";
+  char line[512];
+  std::string found;
+  const size_t n = strlen(key);
+  while (fgets(line, sizeof(line), f)) {
+    const char* p = line;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (strncmp(p, key, n) == 0 && p[n] == '=') {
+      found = p + n + 1;
+    } else if (const char* tag = strstr(p, "name=\"Language\"")) {
+      if (const char* v = strstr(tag, "value=\"")) found = std::string(v + 7, strcspn(v + 7, "\""));
+    }
+  }
+  fclose(f);
+  while (!found.empty() && (found.back() == '\n' || found.back() == '\r' || found.back() == ' ')) found.pop_back();
+  return found;
+}
+
+std::string detect_ui_language() {
+  if (const char* forced = getenv("CACTUS_LANG"); forced && ui_from_code(forced) >= 0) { g_ui = ui_from_code(forced); return std::string("CACTUS_LANG=") + forced; }
+  for (const char* path : {"/userdata/system/batocera.conf", "/userdata/system/knulli.conf", "/userdata/system/system.conf"}) {
+    const std::string v = read_setting(path, "system.language");
+    if (ui_from_code(v) >= 0) { g_ui = ui_from_code(v); return std::string(path) + ": " + v; }
+  }
+  for (const char* path : {"/userdata/system/configs/emulationstation/es_settings.cfg", "/userdata/system/.emulationstation/es_settings.cfg"}) {
+    const std::string v = read_setting(path, "Language");
+    if (ui_from_code(v) >= 0) { g_ui = ui_from_code(v); return std::string(path) + ": " + v; }
+  }
+  for (const char* var : {"LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"}) {
+    const char* v = getenv(var);
+    if (v && *v && strcmp(v, "C") != 0 && strcmp(v, "POSIX") != 0 && ui_from_code(v) >= 0) {
+      g_ui = ui_from_code(v);
+      return std::string(var) + "=" + v;
+    }
+  }
+  g_ui = UI_ES;
+  return "sin idioma del sistema: español";
+}
+
 std::string mib_text(double mib) {
   char b[64];
-  if (mib >= 1024.0) snprintf(b, sizeof(b), "%.1f GB", mib / 1024.0);
-  else snprintf(b, sizeof(b), "%.0f MB", mib);
+  if (mib >= 1024.0) snprintf(b, sizeof(b), "%.1f %s", mib / 1024.0, g_ui == UI_FR ? "Go" : "GB");
+  else snprintf(b, sizeof(b), "%.0f %s", mib, g_ui == UI_FR ? "Mo" : "MB");
   std::string s = b;
-  std::replace(s.begin(), s.end(), '.', ',');
+  if (g_ui != UI_EN) std::replace(s.begin(), s.end(), '.', ',');
   return s;
+}
+
+// nebula-pak's (Spanish) errors, in the interface's language where they are the usual ones.
+std::string translate_error(const std::string& e) {
+  unsigned long long need = 0, have = 0;
+  const size_t at = e.find("hacen falta");
+  if (at != std::string::npos && sscanf(e.c_str() + at, "hacen falta %llu MiB libres y hay %llu MiB", &need, &have) == 2) {
+    return format(T(S_ERR_SPACE), mib_text(double(need)).c_str(), mib_text(double(have)).c_str());
+  }
+  if (e.find("no queda espacio") != std::string::npos) return T(S_ERR_SPACE_SHORT);
+  if (e.find("FAT32") != std::string::npos) return T(S_ERR_FAT32);
+  if (e.find("main.dol") != std::string::npos) return T(S_ERR_DOL);
+  if (e.find("cancelada") != std::string::npos) return T(S_ERR_CANCELLED);
+  if (e.find("incompleta") != std::string::npos || e.find("danad") != std::string::npos ||
+      e.find("antes de tiempo") != std::string::npos) {
+    return T(S_ERR_INCOMPLETE);
+  }
+  return e;
 }
 
 std::string duration_text(double seconds) {
@@ -696,7 +779,9 @@ struct App {
   Image pending;  // the disc waiting for its language
 
   void load_language() {
-    language = 0;
+    // Not chosen yet: the menu's language for a new install (spanish, english, french), Spanish if game.pak is
+    // already there (what the launcher uses without smg/idioma.txt).
+    language = have_pak ? 0 : (g_ui == UI_ES ? 0 : g_ui == UI_FR ? 2 : 1);
     if (FILE* f = fopen(language_file.c_str(), "r")) {
       char word[32] = {};
       if (fscanf(f, "%31s", word) == 1) {
@@ -769,7 +854,7 @@ struct App {
     Job* j = job.get();
     int fd = -1;
     j->pid = spawn({tool, im.path, output}, &fd);
-    if (j->pid < 0) { error = "no se pudo ejecutar nebula-pak"; screen = Screen::Failed; return; }
+    if (j->pid < 0) { error = T(S_ERR_RUN); screen = Screen::Failed; return; }
     screen = Screen::Converting;
     printf("[cactus] convirtiendo %s -> %s\n", im.path.c_str(), output.c_str());
     fflush(stdout);
@@ -806,8 +891,8 @@ struct App {
       result = 0;
       done_at = now_seconds();
     } else {
-      error = job->error.empty() ? (cancelling ? "conversion cancelada" : job->last_line) : job->error;
-      if (error.empty()) error = "nebula-pak termino con codigo " + std::to_string(job->exit_code);
+      error = job->error.empty() ? (cancelling ? std::string(T(S_ERR_CANCELLED)) : job->last_line) : translate_error(job->error);
+      if (error.empty()) error = format(T(S_ERR_EXIT), job->exit_code);
       screen = Screen::Failed;
     }
     job.reset();
@@ -891,14 +976,12 @@ struct App {
     std::lock_guard<std::mutex> lock(images_mutex);
     int y = 134;
     if (images.empty()) {
-      text_center(cv, kCenter, y + 6, "No encontré ningún disco", 2, kGold);
-      int ly = y + 40;
-      for (const std::string& l : wrap("Pon tu ISO o RVZ de Super Mario Galaxy (USA) en roms/ports/smg/gamedata o en roms/wii y vuelve a abrir.", 22)) {
-        text(cv, kLeft + 4, ly, l, 2, kWhite);
-        ly += 22;
-      }
+      int ly = y + 4;
+      for (const std::string& l : wrap(T(S_NO_DISC), 22)) { text_center(cv, kCenter, ly, l, 2, kGold); ly += 22; }
+      ly += 12;
+      for (const std::string& l : wrap(T(S_NO_DISC_HELP), 22)) { text(cv, kLeft + 4, ly, l, 2, kWhite); ly += 22; }
     } else {
-      text(cv, kLeft, y, "Elige tu disco:", 2, kGold);
+      text(cv, kLeft, y, T(S_CHOOSE), 2, kGold);
       y += 26;
       const int rows = 4;
       if (selected < scroll) scroll = selected;
@@ -915,10 +998,10 @@ struct App {
         std::string detail;
         u32 dc = kMuted;
         const std::string size = mib_text(im.mib);
-        if (im.status == -1) detail = size + " · comprobando\xE2\x80\xA6";
+        if (im.status == -1) detail = size + " · " + T(S_CHECKING);
         else if (im.status == 0) { detail = im.format + " · " + size + " · \xE2\x9C\x93 USA"; dc = kGreen; }
-        else if (im.status == 1) { detail = "\xE2\x9C\x97 otro juego (" + im.id + ")"; dc = 0xd98a8a; }
-        else { detail = "\xE2\x9C\x97 no es un disco de Wii"; dc = 0xd98a8a; }
+        else if (im.status == 1) { detail = std::string("\xE2\x9C\x97 ") + T(S_OTHER_GAME) + " (" + im.id + ")"; dc = 0xd98a8a; }
+        else { detail = std::string("\xE2\x9C\x97 ") + T(S_NOT_DISC); dc = 0xd98a8a; }
         text(cv, kLeft + 2, y + 18, fit(detail, 22), 2, dc);
         y += 46;
       }
@@ -927,32 +1010,32 @@ struct App {
         if (scroll + rows < int(images.size())) text(cv, kPanelX + kPanelW - 30, 340, "\xE2\x86\x93", 2, kGold);
       }
     }
-    // Where it goes and how much room there is.
+    // The game's language (left/right change it) and how much room there is.
     const int sy = 350;
     for (int x = kLeft + 10; x < kPanelX + kPanelW - 26; x += 4) cv.blend(x, sy - 8, 0x43a152, 0.6f);
-    {  // the game's language: left/right change it
+    {
       int x = kLeft;
       x += text(cv, x, sy, "\xE2\x97\x84 ", 2, kGold);
-      x += text(cv, x, sy, "Idioma: ", 2, kMuted);
+      x += text(cv, x, sy, T(S_LANGUAGE), 2, kMuted);
       x += text(cv, x, sy, kLanguages[language].name, 2, kWhite);
       text(cv, x, sy, " \xE2\x96\xBA", 2, kGold);
     }
     if (free_mib >= 0) {
       const bool low = free_mib < 3400.0;
-      const std::string room = mib_text(free_mib) + (low ? " (poco)" : "");
-      text(cv, kLeft, sy + 20, fit((have_pak ? "Hay game.pak · " : "Libre: ") + room, 22), 2, low ? kRed : kMuted);
+      const std::string room = mib_text(free_mib) + (low ? T(S_LOW) : "");
+      text(cv, kLeft, sy + 20, fit(std::string(have_pak ? T(S_HAVE_PAK) : T(S_FREE)) + room, 22), 2, low ? kRed : kMuted);
     } else if (have_pak) {
-      text(cv, kLeft, sy + 20, "Ya hay game.pak", 2, kGold);
+      text(cv, kLeft, sy + 20, fit(T(S_HAVE_PAK_ONLY), 22), 2, kGold);
     }
     const bool can = selected < int(images.size()) && images[selected].status == 0;
-    if (can) hints(cv, 406, {{"A", "Convertir"}, {"B", "Salir"}});
-    else hints(cv, 406, {{"B", "Salir"}});
-    hints(cv, 436, {{"X", std::string("Borrar disco: ") + (delete_after ? "Sí" : "No")}});
+    if (can) hints(cv, 406, {{"A", T(S_CONVERT)}, {"B", T(S_EXIT)}});
+    else hints(cv, 406, {{"B", T(S_EXIT)}});
+    hints(cv, 436, {{"X", std::string(T(S_DELETE_DISC)) + (delete_after ? T(S_YES) : T(S_NO))}});
   }
 
   void draw_language(Canvas& cv, float time) {
-    text_center(cv, kCenter, 128, "Idioma del juego", 2, kGold);
-    text_center(cv, kCenter, 150, "Language · Langue", 2, kMuted);
+    text_center(cv, kCenter, 128, T(S_GAME_LANGUAGE), 2, kGold);
+    text_center(cv, kCenter, 150, T(S_GAME_LANGUAGE_SUB), 2, kMuted);
     for (int i = 0; i < kLanguageCount; ++i) {
       const int y = 184 + i * 58;
       const bool sel = i == language_choice;
@@ -965,8 +1048,8 @@ struct App {
       text(cv, kLeft + 50, y + 26, kLanguages[i].note, 2, sel ? kGreen : 0x8f82a8);
     }
     text_center(cv, kCenter, 364, fit(pending.name, 22), 2, kMuted);
-    text_center(cv, kCenter, 384, "Se cambia luego con \xE2\x97\x84\xE2\x96\xBA", 2, 0x8f82a8);
-    hints(cv, 430, {{"A", "Instalar"}, {"B", "Volver"}});
+    text_center(cv, kCenter, 384, fit(T(S_CHANGE_LATER), 22), 2, 0x8f82a8);
+    hints(cv, 430, {{"A", T(S_INSTALL)}, {"B", T(S_BACK)}});
   }
 
   void draw_converting(Canvas& cv, float time) {
@@ -978,60 +1061,52 @@ struct App {
     if (demo_percent >= 0) { percent = demo_percent; done = demo_done; total = demo_total; speed = demo_speed; }
     const double t = now_seconds();
     if (demo_percent < 0 && t - speed_at > 2.0) {  // MiB/s over the last couple of seconds, smoothed
-      const double s = (done - speed_mib) / (t - speed_at);
-      speed = speed <= 0 ? s : speed * 0.6 + s * 0.4;
+      const double sp = (done - speed_mib) / (t - speed_at);
+      speed = speed <= 0 ? sp : speed * 0.6 + sp * 0.4;
       speed_mib = done; speed_at = t;
     }
-    text_center(cv, kCenter, 134, cancelling ? "Cancelando\xE2\x80\xA6" : "Convirtiendo", 2, kGold);
+    text_center(cv, kCenter, 134, fit(cancelling ? T(S_CANCELLING) : T(S_CONVERTING), 22), 2, kGold);
     text_center(cv, kCenter, 156, fit(converted_name, 22), 2, kMuted);
-    char big[16];
-    snprintf(big, sizeof(big), "%d%%", int(percent));
-    text_center(cv, kCenter, 188, big, 6, kWhite);
+    text_center(cv, kCenter, 188, format("%d%%", int(percent)), 6, kWhite);
     progress_bar(cv, kLeft + 4, 252, kPanelW - 40, 32, float(percent / 100.0), time);
-    char line[96];
-    if (total > 0) {
-      snprintf(line, sizeof(line), "%.0f / %.0f MB", done, total);
-      text_center(cv, kCenter, 300, line, 2, kWhite);
-    } else {
-      text_center(cv, kCenter, 300, "Leyendo el disco\xE2\x80\xA6", 2, kWhite);
-    }
+    const char* unit = g_ui == UI_FR ? "Mo" : "MB";
+    if (total > 0) text_center(cv, kCenter, 300, format("%.0f / %.0f %s", done, total, unit), 2, kWhite);
+    else text_center(cv, kCenter, 300, fit(T(S_READING), 22), 2, kWhite);
     if (speed > 0.05 && total > 0) {
-      std::string sp = mib_text(speed);
-      snprintf(line, sizeof(line), "%s/s", sp.c_str());
-      text_center(cv, kCenter, 324, line, 2, kMuted);
-      text_center(cv, kCenter, 348, "Quedan " + duration_text((total - done) / speed), 2, kMuted);
+      text_center(cv, kCenter, 324, mib_text(speed) + "/s", 2, kMuted);
+      text_center(cv, kCenter, 348, fit(format(T(S_LEFT), duration_text((total - done) / speed).c_str()), 22), 2, kMuted);
     }
     const float pulse = 0.65f + 0.35f * std::sin(time * 3.0f);
-    text_center(cv, kCenter, 386, "No apagues la consola", 2, kPink, pulse);
-    if (!cancelling) hints(cv, 430, {{"B", "Cancelar"}});
+    text_center(cv, kCenter, 386, fit(T(S_DONT_TURN_OFF), 22), 2, kPink, pulse);
+    if (!cancelling) hints(cv, 430, {{"B", T(S_CANCEL)}});
   }
 
   void draw_done(Canvas& cv) {
-    text_center(cv, kCenter, 140, "¡LISTO!", 5, kGreen);
-    text_center(cv, kCenter, 194, "game.pak creado", 2, kWhite);
+    text_center(cv, kCenter, 140, T(S_DONE), 5, kGreen);
+    text_center(cv, kCenter, 194, fit(T(S_PAK_CREATED), 22), 2, kWhite);
     text_center(cv, kCenter, 230, fit(converted_name, 22), 2, kMuted);
-    text_center(cv, kCenter, 254, "en " + duration_text(took), 2, kMuted);
-    text_center(cv, kCenter, 278, std::string("Idioma: ") + kLanguages[language].name, 2, kWhite);
-    if (deleted) text_center(cv, kCenter, 298, "Disco borrado", 2, kMuted);
-    text_center(cv, kCenter, 318, "Tu cactus floreció", 2, kPink);
+    text_center(cv, kCenter, 254, fit(format(T(S_IN), duration_text(took).c_str()), 22), 2, kMuted);
+    text_center(cv, kCenter, 278, fit(std::string(T(S_LANGUAGE)) + kLanguages[language].name, 22), 2, kWhite);
+    if (deleted) text_center(cv, kCenter, 298, fit(T(S_DISC_DELETED), 22), 2, kMuted);
+    text_center(cv, kCenter, 330, fit(T(S_BLOOMED), 22), 2, kPink);
     if (auto_quit) {
       const int left = std::max(0, 6 - int(now_seconds() - done_at));
-      text_center(cv, kCenter, 370, "El juego empieza en " + std::to_string(demo_percent >= 0 ? 5 : left) + " s", 2, kGold);
-      hints(cv, 430, {{"A", "Jugar ya"}});
+      text_center(cv, kCenter, 370, fit(format(T(S_STARTS_IN), demo_percent >= 0 ? 5 : left), 22), 2, kGold);
+      hints(cv, 430, {{"A", T(S_PLAY_NOW)}});
     } else {
-      hints(cv, 430, {{"A", "Salir"}});
+      hints(cv, 430, {{"A", T(S_EXIT)}});
     }
   }
 
   void draw_failed(Canvas& cv) {
-    text_center(cv, kCenter, 132, "¡AY!", 5, kRed);
-    text_center(cv, kCenter, 184, "No se pudo crear", 2, kWhite);
+    text_center(cv, kCenter, 132, T(S_OUCH), 5, kRed);
+    text_center(cv, kCenter, 184, fit(T(S_COULD_NOT), 22), 2, kWhite);
     text_center(cv, kCenter, 204, "game.pak", 2, kWhite);
     int y = 240;
     std::vector<std::string> lines = wrap(error, 22);
     if (lines.size() > 7) { lines.resize(7); lines.back() = fit(lines.back() + " xx", 21); }
     for (const std::string& l : lines) { text(cv, kLeft + 4, y, l, 2, 0xffb4a8); y += 22; }
-    hints(cv, 430, {{"A", "Volver"}, {"B", "Salir"}});
+    hints(cv, 430, {{"A", T(S_BACK)}, {"B", T(S_EXIT)}});
   }
 
   // Demo values (--demo).
@@ -1067,11 +1142,12 @@ int demo(const std::string& out) {
   Image c; c.name = "smg-copia.iso"; c.format = "ISO"; c.mib = 4482; c.status = -1;
   Image d; d.name = "notas.iso"; d.mib = 1; d.status = 3;
   app.images = {a, b, c, d};
+  app.load_language();  // no smg/idioma.txt here: the game's language follows the interface's
   app.draw(cv, scene, 1.3f);
   save_png(cv, out + "/1-menu.png");
   app.pending = a;
   app.screen = Screen::Language;
-  app.language_choice = 0;
+  app.language_choice = app.language;
   app.draw(cv, scene, 1.8f);
   save_png(cv, out + "/1b-idioma.png");
   app.screen = Screen::Converting;
@@ -1089,7 +1165,7 @@ int demo(const std::string& out) {
   app.draw(cv, scene, 4.0f);
   save_png(cv, out + "/4-listo.png");
   app.screen = Screen::Failed;
-  app.error = "no hay espacio para game.pak: hacen falta 3390 MiB libres y hay 2104 MiB";
+  app.error = translate_error("no hay espacio para game.pak: hacen falta 3390 MiB libres y hay 2104 MiB");
   app.demo_growth = 0.45f; app.demo_bloom = 0; app.demo_wilt = 1.0f;
   app.draw(cv, scene, 5.0f);
   save_png(cv, out + "/5-error.png");
@@ -1214,18 +1290,24 @@ int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   App app;
   app.smg = dir_of_exe();
+  std::string demo_dir;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
-    if (a == "--demo" && i + 1 < argc) return demo(argv[++i]);
-    if (a == "--smg" && i + 1 < argc) app.smg = argv[++i];
+    if (a == "--demo" && i + 1 < argc) demo_dir = argv[++i];
+    else if (a == "--lang" && i + 1 < argc) setenv("CACTUS_LANG", argv[++i], 1);
+    else if (a == "--smg" && i + 1 < argc) app.smg = argv[++i];
     else if (a == "--auto") { app.auto_mode = true; app.auto_quit = true; }
     else if (a == "--delete-image") app.delete_after = true;
-    else { fprintf(stderr, "uso: cactus-galaxy-wrapper [--smg <carpeta smg>] [--auto] [--delete-image] | --demo <carpeta>\n"); return 2; }
+    else { fprintf(stderr, "uso: cactus-galaxy-wrapper [--smg <carpeta smg>] [--auto] [--delete-image] [--lang es|en|fr|pt|it|de] | --demo <carpeta>\n"); return 2; }
   }
+  const std::string ui_source = detect_ui_language();
+  printf("[cactus] idioma de la interfaz: %s (%s)\n", kUiCodes[g_ui], ui_source.c_str());
+  if (!demo_dir.empty()) return demo(demo_dir);
   app.gamedata = app.smg + "/gamedata";
   mkdir(app.gamedata.c_str(), 0755);
   app.output = app.gamedata + "/game.pak";
   app.language_file = app.smg + "/idioma.txt";
+  app.refresh_disk();
   app.load_language();
   app.tool = dir_of_exe() + "/nebula-pak";
   if (access(app.tool.c_str(), X_OK) != 0) app.tool = app.smg + "/nebula-pak";
