@@ -1,15 +1,14 @@
-# nebula-pak for the RG35XX H (and any ARM64 Linux): a static aarch64-musl binary, so the smg port can turn the
-# player's ISO/RVZ into game.pak on the console itself. Run it from the Actions tab ("Run workflow") or by pushing a
-# change to crates/; the binary is the "nebula-pak-aarch64" artifact.
+# nebula-pak nativo (platform/knulli/pak, C++, sin Rust): lo que el port de Super Mario Galaxy usa en la RG35XX H para
+# convertir el ISO/RVZ del jugador en game.pak en la propia consola. Comprueba los discos de prueba (ISO, GCZ, RVZ) en
+# x86-64 y compila el binario aarch64 (artefacto "nebula-pak-aarch64"; el port ya lo trae en smg/nebula-pak).
 name: nebula-pak (consola ARM64)
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "crates/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
+      - "platform/knulli/pak/**"
+      - "third_party/disc/**"
       - ".github/workflows/nebula-pak-consola.yml"
 
 jobs:
@@ -17,18 +16,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Rust
-        run: rustup toolchain install stable --profile minimal && rustup default stable
-      - name: cross (Docker toolchains)
-        run: cargo install cross --version 0.2.5 --locked
-      - name: Build nebula-pak (aarch64-unknown-linux-musl, static)
-        run: cross build --release --locked --target aarch64-unknown-linux-musl -p nebula-import --bin nebula-pak
-      - name: Package
+      - name: Tools
         run: |
-          mkdir -p out
-          cp target/aarch64-unknown-linux-musl/release/nebula-pak out/
+          sudo apt-get update
+          sudo apt-get install -y ninja-build g++-aarch64-linux-gnu zstd python3-cryptography
+      - name: Tests (x86-64)
+        run: |
+          cmake -S platform/knulli/pak -B build-x64 -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-x64
+          platform/knulli/pak/tests/run_tests.sh build-x64/nebula-pak "$RUNNER_TEMP/paktest" "$(command -v zstd)"
+      - name: Build (aarch64)
+        run: |
+          cmake -S platform/knulli/pak -B build-a64 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+            -DCMAKE_C_FLAGS=-mcpu=cortex-a53 -DCMAKE_CXX_FLAGS=-mcpu=cortex-a53
+          cmake --build build-a64
+          mkdir -p out && aarch64-linux-gnu-strip -o out/nebula-pak build-a64/nebula-pak
           file out/nebula-pak
-          ls -la out
       - uses: actions/upload-artifact@v4
         with:
           name: nebula-pak-aarch64

@@ -4,10 +4,12 @@ Super Mario Galaxy con gráficos en la consola: el código descompilado de Petar
 de Nebula y su renderer GX en OpenGL ES 3.2 (Mali-G31). Primera versión de prueba.
 
 1. Copia `Super Mario Galaxy.sh` y la carpeta `smg/` a `ports` (el zip ya viene así: se descomprime dentro de `ports`).
-2. El juego: tu disco (ISO, RVZ, WIA, WBFS, GCZ o CISO) o el `game.pak` hecho de él, en `smg/gamedata/`.
-   - En la consola: con `smg/nebula-pak` (el artefacto `nebula-pak-aarch64` del workflow "nebula-pak (consola ARM64)"
-     de GitHub Actions) el primer arranque convierte la imagen en `game.pak` (`smg/smg-pak.sh`; varios minutos).
-   - En Termux, Linux o macOS: `bash tools/smg-pak.sh <imagen> [carpeta smg]` (compila `nebula-pak` si hace falta).
+2. El juego: pon tu disco (ISO, RVZ, WIA, WBFS, GCZ o CISO) en `smg/gamedata/` y ejecuta el port. El primer arranque
+   lo convierte ahí mismo en `smg/gamedata/game.pak` con `smg/nebula-pak` (nativo, viene en el port: no hace falta
+   Termux ni otro equipo). El avance sale en pantalla; tarda lo que la tarjeta en escribir ~4 GB (unos minutos) y
+   hacen falta ~3.4 GB libres (ext4) o ~4.3 GB (exFAT; FAT32 no sirve: no admite ficheros de más de 4 GB).
+   `NEBULA_PAK_DELETE_IMAGE=1` en el lanzador borra la imagen al terminar. Solo vale el disco USA (RMGE01).
+   - También se puede hacer fuera: `bash tools/smg-pak.sh <imagen> [carpeta smg]` en Termux, Linux o macOS.
 3. Ejecuta **Super Mario Galaxy** desde Ports. MENU (Function) + START sale, como en el resto de KNULLI.
 4. Portada y ficha: el primer arranque con red baja la portada, la captura y la pantalla de título de
    libretro-thumbnails a `smg/` y escribe la ficha (descripción, desarrollador, fecha...) en `ports/gamelist.xml`

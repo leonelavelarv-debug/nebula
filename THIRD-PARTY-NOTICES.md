@@ -76,6 +76,10 @@ in `runtime/src/ppc_float.cpp` is used under GPL version 3.
   Copyright 2018, 2021 Dolphin Emulator Project.
 - `third_party/dolphin-free-dsp-rom/` holds the project's replacement DSP instruction and coefficient
   ROMs. Source, revision, hashes and license texts are in that folder's `README.md`.
+- `platform/knulli/pak/nebula_pak.cpp` (the console's native `nebula-pak`) ports the WIA/RVZ, WBFS, CISO and GCZ
+  reading of `Source/Core/DiscIO` (`WIABlob.cpp`, `WIACompression.cpp`, `WbfsBlob.cpp`, `CISOBlob.cpp`,
+  `CompressedBlob.cpp`; revision `e1d35f666cc35f6ead55d32ea2679df44d04da72`) and follows `docs/WiaAndRvz.md`; its padding generator follows
+  `LaggedFibonacciGenerator.cpp` (CC0-1.0). Copyright Dolphin Emulator Project.
 
 These files are used under GPL version 3 in this `GPL-3.0-only` work.
 
@@ -151,6 +155,13 @@ BSD-3-Clause, Zlib, Unlicense or Unicode-3.0 terms, and the C libraries zstd (BS
 liblzma (0BSD) and bzip2 (bzip2 license). Their license texts are in
 [docs/licenses/rust-dependencies.txt](docs/licenses/rust-dependencies.txt), which is installed with
 Nebula. The `nod` and `powerpc` crates ship no license file; both declare `MIT OR Apache-2.0`.
+
+## Console nebula-pak decompressors
+
+The native `nebula-pak` of the RG35XX H port (`platform/knulli/pak`) links, compiled from source: Zstandard 1.5.7
+decompression (`third_party/disc/zstd`, BSD-3-Clause, Copyright (c) Meta Platforms, Inc. and affiliates), bzip2
+1.1.0 (`third_party/disc/bzip2`, bzip2 license, Copyright (C) 1996-2010 Julian Seward), and zlib and liblzma from
+`third_party/archive` (Zlib; 0BSD). Their license files are in those folders and ship in the port's `licenses/`.
 
 ## Vulkan renderer libraries
 

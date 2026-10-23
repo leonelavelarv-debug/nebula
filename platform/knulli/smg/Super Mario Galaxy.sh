@@ -17,9 +17,9 @@ cd "$GAMEDIR" || exit 1
 exec > >(tee "$GAMEDIR/log.txt") 2>&1
 chmod +x "$GAMEDIR/nebula"
 echo "nebula: $(md5sum "$GAMEDIR/nebula" | cut -c1-12) del $(date -r "$GAMEDIR/nebula" '+%F %T' 2>/dev/null)"
-# Sin game.pak pero con tu disco (ISO, RVZ, WIA, WBFS, GCZ o CISO) en gamedata/: se convierte aqui una vez (necesita
-# smg/nebula-pak; tarda varios minutos y la pantalla puede quedarse en negro). NEBULA_PAK_DELETE_IMAGE=1 borra la imagen
-# despues.
+# Sin game.pak pero con tu disco (ISO, RVZ, WIA, WBFS, GCZ o CISO) en gamedata/: se convierte aqui una vez con
+# smg/nebula-pak (nativo, va en el port: sin Termux ni otro equipo). Tarda unos minutos (lo que tarda la tarjeta en
+# escribir ~4 GB) y el avance sale en pantalla. NEBULA_PAK_DELETE_IMAGE=1 borra la imagen despues.
 screen_message() {
   echo "$1"
   if type pm_message >/dev/null 2>&1; then pm_message "$1"; else
@@ -31,12 +31,31 @@ if [ ! -f "$GAMEDIR/gamedata/game.pak" ] && [ -x "$GAMEDIR/nebula-pak" ] && [ -f
   image=$(find "$GAMEDIR/gamedata" -maxdepth 1 -type f \( -iname '*.iso' -o -iname '*.rvz' -o -iname '*.wia' \
     -o -iname '*.wbfs' -o -iname '*.gcz' -o -iname '*.ciso' \) 2>/dev/null | head -1)
   if [ -n "$image" ]; then
-    screen_message "Super Mario Galaxy: preparando game.pak desde $(basename "$image") (solo la primera vez, varios minutos)..."
-    if bash "$GAMEDIR/smg-pak.sh" "$image" "$GAMEDIR"; then
+    name=$(basename "$image")
+    screen_message "Super Mario Galaxy: preparando game.pak desde $name (solo la primera vez, unos minutos)..."
+    shown=-1
+    rm -f /tmp/smg-pak-error
+    bash "$GAMEDIR/smg-pak.sh" "$image" "$GAMEDIR" 2>&1 | while IFS= read -r line; do
+      echo "$line"
+      case "$line" in
+        *%*MiB*)  # "37% (1234 / 3300 MiB)": la pantalla cada 2 %
+          percent=${line%%%*}; percent=${percent// /}
+          case "$percent" in ''|*[!0-9]*) continue ;; esac
+          if [ $((percent - shown)) -ge 2 ] || [ "$percent" = 100 ]; then
+            shown=$percent
+            screen_message "Super Mario Galaxy: preparando game.pak desde $name
+$line
+(solo la primera vez; no apagues la consola)"
+          fi ;;
+        ERROR*|Error*) echo "$line" > /tmp/smg-pak-error ;;
+      esac
+    done
+    if [ "${PIPESTATUS[0]}" = 0 ] && [ -f "$GAMEDIR/gamedata/game.pak" ]; then
       screen_message "game.pak listo."
       [ "${NEBULA_PAK_DELETE_IMAGE:-0}" = "1" ] && rm -f "$image"
     else
-      screen_message "No se pudo hacer game.pak (mira smg/log.txt)."
+      screen_message "No se pudo hacer game.pak: $(cat /tmp/smg-pak-error 2>/dev/null || echo 'mira smg/log.txt')"
+      sleep 8
     fi
   fi
 fi
