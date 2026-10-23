@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Where the busy threads spend their time, without a profiler (sdl_host.h, start_thread_sampler): Android only, when
-// `adb shell setprop debug.nebula.profile <seconds>` asks for it.
+// Where the busy threads spend their time, without a profiler (sdl_host.h, start_thread_sampler): on Android when
+// `adb shell setprop debug.nebula.profile <seconds>` asks for it; on KNULLI (NEBULA_HOST_SDL2) when NEBULA_PROFILE=<seconds>
+// does, then again every 30 s, three times in all.
 
 #include "sdl_host.h"
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(NEBULA_HOST_SDL2)
+#define NEBULA_THREAD_SAMPLER 1
+#endif
+
+#if defined(NEBULA_THREAD_SAMPLER)
 #include <dirent.h>
 #include <dlfcn.h>
 #include <link.h>
 #include <signal.h>
 #include <sys/prctl.h>
+#if defined(__ANDROID__)
 #include <sys/system_properties.h>
+#endif
 #include <sys/syscall.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -31,7 +38,7 @@
 
 namespace galaxy::sdl {
 
-#if defined(__ANDROID__)
+#if defined(NEBULA_THREAD_SAMPLER)
 
 namespace {
 
@@ -170,16 +177,25 @@ void sample(pid_t tid, const std::string& name) {
 }  // namespace
 
 void start_thread_sampler() noexcept {
+#if defined(__ANDROID__)
     char value[PROP_VALUE_MAX]{};
     if (__system_property_get("debug.nebula.profile", value) <= 0) {
         return;
     }
+    const int rounds = 1;
+#else
+    const char* value = std::getenv("NEBULA_PROFILE");
+    if (value == nullptr || value[0] == '\0') {
+        return;
+    }
+    const int rounds = 3;
+#endif
     const int delay = std::max(1, std::atoi(value));
     // libc's loaded extent, so the walk can step over it (memcpy and friends).
     dl_iterate_phdr(
         [](dl_phdr_info* object, std::size_t, void*) -> int {
             const char* name = object->dlpi_name != nullptr ? std::strrchr(object->dlpi_name, '/') : nullptr;
-            if (name == nullptr || std::strcmp(name, "/libc.so") != 0) {
+            if (name == nullptr || (std::strcmp(name, "/libc.so") != 0 && std::strcmp(name, "/libc.so.6") != 0)) {
                 return 0;
             }
             std::uintptr_t end = 0;
@@ -194,19 +210,25 @@ void start_thread_sampler() noexcept {
             return 1;
         },
         nullptr);
-    std::thread([delay] {
+    std::thread([delay, rounds] {
         prctl(PR_SET_NAME, "Nebula Sampler");
         struct sigaction action {};
         action.sa_sigaction = on_sample;
         action.sa_flags = SA_SIGINFO | SA_RESTART;
         sigaction(SIGPROF, &action, nullptr);
         std::this_thread::sleep_for(std::chrono::seconds(delay));
-        for (const char* prefix : {"Nebula GX", "Nebula Host Mai", "Nebula Game"}) {
-            for (const auto& [tid, name] : threads_named(prefix)) {
-                sample(tid, name);
+        for (int round = 0; round < rounds; ++round) {
+            if (round != 0) {
+                std::this_thread::sleep_for(std::chrono::seconds(30));
             }
+            std::fprintf(stderr, "[sampler] round %d\n", round + 1);
+            for (const char* prefix : {"Nebula GX", "Nebula Host Mai", "Nebula Game"}) {
+                for (const auto& [tid, name] : threads_named(prefix)) {
+                    sample(tid, name);
+                }
+            }
+            std::fflush(stderr);
         }
-        std::fflush(stderr);
     }).detach();
 }
 
