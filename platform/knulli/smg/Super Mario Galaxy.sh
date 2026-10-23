@@ -22,6 +22,10 @@ if [ ! -f "$GAMEDIR/gamedata/game.pak" ]; then
   pm_finish; exit 1
 fi
 mkdir -p "$GAMEDIR/nand" "$GAMEDIR/data" "$GAMEDIR/crashes"
+# Portada y ficha en Ports (la primera vez con red; luego no hace nada): en segundo plano, el juego no espera.
+if command -v python3 >/dev/null 2>&1 && [ -f "$GAMEDIR/gamelist.py" ]; then
+  python3 "$GAMEDIR/gamelist.py" "$GAMEDIR" &
+fi
 
 # Ajustes (se pueden cambiar aqui):
 #   NEBULA_PERFIL=bajo|normal            bajo (por defecto): pocos recursos -- salta frames cuando el render no llega
@@ -49,8 +53,8 @@ export NEBULA_DATA_DIR="$GAMEDIR/data"
 export GALAXY_CRASH_DUMP_DIR="$GAMEDIR/crashes"
 export GALAXY_RUNTIME_SETTINGS_PATH="$GAMEDIR/settings.ini"
 export GALAXY_GLES_PENDING="${GALAXY_GLES_PENDING:-wait}"
-#   GALAXY_GLES_RESOLUTION=50            resolucion interna en %: 50 = 320x264 (mas rapido), 75 = 480x396, 100 = 640x528
-export GALAXY_GLES_RESOLUTION="${GALAXY_GLES_RESOLUTION:-50}"
+#   GALAXY_GLES_RESOLUTION=75            resolucion interna en %: 75 = 480x396; 50 = 320x264 (mas rapido); 100 = 640x528
+export GALAXY_GLES_RESOLUTION="${GALAXY_GLES_RESOLUTION:-75}"
 #   GALAXY_GLES_SHARPEN=0.8              nitidez al ampliar la imagen interna (0: apagada, 0.5 suave, 1.5 fuerte; sin halos)
 export GALAXY_GLES_SHARPEN="${GALAXY_GLES_SHARPEN:-0.8}"
 export NEBULA_PAD_SCHEME="${NEBULA_PAD_SCHEME:-nintendo}"
