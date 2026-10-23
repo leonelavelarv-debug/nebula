@@ -156,6 +156,22 @@ bool RendererGles::initialize(int window_width, int window_height, unsigned efb_
                     break;
                 }
             }
+            // GALAXY_GLES_PEEK_FIELD: the async peek fields' size in percent (down to the next whole size).
+            peek_field_num_ = efb_num_;
+            peek_field_den_ = efb_den_;
+            if (const char* field = std::getenv("GALAXY_GLES_PEEK_FIELD"); field != nullptr && efb_scale_ == 1u) {
+                for (unsigned p = std::clamp<unsigned>(static_cast<unsigned>(std::strtoul(field, nullptr, 10)), 5u, 100u);
+                     p >= 5u; --p) {
+                    const unsigned g = std::gcd(p, 100u);
+                    if (kEfbWidth * (p / g) % (100u / g) == 0u && kEfbHeight * (p / g) % (100u / g) == 0u) {
+                        peek_field_num_ = p / g;
+                        peek_field_den_ = 100u / g;
+                        break;
+                    }
+                }
+                std::fprintf(stderr, "[gles] peek fields %ux%u\n", kEfbWidth * peek_field_num_ / peek_field_den_,
+                             kEfbHeight * peek_field_num_ / peek_field_den_);
+            }
         }
         if (!create_efb(efb_scale_) || !create_utility_programs()) {
             shutdown();
@@ -1502,7 +1518,7 @@ void RendererGles::ensure_readback(Readback& readback, std::size_t bytes, std::s
 
 void RendererGles::record_peek_field(gles::Texture& target, EfbPeekKind kind,
                                      const EfbConversionShaderConstants& constants, unsigned width, unsigned height,
-                                     Readback& readback) {
+                                     Readback& readback, bool reduced) {
     ++window_stats_.peeks;
     gpu_part(kGpuPeeks);
     const GLuint framebuffer = framebuffer_for(target);
@@ -1511,17 +1527,26 @@ void RendererGles::record_peek_field(gles::Texture& target, EfbPeekKind kind,
     // A whole field of a divided EFB repeats physical texels over several logical pixels. Convert one texel per
     // physical texel instead and expand on the CPU: less GPU work and less of the uncached readback.
     const bool field = constants.values[15] < 0.0f;
-    const bool expand = field && efb_divided() && width * efb_num_ % efb_den_ == 0u &&
-        height * efb_num_ % efb_den_ == 0u;
-    if (expand) {
-        physical.values[2] = 1.0f;  // one physical texel a destination pixel
-        physical.values[3] = 1.0f;
+    // An async peek field may be read coarser still (GALAXY_GLES_PEEK_FIELD, percent of the Wii's size): one texel
+    // a block of the EFB, depth from its first texel and colour averaged; the game's peeks then read the block.
+    unsigned num = efb_num_;
+    unsigned den = efb_den_;
+    if (reduced && peek_field_num_ * efb_den_ < efb_num_ * peek_field_den_) {
+        num = peek_field_num_;
+        den = peek_field_den_;
     }
-    const unsigned read_width = expand ? width * efb_num_ / efb_den_ : width;
-    const unsigned read_height = expand ? height * efb_num_ / efb_den_ : height;
+    const bool expand = field && (num != 1u || den != 1u) && width * num % den == 0u && height * num % den == 0u;
+    if (expand) {
+        // Physical texels a field texel: (efb num/den) / (field num/den).
+        const float step = static_cast<float>(efb_num_ * den) / static_cast<float>(efb_den_ * num);
+        physical.values[2] = step;
+        physical.values[3] = step;
+    }
+    const unsigned read_width = expand ? width * num / den : width;
+    const unsigned read_height = expand ? height * num / den : height;
     readback.expand = expand;
-    readback.num = efb_num_;
-    readback.den = efb_den_;
+    readback.num = num;
+    readback.den = den;
     readback.width = read_width;
     readback.height = read_height;
     conversion_draw(framebuffer, read_width, read_height, kind == EfbPeekKind::Depth, physical);
@@ -1705,7 +1730,7 @@ std::uint64_t RendererGles::submit_async_peek_field(std::size_t channel, EfbPeek
     EfbConversionShaderConstants constants =
         make_efb_peek_conversion_constants(compute_efb_peek_sampling_geometry(0u, 0u, efb_scale_), kind);
     constants.values[15] = -1.0f;
-    record_peek_field(*field.target, kind, constants, kEfbWidth, kEfbHeight, field.readbacks[slot]);
+    record_peek_field(*field.target, kind, constants, kEfbWidth, kEfbHeight, field.readbacks[slot], true);
     field.readbacks[slot].fence = gles::Context::get().submit();
     field.fence = field.readbacks[slot].fence;
     field.pending_slot = slot;
@@ -1721,7 +1746,7 @@ bool RendererGles::record_async_peek_field_in_frame(std::size_t channel, EfbPeek
     EfbConversionShaderConstants constants =
         make_efb_peek_conversion_constants(compute_efb_peek_sampling_geometry(0u, 0u, efb_scale_), kind);
     constants.values[15] = -1.0f;
-    record_peek_field(*field.target, kind, constants, kEfbWidth, kEfbHeight, field.readbacks[slot]);
+    record_peek_field(*field.target, kind, constants, kEfbWidth, kEfbHeight, field.readbacks[slot], true);
     field.fence = kAsyncPeekInFrame;  // fenced at end_frame
     field.pending_slot = slot;
     return true;

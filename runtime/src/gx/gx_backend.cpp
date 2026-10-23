@@ -11506,6 +11506,9 @@ void GxBackend::submit_async_peek_fields_if_requested() {
             // Keep the request alive for the next rendered chunk.
             continue;
         }
+        if (async_peek_field_unchanged(state)) {
+            continue;  // the published field already shows this EFB; asked again once a frame is drawn
+        }
         state.requested.store(false, std::memory_order_relaxed);
         // Never the published slot: a reader may be converting its pixel.
         const std::uint64_t published = state.published.load(std::memory_order_relaxed);
@@ -11514,6 +11517,7 @@ void GxBackend::submit_async_peek_fields_if_requested() {
         const std::uint32_t generation = state.generation.load(std::memory_order_acquire);
         if (renderer_.submit_async_peek_field(
                 index, async_peek_key_kind(key), static_cast<std::size_t>(slot)) != 0u) {
+            note_async_peek_field_capture(state);
             // The slot pointers are fixed once the resources exist; record
             // them before the first publication so readers never race a write.
             if (state.rgba[0] == nullptr) {
@@ -17643,6 +17647,7 @@ void GxBackend::frameskip_after_display_copy() {
         ++frameskip_run_;
     } else {
         frameskip_run_ = 0u;
+        ++frameskip_draw_serial_;
     }
     const std::int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -17750,7 +17755,8 @@ void GxBackend::record_async_peek_fields_at_token(std::uint16_t token) {
         AsyncPeekFieldState& state = async_peek_[index];
         const std::uint32_t key = state.key.load(std::memory_order_acquire);
         if (key == kAsyncPeekUnbound || (key & 0xFFFFu) != token ||
-            !state.requested.load(std::memory_order_acquire) || renderer_.async_peek_field_pending(index)) {
+            !state.requested.load(std::memory_order_acquire) || renderer_.async_peek_field_pending(index) ||
+            async_peek_field_unchanged(state)) {
             continue;
         }
         // Never the published slot: a reader may be converting its pixel.
@@ -17760,6 +17766,7 @@ void GxBackend::record_async_peek_fields_at_token(std::uint16_t token) {
         const std::uint32_t generation = state.generation.load(std::memory_order_acquire);
         if (renderer_.record_async_peek_field_in_frame(
                 index, async_peek_key_kind(key), static_cast<std::size_t>(slot))) {
+            note_async_peek_field_capture(state);
             state.requested.store(false, std::memory_order_relaxed);
             if (state.rgba[0] == nullptr) {
                 for (std::size_t i = 0; i < state.rgba.size(); ++i) {

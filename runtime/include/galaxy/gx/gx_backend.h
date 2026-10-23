@@ -1561,6 +1561,10 @@ private:
         std::atomic<std::uint64_t> published_answers{0};
         std::uint64_t last_request = 0;  // simulation thread
         std::uint64_t completed = 0;
+        // Render thread: a field taken while frames are skipped shows the last drawn frame; until another frame is
+        // drawn a new one would be the same picture.
+        bool captured_while_skipping = false;
+        std::uint64_t captured_draw_serial = 0;
     };
     static constexpr std::uint32_t async_peek_key(EfbPeekKind kind, std::uint16_t token) noexcept {
         return (kind == EfbPeekKind::Depth ? 0u : 0x10000u) | token;
@@ -2158,6 +2162,16 @@ private:
     std::uint64_t frameskip_frames_ = 0;
     std::uint64_t frameskip_skipped_ = 0;
     std::uint64_t frameskip_draws_ = 0;
+    std::uint64_t frameskip_draw_serial_ = 0;  // drawn frames so far (the EFB changes only in those)
+    // A field of this channel would repeat the last one (frames skipped since it was taken).
+    [[nodiscard]] bool async_peek_field_unchanged(const AsyncPeekFieldState& state) const noexcept {
+        return frameskip_skipping_ && state.captured_while_skipping &&
+            state.captured_draw_serial == frameskip_draw_serial_;
+    }
+    void note_async_peek_field_capture(AsyncPeekFieldState& state) noexcept {
+        state.captured_while_skipping = frameskip_skipping_;
+        state.captured_draw_serial = frameskip_draw_serial_;
+    }
 
     // Bring-up stats, reported every 300 frames.
     std::uint64_t stat_draws_issued_ = 0;

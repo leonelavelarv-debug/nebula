@@ -368,7 +368,7 @@ private:
                                 float src_x, float src_y, float step_x, float step_y, float filter_row_offset);
     // The peek conversion of a whole 640x528 field (or one pixel) into `target`, read into `readback`.
     void record_peek_field(gles::Texture& target, EfbPeekKind kind, const EfbConversionShaderConstants& constants,
-                           unsigned width, unsigned height, Readback& readback);
+                           unsigned width, unsigned height, Readback& readback, bool reduced = false);
     bool complete_readback(Readback& readback);
     void ensure_readback(Readback& readback, std::size_t bytes, std::size_t data_bytes);
     void report_stats();
@@ -388,6 +388,8 @@ private:
     // GALAXY_GLES_RESOLUTION (percent) or GALAXY_GLES_EFB_DIVISOR: the EFB is num/den of the Wii's size a side.
     unsigned efb_num_ = 1;
     unsigned efb_den_ = 1;
+    unsigned peek_field_num_ = 1;  // GALAXY_GLES_PEEK_FIELD: the async peek fields' size, num/den of the Wii's
+    unsigned peek_field_den_ = 1;
     gpu::TextureRef efb_color_;
     gpu::TextureRef efb_depth_;
     GLuint efb_framebuffer_ = 0;

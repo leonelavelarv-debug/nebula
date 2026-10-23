@@ -39,6 +39,8 @@ if [ "$NEBULA_PERFIL" = "bajo" ]; then
   #   GALAXY_PEEK_MODE=async|sync|off    lo que el juego lee de la imagen (destellos del sol, puntero): async usa el
   #                                      frame anterior sin esperar a la GPU; sync espera (exacto, lento); off no lee
   export GALAXY_PEEK_MODE="${GALAXY_PEEK_MODE:-async}"
+  #   GALAXY_GLES_PEEK_FIELD=25          esas lecturas a 160x132 (25 %): se copian de la GPU 20 veces menos bytes
+  export GALAXY_GLES_PEEK_FIELD="${GALAXY_GLES_PEEK_FIELD:-25}"
   export GALAXY_GX_DISPLAY_LIST_CACHE_MB="${GALAXY_GX_DISPLAY_LIST_CACHE_MB:-192}"
   export GALAXY_EFB_COPY_DEST_BUDGET_MB="${GALAXY_EFB_COPY_DEST_BUDGET_MB:-64}"
   export GALAXY_TEXTURE_POOL_MB="${GALAXY_TEXTURE_POOL_MB:-128}"
