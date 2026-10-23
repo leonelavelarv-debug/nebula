@@ -4,8 +4,8 @@
 #
 # La portada, la captura y la pantalla de titulo vienen de libretro-thumbnails (las que usa RetroArch) y se bajan
 # una vez a esta carpeta; la ficha (nombre, descripcion, desarrollador...) se escribe en ../gamelist.xml, la de
-# Ports, sin tocar las demas entradas ni lo que EmulationStation guarda (veces jugado, ultima vez...).
-# EmulationStation la lee al arrancar o con "Actualizar listas de juegos". Uso: gamelist.py <carpeta smg>
+# Ports a traves de la API local de EmulationStation (la carga en memoria y la guarda el); si no contesta, en
+# ../gamelist.xml directamente, sin tocar las demas entradas. Uso: gamelist.py <carpeta smg>
 import os
 import shutil
 import subprocess
@@ -46,7 +46,8 @@ def log(text):
 
 def fetch(folder, target):
     """Baja una imagen de libretro-thumbnails si aun no esta (urllib, si no curl o wget)."""
-    if os.path.isfile(target) and os.path.getsize(target) > 1024:
+    stand_in = target + ".captura"  # a shot of the game stands in until the real picture comes
+    if os.path.isfile(target) and os.path.getsize(target) > 1024 and not os.path.exists(stand_in):
         return True
     name = urllib.parse.quote(NAME + ".png")
     partial = target + ".part"
@@ -70,11 +71,66 @@ def fetch(folder, target):
             is_png = False
         if is_png and os.path.getsize(partial) > 1024:
             os.replace(partial, target)
+            if os.path.exists(stand_in):
+                os.remove(stand_in)
             log("%s descargada" % os.path.basename(target))
             return True
         if os.path.exists(partial):
             os.remove(partial)
     log("no se pudo bajar %s (sin red?); se intenta en el proximo arranque" % os.path.basename(target))
+    return False
+
+
+def ppm_to_png(source, target):
+    """A shot the game took (shots/present_N.ppm, P6) as a PNG, so Ports has a picture without the network."""
+    import struct
+    import zlib
+    with open(source, "rb") as f:
+        data = f.read()
+    fields, pos = [], 0
+    while len(fields) < 4:  # magic, width, height, maximum
+        while data[pos:pos + 1].isspace():
+            pos += 1
+        if data[pos:pos + 1] == b"#":
+            pos = data.index(b"\n", pos) + 1
+            continue
+        end = pos
+        while not data[end:end + 1].isspace():
+            end += 1
+        fields.append(data[pos:end])
+        pos = end
+    if fields[0] != b"P6" or int(fields[3]) != 255:
+        return False
+    width, height = int(fields[1]), int(fields[2])
+    pixels = data[pos + 1:pos + 1 + width * height * 3]
+    if len(pixels) != width * height * 3:
+        return False
+    raw = b"".join(b"\x00" + pixels[y * width * 3:(y + 1) * width * 3] for y in range(height))
+    chunk = lambda kind, body: struct.pack(">I", len(body)) + kind + body + \
+        struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + \
+        chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b"")
+    with open(target + ".part", "wb") as f:
+        f.write(png)
+    os.replace(target + ".part", target)
+    return True
+
+
+def own_shot(smg, target):
+    """The latest shot of this game, if there is one (taken every 30 s while playing)."""
+    shots = os.path.join(smg, "shots")
+    try:
+        names = [n for n in os.listdir(shots) if n.endswith(".ppm")]
+    except OSError:
+        return False
+    names.sort(key=lambda n: os.path.getmtime(os.path.join(shots, n)))
+    for name in reversed(names[1:] if len(names) > 1 else names):  # not the first: often the boot screen
+        try:
+            if ppm_to_png(os.path.join(shots, name), target):
+                log("sin portada descargada: se usa la captura %s" % name)
+                return True
+        except (OSError, ValueError, IndexError):
+            continue
     return False
 
 
@@ -93,6 +149,39 @@ def main():
     ports = os.path.dirname(smg)
     folder = os.path.basename(smg)
     have = {f: fetch(d, os.path.join(smg, f)) for f, d in MEDIA.items()}
+    if not have["cover.png"] and own_shot(smg, os.path.join(smg, "captura.png")):
+        os.replace(os.path.join(smg, "captura.png"), os.path.join(smg, "cover.png"))
+        open(os.path.join(smg, "cover.png.captura"), "w").close()
+        have["cover.png"] = True
+
+    # The entry, with absolute paths (EmulationStation stores them relative to Ports).
+    entry = ET.Element("game")
+    set_text(entry, "path", os.path.join(ports, GAME_SCRIPT[2:]))
+    for tag, value in INFO.items():
+        set_text(entry, tag, value)
+    if have["cover.png"]:
+        for tag in ("image", "thumbnail", "boxart"):
+            set_text(entry, tag, os.path.join(smg, "cover.png"))
+    if have["title.png"]:
+        set_text(entry, "titleshot", os.path.join(smg, "title.png"))
+    if have["screenshot.png"]:
+        set_text(entry, "fanart", os.path.join(smg, "screenshot.png"))
+
+    # EmulationStation keeps the game list in memory and, after a game, saves its own copy of the game's entry over
+    # the file: an entry only written to gamelist.xml is lost. Its local API (127.0.0.1:1234, what Batocera's
+    # scrapers use) takes the entry into memory and saves the file itself.
+    body = b"<?xml version=\"1.0\"?>\n<gameList>" + ET.tostring(entry, encoding="utf-8") + b"</gameList>"
+    try:
+        request = urllib.request.Request("http://127.0.0.1:1234/addgames/ports", data=body, method="POST",
+                                         headers={"Content-Type": "application/xml"})
+        with urllib.request.urlopen(request, timeout=10) as reply:
+            status = reply.status
+        if 200 <= status < 300:
+            log("ficha y portada dadas a EmulationStation (%d); aparecen en Ports" % status)
+            return 0
+        log("EmulationStation contesto %d; se escribe gamelist.xml" % status)
+    except Exception as failure:
+        log("EmulationStation no contesta (%s); se escribe gamelist.xml" % failure)
 
     gamelist = os.path.join(ports, "gamelist.xml")
     try:
@@ -107,24 +196,20 @@ def main():
     game = None
     for candidate in root.findall("game"):
         path = (candidate.findtext("path") or "").strip()
-        if os.path.normpath(path.lstrip("./")) == os.path.normpath(GAME_SCRIPT.lstrip("./")) or \
-                os.path.normpath(os.path.join(ports, path)) == os.path.join(ports, GAME_SCRIPT[2:]):
+        if os.path.normpath(os.path.join(ports, path)) == os.path.join(ports, GAME_SCRIPT[2:]):
             game = candidate
             break
     changed = game is None
     if game is None:
         game = ET.SubElement(root, "game")
         set_text(game, "path", GAME_SCRIPT)
-    for tag, value in INFO.items():
-        changed |= set_text(game, tag, value)
-    rel = lambda f: "./%s/%s" % (folder, f)
-    if have["cover.png"]:
-        for tag in ("image", "thumbnail", "boxart"):
-            changed |= set_text(game, tag, rel("cover.png"))
-    if have["title.png"]:
-        changed |= set_text(game, "titleshot", rel("title.png"))
-    if have["screenshot.png"]:
-        changed |= set_text(game, "fanart", rel("screenshot.png"))
+    for child in entry:
+        if child.tag == "path":
+            continue
+        value = child.text
+        if value.startswith(smg + os.sep):
+            value = "./%s/%s" % (folder, os.path.basename(value))
+        changed |= set_text(game, child.tag, value)
     if not changed:
         log("la ficha de Ports ya esta al dia")
         return 0

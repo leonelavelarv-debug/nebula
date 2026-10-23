@@ -8,8 +8,9 @@ de Nebula y su renderer GX en OpenGL ES 3.2 (Mali-G31). Primera versión de prue
 3. Ejecuta **Super Mario Galaxy** desde Ports. MENU (Function) + START sale, como en el resto de KNULLI.
 4. Portada y ficha: el primer arranque con red baja la portada, la captura y la pantalla de título de
    libretro-thumbnails a `smg/` y escribe la ficha (descripción, desarrollador, fecha...) en `ports/gamelist.xml`
-   (`smg/gamelist.py`; la primera vez guarda una copia en `gamelist.xml.antes-smg`). Luego en EmulationStation:
-   START > Ajustes de juegos > Actualizar listas de juegos. `smg/gameinfo.xml` es la misma ficha para PortMaster.
+   (`smg/gamelist.py`; la primera vez guarda una copia en `gamelist.xml.antes-smg`). La ficha se da a EmulationStation por su API local (127.0.0.1:1234, la de los scrapers de Batocera) para que no
+   la pise al salir del juego; sin red, la portada es la última captura de `smg/shots/`. `smg/gameinfo.xml` es la
+   misma ficha para PortMaster.
 
 La primera vez cada efecto nuevo compila su shader y el juego se detiene un momento (tirones); se guardan en
 `smg/data/shadercache` y la siguiente vez cargan rápido.
