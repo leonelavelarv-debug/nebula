@@ -501,6 +501,15 @@ bool RendererGles::create_utility_programs() {
                                      0.0f, 2.0f);
     const char* aa_env = std::getenv("GALAXY_GLES_AA");
     const bool aa = aa_env != nullptr && aa_env[0] == '1';
+    // GALAXY_GLES_SHADOWS (0..1): the dark tones lifted (luma + s * luma * (1 - luma)^2, the hue kept), what a low
+    // resolution loses in the shadows; GALAXY_GLES_CONTRAST (-0.5..0.5): around mid grey, after it.
+    const auto env_float = [](const char* name, float fallback, float lo, float hi) {
+        const char* value = std::getenv(name);
+        return std::clamp(value != nullptr ? static_cast<float>(std::atof(value)) : fallback, lo, hi);
+    };
+    const float shadows = env_float("GALAXY_GLES_SHADOWS", 0.0f, 0.0f, 1.0f);
+    const float contrast = env_float("GALAXY_GLES_CONTRAST", 0.0f, -0.5f, 0.5f);
+    const bool grade = shadows > 0.0f || contrast != 0.0f;
     const auto build = [&](float strength, bool antialias, const char* what) -> GLuint {
         std::string source(efb_conversion_shader_source());
         const std::string tap = "tex_sample = srctex.SampleLevel(s_lin, sample_pos * inv, 0);";
@@ -539,6 +548,13 @@ bool RendererGles::create_utility_programs() {
                 const float3 blur = (nw.rgb + ne.rgb + sw.rgb + se.rgb) * 0.25;
                 tex_sample.rgb = clamp(tex_sample.rgb + STRENGTH * (tex_sample.rgb - blur), lo, hi);
             }
+            [branch] if (GRADE) {
+                const float l = dot(tex_sample.rgb, luma);
+                float graded = l + SHADOWS * l * (1.0 - l) * (1.0 - l);
+                graded = saturate((graded - 0.5) * (1.0 + CONTRAST) + 0.5);
+                tex_sample.rgb = l > 1.0 / 1024.0 ? saturate(tex_sample.rgb * (graded / l))
+                                                  : saturate(tex_sample.rgb + (graded - l));
+            }
         })HLSL";
         const auto replace_all = [](std::string& text, const std::string& from, const std::string& to) {
             for (std::size_t p = text.find(from); p != std::string::npos; p = text.find(from, p + to.size())) {
@@ -547,18 +563,25 @@ bool RendererGles::create_utility_programs() {
         };
         replace_all(filters, "ANTIALIAS", antialias ? "true" : "false");
         replace_all(filters, "STRENGTH", value);
+        char shadows_text[32], contrast_text[32];
+        std::snprintf(shadows_text, sizeof(shadows_text), "%.3f", static_cast<double>(shadows));
+        std::snprintf(contrast_text, sizeof(contrast_text), "%.3f", static_cast<double>(contrast));
+        replace_all(filters, "GRADE", grade ? "true" : "false");
+        replace_all(filters, "SHADOWS", shadows_text);
+        replace_all(filters, "CONTRAST", contrast_text);
         source.replace(at, tap.size(), filters);
         return build_utility_program(blit_vertex_shader_source(), source, what);
     };
-    if (conversion_program_ != 0u && (efb_divided() || !dynamic_levels_.empty()) && (sharpen > 0.0f || aa)) {
+    if (conversion_program_ != 0u && (efb_divided() || !dynamic_levels_.empty()) && (sharpen > 0.0f || aa || grade)) {
         xfb_program_ = build(sharpen, aa, "display copy (filtered)");
-        if (xfb_program_ != 0u) {
-            std::fprintf(stderr, "[gles] display copy filtered: sharpen %.2f, anti-aliasing %s\n",
-                         static_cast<double>(sharpen), aa ? "on" : "off");
-        }
     }
-    if (conversion_program_ != 0u && aa && (!efb_divided() || !dynamic_levels_.empty())) {
-        xfb_full_program_ = build(0.0f, true, "display copy (anti-aliased)");
+    if (conversion_program_ != 0u && (aa || grade) && (!efb_divided() || !dynamic_levels_.empty())) {
+        xfb_full_program_ = build(0.0f, aa, "display copy (filtered, 100 %)");
+    }
+    if (xfb_program_ != 0u || xfb_full_program_ != 0u) {
+        std::fprintf(stderr, "[gles] display copy filtered: sharpen %.2f (reduced resolution), anti-aliasing %s, "
+                     "shadows %.2f, contrast %.2f\n", static_cast<double>(sharpen), aa ? "on" : "off",
+                     static_cast<double>(shadows), static_cast<double>(contrast));
     }
     return conversion_program_ != 0u;
 }

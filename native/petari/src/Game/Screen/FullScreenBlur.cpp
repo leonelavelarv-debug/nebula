@@ -7,12 +7,17 @@
 #include "Game/Util/ScreenUtil.hpp"
 #include <JSystem/JUtility/JUTTexture.hpp>
 
+extern "C" u32 __NebulaEffectsOff(void);  // NEBULA_EFFECT_OFF_* bits (nebula_game_api.h)
+
 namespace MR {
     void drawFullScreenBlur(f32 param1) {
         drawFullScreenBlur(param1, param1, (s32)(param1 / 30.0f), (s32)((param1 / 30.0f) / 2.0f));
     }
 
     void drawFullScreenBlur(f32 param1, f32 param2, u8 param3, u8 param4) {
+        if ((__NebulaEffectsOff() & 4u) != 0u) {  // motion blur turned off
+            return;
+        }
         f32 screenWidth = MR::getScreenWidth();
 
         TDDraw::setup(1, 1, 2);

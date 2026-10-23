@@ -60,6 +60,15 @@ enum {
     NEBULA_SC_SPEAKER_VOLUME,       /* 0..127 */
     NEBULA_SC_MOTOR_MODE,           /* 0 rumble off, 1 on */
     NEBULA_SC_SCREEN_SAVER_MODE,    /* 0 off, 1 on: the screen dims after 5 idle minutes (the game lowers its volume) */
+    /* Not a Wii setting: the game's screen effects the player turned off, NEBULA_EFFECT_OFF_* bits (0: all on; a host
+       that does not know the item answers 0). */
+    NEBULA_SC_EFFECTS_OFF,
+};
+
+enum {
+    NEBULA_EFFECT_OFF_DEPTH_OF_FIELD = 1, /* ImageEffectDirector's depth of field (areas and cutscenes) */
+    NEBULA_EFFECT_OFF_SCREEN_BLUR = 2,    /* the screen blur areas */
+    NEBULA_EFFECT_OFF_MOTION_BLUR = 4,    /* the radial blur of a launch star's flight and Mario's full-screen blur */
 };
 
 /* A Wii Remote's connection: its EEPROM's first 0x2A bytes (DPD and accelerometer calibration), the attached extension

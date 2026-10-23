@@ -2067,6 +2067,24 @@ uint32_t svc_sc_get(void*, uint32_t item) {
         return 1;  // IPL.SSV
     case NEBULA_SC_MOTOR_MODE:
         return 1;
+    case NEBULA_SC_EFFECTS_OFF: {
+        // GALAXY_NO_DOF=1: no depth of field; GALAXY_NO_BLUR=1: no screen blur areas nor motion blur.
+        const auto on = [](const char* name) {
+            const char* value = std::getenv(name);
+            return value != nullptr && value[0] == '1';
+        };
+        uint32_t off = 0;
+        if (on("GALAXY_NO_DOF")) off |= NEBULA_EFFECT_OFF_DEPTH_OF_FIELD;
+        if (on("GALAXY_NO_BLUR")) off |= NEBULA_EFFECT_OFF_SCREEN_BLUR | NEBULA_EFFECT_OFF_MOTION_BLUR;
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            std::fprintf(stderr, "[game] screen effects off: depth of field %s, blur %s\n",
+                         (off & NEBULA_EFFECT_OFF_DEPTH_OF_FIELD) != 0u ? "yes" : "no",
+                         (off & NEBULA_EFFECT_OFF_MOTION_BLUR) != 0u ? "yes" : "no");
+        }
+        return off;
+    }
     default:
         return 0;
     }

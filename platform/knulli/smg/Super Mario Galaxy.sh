@@ -62,8 +62,14 @@ export GALAXY_GLES_RESOLUTION="${GALAXY_GLES_RESOLUTION:-auto}"
 export GALAXY_GLES_RESOLUTION_MIN="${GALAXY_GLES_RESOLUTION_MIN:-50}"
 export GALAXY_GLES_RESOLUTION_MAX="${GALAXY_GLES_RESOLUTION_MAX:-100}"
 export GALAXY_GLES_RESOLUTION_START="${GALAXY_GLES_RESOLUTION_START:-75}"
-#   GALAXY_GLES_SHARPEN=0.8              nitidez al ampliar la imagen interna (0: apagada, 0.5 suave, 1.5 fuerte; sin halos)
-export GALAXY_GLES_SHARPEN="${GALAXY_GLES_SHARPEN:-0.8}"
+#   GALAXY_GLES_SHARPEN=0.4              nitidez al ampliar la imagen interna (0.25-0.5 recomendado; 0: apagada; sin halos)
+export GALAXY_GLES_SHARPEN="${GALAXY_GLES_SHARPEN:-0.4}"
+#   GALAXY_GLES_SHADOWS=0.45             aclara las sombras (0.3-0.62 recomendado; 0: apagado); GALAXY_GLES_CONTRAST=0
+export GALAXY_GLES_SHADOWS="${GALAXY_GLES_SHADOWS:-0.45}"
+export GALAXY_GLES_CONTRAST="${GALAXY_GLES_CONTRAST:-0}"
+#   GALAXY_NO_DOF=1 GALAXY_NO_BLUR=1     sin profundidad de campo ni desenfoques (de zona y de movimiento) del juego
+export GALAXY_NO_DOF="${GALAXY_NO_DOF:-1}"
+export GALAXY_NO_BLUR="${GALAXY_NO_BLUR:-1}"
 #   GALAXY_GLES_AA=1                     suaviza los bordes dentados (antialiasing tipo FXAA en la misma copia); 0: apagado
 export GALAXY_GLES_AA="${GALAXY_GLES_AA:-1}"
 export NEBULA_PAD_SCHEME="${NEBULA_PAD_SCHEME:-nintendo}"

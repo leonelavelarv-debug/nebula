@@ -42,7 +42,12 @@ void CenterScreenBlur::draw() const {
     MR::drawFullScreenBlur(a, a, b, b);
 }
 
+extern "C" u32 __NebulaEffectsOff(void);  // NEBULA_EFFECT_OFF_* bits (nebula_game_api.h)
+
 void CenterScreenBlur::start(s32 time, f32 offset, u8 alpha, s32 fadeIn, s32 fadeOut) {
+    if ((__NebulaEffectsOff() & 4u) != 0u) {  // motion blur turned off: never shown
+        return;
+    }
     mTime = time;
     mFadeIn = fadeIn;
     mFadeOut = fadeOut;

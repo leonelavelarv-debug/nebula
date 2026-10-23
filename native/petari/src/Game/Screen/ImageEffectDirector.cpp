@@ -13,6 +13,8 @@
 #include "Game/Screen/ImageEffectState.hpp"
 #include "Game/Util.hpp"
 
+extern "C" u32 __NebulaEffectsOff(void);  // NEBULA_EFFECT_OFF_* bits (nebula_game_api.h)
+
 namespace {
     static const s32 sIntensityCountMax = 60;
     static const f32 sDOFIntensity = 1.0f;
@@ -66,6 +68,10 @@ void ImageEffectDirector::turnOnNormal() {
 
 void ImageEffectDirector::turnOnDepthOfField(bool p1) {
     mIsAuto = false;
+    if ((__NebulaEffectsOff() & 1u) != 0u) {  // depth of field turned off: no effect at all
+        setState(mStateNull);
+        return;
+    }
     setState(mStateDepthOfField);
     setPlayerSync(p1);
     mDepthOfFieldIntensity = ::sDOFIntensity;
@@ -268,10 +274,18 @@ void ImageEffectDirector::updateAuto() {
         setState(mStateBloomSimple);
         break;
     case ImageEffectArea::IMAGE_EFFECT_TYPE_BLUR:
+        if ((__NebulaEffectsOff() & 2u) != 0u) {
+            setState(mStateNull);
+            break;
+        }
         setScreenBlurParams(pEffectArea);
         setState(mStateScreenBlur);
         break;
     case ImageEffectArea::IMAGE_EFFECT_TYPE_DOF:
+        if ((__NebulaEffectsOff() & 1u) != 0u) {
+            setState(mStateNull);
+            break;
+        }
         setDepthOfFieldParams(pEffectArea);
         setState(mStateDepthOfField);
         break;

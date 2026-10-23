@@ -38,6 +38,15 @@ u8 SCGetEuRgb60Mode(void) {
     return setting(NEBULA_SC_EURGB60_MODE);
 }
 
+/* The screen effects the player turned off (NEBULA_EFFECT_OFF_* bits), asked once. */
+u32 __NebulaEffectsOff(void) {
+    static int effects_off = -1;
+    if (effects_off < 0) {
+        effects_off = (int)setting(NEBULA_SC_EFFECTS_OFF);
+    }
+    return (u32)effects_off;
+}
+
 u8 SCGetScreenSaverMode(void) {
     return setting(NEBULA_SC_SCREEN_SAVER_MODE);
 }
