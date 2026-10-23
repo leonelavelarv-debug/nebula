@@ -4,12 +4,15 @@ Super Mario Galaxy con gráficos en la consola: el código descompilado de Petar
 de Nebula y su renderer GX en OpenGL ES 3.2 (Mali-G31). Primera versión de prueba.
 
 1. Copia `Super Mario Galaxy.sh` y la carpeta `smg/` a `ports` (el zip ya viene así: se descomprime dentro de `ports`).
-2. El juego: pon tu disco (ISO, RVZ, WIA, WBFS, GCZ o CISO) en `smg/gamedata/` y ejecuta el port. El primer arranque
-   lo convierte ahí mismo en `smg/gamedata/game.pak` con `smg/nebula-pak` (nativo, viene en el port: no hace falta
-   Termux ni otro equipo). El avance sale en pantalla; tarda lo que la tarjeta en escribir ~4 GB (unos minutos) y
-   hacen falta ~3.4 GB libres (ext4) o ~4.3 GB (exFAT; FAT32 no sirve: no admite ficheros de más de 4 GB).
-   `NEBULA_PAK_DELETE_IMAGE=1` en el lanzador borra la imagen al terminar. Solo vale el disco USA (RMGE01).
-   - También se puede hacer fuera: `bash tools/smg-pak.sh <imagen> [carpeta smg]` en Termux, Linux o macOS.
+2. El juego: pon tu disco (ISO, RVZ, WIA, WBFS, GCZ o CISO) en `smg/gamedata/` (o en `roms/wii/`) y abre
+   **Cactus Galaxy Wrapper** en Ports (o directamente el juego, que lo abre solo si falta `game.pak`). Lo convierte
+   ahí mismo en `smg/gamedata/game.pak` con `smg/nebula-pak` (nativo, viene en el port: sin Termux ni otro equipo),
+   con el avance en pantalla y un saguaro que crece hasta florecer. Tarda lo que la tarjeta en escribir ~4 GB (unos
+   minutos); hacen falta ~3.4 GB libres (ext4) o ~4.3 GB (exFAT; FAT32 no sirve, no admite ficheros de más de 4 GB).
+   Cruceta: elegir; A: convertir; B: salir o cancelar; X: borrar el disco al terminar. Solo vale el disco USA
+   (RMGE01).
+   - También se puede hacer fuera: `bash tools/cactus-galaxy-wrapper.sh <imagen> [carpeta smg]` en Termux, Linux o
+     macOS.
 3. Ejecuta **Super Mario Galaxy** desde Ports. MENU (Function) + START sale, como en el resto de KNULLI.
 4. Portada y ficha: el primer arranque con red baja la portada, la captura y la pantalla de título de
    libretro-thumbnails a `smg/` y escribe la ficha (descripción, desarrollador, fecha...) en `ports/gamelist.xml`

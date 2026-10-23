@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# smg-pak.sh: game.pak (lo que juega el port de Super Mario Galaxy en la RG35XX H) desde TU disco del juego en ISO, RVZ,
+# Cactus Galaxy Wrapper (linea de comandos): game.pak (lo que juega el port de Super Mario Galaxy en la RG35XX H) desde TU disco del juego en ISO, RVZ,
 # WIA, WBFS, GCZ o CISO. En la consola usa el nebula-pak nativo que trae el port (smg/nebula-pak, de
-# platform/knulli/pak: sin Termux ni Rust; el lanzador lo llama solo); en Termux (Android), Linux o macOS usa nebula-pak
+# platform/knulli/pak: sin Termux ni Rust). En la consola la interfaz grafica es smg/cactus-galaxy-wrapper
+# ("Cactus Galaxy Wrapper" en Ports); este script es su version de texto; en Termux (Android), Linux o macOS usa nebula-pak
 # (crates/nebula-import) y lo compila si hace falta.
 #
-#   bash smg-pak.sh                         busca la imagen en Descargas (Termux) y en la carpeta actual
-#   bash smg-pak.sh juego.rvz               esa imagen; game.pak queda a su lado
-#   bash smg-pak.sh juego.iso /ruta/smg     game.pak directo en /ruta/smg/gamedata/ (la carpeta del port, en la SD)
-#   bash smg-pak.sh juego.iso salida.pak    con ese nombre
+#   bash cactus-galaxy-wrapper.sh                         busca la imagen en Descargas (Termux) y en la carpeta actual
+#   bash cactus-galaxy-wrapper.sh juego.rvz               esa imagen; game.pak queda a su lado
+#   bash cactus-galaxy-wrapper.sh juego.iso /ruta/smg     game.pak directo en /ruta/smg/gamedata/ (la carpeta del port, en la SD)
+#   bash cactus-galaxy-wrapper.sh juego.iso salida.pak    con ese nombre
 #
 # Solo vale el Super Mario Galaxy americano (RMGE01): nebula-pak lo comprueba (y main.dol por su SHA-1).
 set -euo pipefail
@@ -101,6 +102,7 @@ if [ -z "$pak_tool" ]; then
 fi
 
 # 5. La conversion.
+say "Cactus Galaxy Wrapper"
 say "Imagen:  $image"
 say "Salida:  $out"
 start=$(date +%s)

@@ -1,0 +1,19 @@
+# Cactus Galaxy Wrapper
+
+La interfaz de la consola (RG35XX H, KNULLI) que convierte el disco de Super Mario Galaxy del jugador en el
+`game.pak` del port: un desierto de noche bajo una galaxia, con un saguaro que crece con el avance y florece al
+terminar. La conversión la hace `nebula-pak` (`platform/knulli/pak`) como proceso aparte.
+
+- En Ports: **Cactus Galaxy Wrapper** (`platform/knulli/smg/Cactus Galaxy Wrapper.sh`). El lanzador del juego la abre
+  sola (`--auto`) si falta `game.pak`; con un único disco válido, convierte sin preguntar y deja arrancar el juego.
+- Busca discos en `smg/gamedata/`, `smg/` y `roms/wii/`; los comprueba con `nebula-pak --identify`.
+- Controles: cruceta para elegir, A (derecha) convertir, B (abajo) salir o cancelar, X borrar el disco al terminar,
+  MENU + START salir. `CACTUS_SWAP_AB=1` cambia A y B.
+- `cactus-galaxy-wrapper --demo <carpeta>` escribe capturas PNG de cada pantalla y los fotogramas del cactus
+  creciendo (sin pantalla ni SDL).
+
+Se compila con `platform/knulli/pak/CMakeLists.txt` y `-DCACTUS_SDL2_PREFIX=<SDL2 para aarch64>`. Dibuja a
+640x480 en memoria y lo muestra con SDL2 (la `libSDL2-2.0.so.0` de la consola).
+
+Fuente: font8x8 de Daniel Hepper (<https://github.com/dhepper/font8x8>, revisión `8e279d2d`, dominio público;
+`font8x8/README`), basada en las fuentes VGA de IBM, también de dominio público.

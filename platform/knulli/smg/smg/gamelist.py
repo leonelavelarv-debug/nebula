@@ -144,10 +144,34 @@ def set_text(game, tag, value):
     return False
 
 
+CACTUS_SCRIPT = "./Cactus Galaxy Wrapper.sh"
+CACTUS_INFO = {
+    "name": "Cactus Galaxy Wrapper",
+    "desc": ("Convierte tu disco de Super Mario Galaxy (USA) en ISO, RVZ, WIA, WBFS, GCZ o CISO en el game.pak del "
+             "port, aquí mismo en la consola: busca el disco en roms/ports/smg/gamedata y en roms/wii, muestra el "
+             "avance y el saguaro florece cuando termina. Cruceta para elegir, A para convertir, B para salir."),
+    "developer": "Nebula",
+    "publisher": "Nebula",
+    "genre": "Herramienta",
+    "players": "1",
+    "lang": "es",
+}
+
+
 def main():
     smg = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(__file__))
     ports = os.path.dirname(smg)
-    folder = os.path.basename(smg)
+    result = 0
+    if os.path.isfile(os.path.join(ports, CACTUS_SCRIPT[2:])) and os.path.isfile(os.path.join(smg, "cactus.png")):
+        entry = ET.Element("game")
+        set_text(entry, "path", os.path.join(ports, CACTUS_SCRIPT[2:]))
+        for tag, value in CACTUS_INFO.items():
+            set_text(entry, tag, value)
+        for tag in ("image", "thumbnail", "boxart"):
+            set_text(entry, tag, os.path.join(smg, "cactus.png"))
+        result |= give(entry, CACTUS_SCRIPT, smg, ports)
+    if len(sys.argv) > 2 and sys.argv[2] == "--solo-cactus":
+        return result
     have = {f: fetch(d, os.path.join(smg, f)) for f, d in MEDIA.items()}
     if not have["cover.png"] and own_shot(smg, os.path.join(smg, "captura.png")):
         os.replace(os.path.join(smg, "captura.png"), os.path.join(smg, "cover.png"))
@@ -166,6 +190,12 @@ def main():
         set_text(entry, "titleshot", os.path.join(smg, "title.png"))
     if have["screenshot.png"]:
         set_text(entry, "fanart", os.path.join(smg, "screenshot.png"))
+    return result | give(entry, GAME_SCRIPT, smg, ports)
+
+
+def give(entry, script, smg, ports):
+    """The entry to EmulationStation (its API), or into ../gamelist.xml if it does not answer."""
+    folder = os.path.basename(smg)
 
     # EmulationStation keeps the game list in memory and, after a game, saves its own copy of the game's entry over
     # the file: an entry only written to gamelist.xml is lost. Its local API (127.0.0.1:1234, what Batocera's
@@ -177,7 +207,7 @@ def main():
         with urllib.request.urlopen(request, timeout=10) as reply:
             status = reply.status
         if 200 <= status < 300:
-            log("ficha y portada dadas a EmulationStation (%d); aparecen en Ports" % status)
+            log("%s: ficha y portada dadas a EmulationStation (%d); aparecen en Ports" % (script[2:-3], status))
             return 0
         log("EmulationStation contesto %d; se escribe gamelist.xml" % status)
     except Exception as failure:
@@ -196,13 +226,13 @@ def main():
     game = None
     for candidate in root.findall("game"):
         path = (candidate.findtext("path") or "").strip()
-        if os.path.normpath(os.path.join(ports, path)) == os.path.join(ports, GAME_SCRIPT[2:]):
+        if os.path.normpath(os.path.join(ports, path)) == os.path.join(ports, script[2:]):
             game = candidate
             break
     changed = game is None
     if game is None:
         game = ET.SubElement(root, "game")
-        set_text(game, "path", GAME_SCRIPT)
+        set_text(game, "path", script)
     for child in entry:
         if child.tag == "path":
             continue
@@ -211,7 +241,7 @@ def main():
             value = "./%s/%s" % (folder, os.path.basename(value))
         changed |= set_text(game, child.tag, value)
     if not changed:
-        log("la ficha de Ports ya esta al dia")
+        log("%s: la ficha de Ports ya esta al dia" % script[2:-3])
         return 0
     if os.path.exists(gamelist) and not os.path.exists(gamelist + ".antes-smg"):
         shutil.copy2(gamelist, gamelist + ".antes-smg")

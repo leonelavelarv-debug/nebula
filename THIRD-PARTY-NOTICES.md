@@ -163,6 +163,10 @@ decompression (`third_party/disc/zstd`, BSD-3-Clause, Copyright (c) Meta Platfor
 1.1.0 (`third_party/disc/bzip2`, bzip2 license, Copyright (C) 1996-2010 Julian Seward), and zlib and liblzma from
 `third_party/archive` (Zlib; 0BSD). Their license files are in those folders and ship in the port's `licenses/`.
 
+Cactus Galaxy Wrapper (`platform/knulli/cactus`) draws its text with font8x8 by Daniel Hepper
+(<https://github.com/dhepper/font8x8>, revision `8e279d2d`, public domain) and writes its demo screenshots with
+stb_image_write (`third_party/stb`).
+
 ## Vulkan renderer libraries
 
 The Vulkan renderer (`runtime/src/gx/vk`, every platform but Windows' D3D12 build) links these,

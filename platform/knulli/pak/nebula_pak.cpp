@@ -25,6 +25,7 @@
 #include <thread>
 #include <vector>
 
+#include <csignal>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/vfs.h>
@@ -1169,6 +1170,23 @@ void make_parents(const std::string& path) {
   }
 }
 
+// SIGTERM/SIGINT (Cactus Galaxy Wrapper's "Cancelar"): stop between blocks, removing the unfinished file.
+std::atomic<bool> g_cancel{false};
+void on_cancel(int) { g_cancel.store(true); }
+
+int identify(const std::string& image) {
+  std::unique_ptr<Disc> disc = open_disc(image);
+  u8 header[0x60];
+  disc->read(0, sizeof(header), header);
+  std::string title(reinterpret_cast<const char*>(header + 0x20), strnlen(reinterpret_cast<const char*>(header + 0x20), 0x40));
+  for (char& c : title) if (c == '\t' || c == '\n') c = ' ';
+  const bool wii = be32(header + 0x18) == 0x5D1C9EA3;
+  const std::string game_id(reinterpret_cast<const char*>(header), 6);
+  // One line for programs: id, format, Wii or GC, title. Exit 0 only for the game this port plays.
+  printf("%s\t%s\t%s\t%s\n", game_id.c_str(), disc->format(), wii ? "Wii" : "GC", title.c_str());
+  return wii && game_id == kGameId ? 0 : 1;
+}
+
 int run(const std::string& image, const std::string& output) {
   aes_init();
   std::unique_ptr<Disc> disc = open_disc(image);
@@ -1298,6 +1316,7 @@ int run(const std::string& image, const std::string& output) {
     constexpr size_t kChunk = 4u << 20;
     for (const FileEntry& f : files) {
       for (u64 at = 0; at < f.length; at += kChunk) {
+        if (g_cancel.load()) fail("conversion cancelada");
         const size_t take = size_t(std::min<u64>(kChunk, f.length - at));
         std::vector<u8> buffer(take);
         try {
@@ -1334,16 +1353,21 @@ int run(const std::string& image, const std::string& output) {
 
 int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
+  const bool identify_only = argc == 3 && strcmp(argv[1], "--identify") == 0;
   if (argc != 3) {
     fprintf(stderr, "uso: nebula-pak <imagen del disco> <game.pak>\n"
+                    "     nebula-pak --identify <imagen del disco>\n"
                     "  imagen: ISO, RVZ, WIA, WBFS, GCZ o CISO de Super Mario Galaxy (USA, RMGE01)\n");
     return 2;
   }
+  signal(SIGTERM, on_cancel);
+  signal(SIGINT, on_cancel);
   try {
+    if (identify_only) return identify(argv[2]);
     return run(argv[1], argv[2]);
   } catch (const std::exception& error) {
     fflush(stdout);
     fprintf(stderr, "\nError: %s\n", error.what());
-    return 1;
+    return identify_only ? 3 : 1;
   }
 }

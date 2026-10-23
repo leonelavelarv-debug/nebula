@@ -17,25 +17,35 @@ cd "$GAMEDIR" || exit 1
 exec > >(tee "$GAMEDIR/log.txt") 2>&1
 chmod +x "$GAMEDIR/nebula"
 echo "nebula: $(md5sum "$GAMEDIR/nebula" | cut -c1-12) del $(date -r "$GAMEDIR/nebula" '+%F %T' 2>/dev/null)"
-# Sin game.pak pero con tu disco (ISO, RVZ, WIA, WBFS, GCZ o CISO) en gamedata/: se convierte aqui una vez con
-# smg/nebula-pak (nativo, va en el port: sin Termux ni otro equipo). Tarda unos minutos (lo que tarda la tarjeta en
-# escribir ~4 GB) y el avance sale en pantalla. NEBULA_PAK_DELETE_IMAGE=1 borra la imagen despues.
+# Sin game.pak: Cactus Galaxy Wrapper (smg/cactus-galaxy-wrapper, la interfaz; convierte con smg/nebula-pak, nativo:
+# sin Termux ni otro equipo) busca tu disco (ISO, RVZ, WIA, WBFS, GCZ o CISO) en smg/gamedata/ y en roms/wii/, lo
+# convierte una vez en smg/gamedata/game.pak mostrando el avance y deja arrancar el juego. Tambien esta en Ports como
+# "Cactus Galaxy Wrapper". NEBULA_PAK_DELETE_IMAGE=1 borra la imagen al terminar.
 screen_message() {
   echo "$1"
   if type pm_message >/dev/null 2>&1; then pm_message "$1"; else
     for tty in /dev/tty0 /dev/tty1; do [ -w "$tty" ] && printf '\033c%s\n' "$1" > "$tty" 2>/dev/null; done
   fi
 }
-[ -f "$GAMEDIR/nebula-pak" ] && chmod +x "$GAMEDIR/nebula-pak"
-if [ ! -f "$GAMEDIR/gamedata/game.pak" ] && [ -x "$GAMEDIR/nebula-pak" ] && [ -f "$GAMEDIR/smg-pak.sh" ]; then
+for tool in nebula-pak cactus-galaxy-wrapper; do [ -f "$GAMEDIR/$tool" ] && chmod +x "$GAMEDIR/$tool"; done
+if [ ! -f "$GAMEDIR/gamedata/game.pak" ] && [ -x "$GAMEDIR/cactus-galaxy-wrapper" ]; then
+  delete=""; [ "${NEBULA_PAK_DELETE_IMAGE:-0}" = "1" ] && delete="--delete-image"
+  SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig" "$GAMEDIR/cactus-galaxy-wrapper" --smg "$GAMEDIR" --auto $delete
+  cactus=$?
+  echo "Cactus Galaxy Wrapper: salida $cactus"
+else
+  cactus=0
+fi
+# Sin pantalla para la interfaz (salida 3): la version de texto, con el avance en la consola.
+if [ ! -f "$GAMEDIR/gamedata/game.pak" ] && [ "$cactus" = 3 ] && [ -x "$GAMEDIR/nebula-pak" ] && [ -f "$GAMEDIR/cactus-galaxy-wrapper.sh" ]; then
   image=$(find "$GAMEDIR/gamedata" -maxdepth 1 -type f \( -iname '*.iso' -o -iname '*.rvz' -o -iname '*.wia' \
     -o -iname '*.wbfs' -o -iname '*.gcz' -o -iname '*.ciso' \) 2>/dev/null | head -1)
   if [ -n "$image" ]; then
     name=$(basename "$image")
-    screen_message "Super Mario Galaxy: preparando game.pak desde $name (solo la primera vez, unos minutos)..."
+    screen_message "Cactus Galaxy Wrapper: preparando game.pak desde $name (solo la primera vez, unos minutos)..."
     shown=-1
     rm -f /tmp/smg-pak-error
-    bash "$GAMEDIR/smg-pak.sh" "$image" "$GAMEDIR" 2>&1 | while IFS= read -r line; do
+    bash "$GAMEDIR/cactus-galaxy-wrapper.sh" "$image" "$GAMEDIR" 2>&1 | while IFS= read -r line; do
       echo "$line"
       case "$line" in
         *%*MiB*)  # "37% (1234 / 3300 MiB)": la pantalla cada 2 %
@@ -43,7 +53,7 @@ if [ ! -f "$GAMEDIR/gamedata/game.pak" ] && [ -x "$GAMEDIR/nebula-pak" ] && [ -f
           case "$percent" in ''|*[!0-9]*) continue ;; esac
           if [ $((percent - shown)) -ge 2 ] || [ "$percent" = 100 ]; then
             shown=$percent
-            screen_message "Super Mario Galaxy: preparando game.pak desde $name
+            screen_message "Cactus Galaxy Wrapper: preparando game.pak desde $name
 $line
 (solo la primera vez; no apagues la consola)"
           fi ;;
@@ -60,7 +70,7 @@ $line
   fi
 fi
 if [ ! -f "$GAMEDIR/gamedata/game.pak" ]; then
-  screen_message "Falta smg/gamedata/game.pak: pon ahi tu disco de Super Mario Galaxy USA (ISO o RVZ) o el game.pak."
+  screen_message "Falta smg/gamedata/game.pak: pon ahi (o en roms/wii) tu disco de Super Mario Galaxy USA (ISO o RVZ) o el game.pak."
   sleep 5
   pm_finish; exit 1
 fi

@@ -47,3 +47,14 @@ add_executable(nebula-pak nebula_pak.cpp)
 target_link_libraries(nebula-pak PRIVATE pak_zlib pak_lzma pak_zstd pak_bzip2 pthread)
 target_compile_options(nebula-pak PRIVATE -O2 -Wall -Wextra)
 target_link_options(nebula-pak PRIVATE -static-libstdc++ -static-libgcc -Wl,--gc-sections)
+
+# Cactus Galaxy Wrapper (platform/knulli/cactus): the console's interface around nebula-pak, against an SDL2 install
+# (include/SDL2, lib/libSDL2-2.0.so; the console's own libSDL2-2.0.so.0 at run time).
+set(CACTUS_SDL2_PREFIX "" CACHE PATH "SDL2 install for cactus-galaxy-wrapper (empty: not built)")
+if(CACTUS_SDL2_PREFIX)
+    add_executable(cactus-galaxy-wrapper "${NEBULA_ROOT}/platform/knulli/cactus/cactus_wrapper.cpp")
+    target_include_directories(cactus-galaxy-wrapper PRIVATE "${CACTUS_SDL2_PREFIX}/include/SDL2" "${TP}/stb")
+    target_link_libraries(cactus-galaxy-wrapper PRIVATE "${CACTUS_SDL2_PREFIX}/lib/libSDL2-2.0.so" pthread m)
+    target_compile_options(cactus-galaxy-wrapper PRIVATE -O2 -Wall -Wextra)
+    target_link_options(cactus-galaxy-wrapper PRIVATE -static-libstdc++ -static-libgcc -Wl,--gc-sections)
+endif()
