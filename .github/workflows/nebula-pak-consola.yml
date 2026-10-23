@@ -1,0 +1,36 @@
+# nebula-pak for the RG35XX H (and any ARM64 Linux): a static aarch64-musl binary, so the smg port can turn the
+# player's ISO/RVZ into game.pak on the console itself. Run it from the Actions tab ("Run workflow") or by pushing a
+# change to crates/; the binary is the "nebula-pak-aarch64" artifact.
+name: nebula-pak (consola ARM64)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/nebula-pak-consola.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: cross (Docker toolchains)
+        run: cargo install cross --version 0.2.5 --locked
+      - name: Build nebula-pak (aarch64-unknown-linux-musl, static)
+        run: cross build --release --locked --target aarch64-unknown-linux-musl -p nebula-import --bin nebula-pak
+      - name: Package
+        run: |
+          mkdir -p out
+          cp target/aarch64-unknown-linux-musl/release/nebula-pak out/
+          file out/nebula-pak
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebula-pak-aarch64
+          path: out/nebula-pak
+          if-no-files-found: error

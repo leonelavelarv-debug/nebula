@@ -17,8 +17,32 @@ cd "$GAMEDIR" || exit 1
 exec > >(tee "$GAMEDIR/log.txt") 2>&1
 chmod +x "$GAMEDIR/nebula"
 echo "nebula: $(md5sum "$GAMEDIR/nebula" | cut -c1-12) del $(date -r "$GAMEDIR/nebula" '+%F %T' 2>/dev/null)"
+# Sin game.pak pero con tu disco (ISO, RVZ, WIA, WBFS, GCZ o CISO) en gamedata/: se convierte aqui una vez (necesita
+# smg/nebula-pak; tarda varios minutos y la pantalla puede quedarse en negro). NEBULA_PAK_DELETE_IMAGE=1 borra la imagen
+# despues.
+screen_message() {
+  echo "$1"
+  if type pm_message >/dev/null 2>&1; then pm_message "$1"; else
+    for tty in /dev/tty0 /dev/tty1; do [ -w "$tty" ] && printf '\033c%s\n' "$1" > "$tty" 2>/dev/null; done
+  fi
+}
+[ -f "$GAMEDIR/nebula-pak" ] && chmod +x "$GAMEDIR/nebula-pak"
+if [ ! -f "$GAMEDIR/gamedata/game.pak" ] && [ -x "$GAMEDIR/nebula-pak" ] && [ -f "$GAMEDIR/smg-pak.sh" ]; then
+  image=$(find "$GAMEDIR/gamedata" -maxdepth 1 -type f \( -iname '*.iso' -o -iname '*.rvz' -o -iname '*.wia' \
+    -o -iname '*.wbfs' -o -iname '*.gcz' -o -iname '*.ciso' \) 2>/dev/null | head -1)
+  if [ -n "$image" ]; then
+    screen_message "Super Mario Galaxy: preparando game.pak desde $(basename "$image") (solo la primera vez, varios minutos)..."
+    if bash "$GAMEDIR/smg-pak.sh" "$image" "$GAMEDIR"; then
+      screen_message "game.pak listo."
+      [ "${NEBULA_PAK_DELETE_IMAGE:-0}" = "1" ] && rm -f "$image"
+    else
+      screen_message "No se pudo hacer game.pak (mira smg/log.txt)."
+    fi
+  fi
+fi
 if [ ! -f "$GAMEDIR/gamedata/game.pak" ]; then
-  echo "Falta gamedata/game.pak (hazlo con nebula-pak desde tu disco de Super Mario Galaxy USA)."
+  screen_message "Falta smg/gamedata/game.pak: pon ahi tu disco de Super Mario Galaxy USA (ISO o RVZ) o el game.pak."
+  sleep 5
   pm_finish; exit 1
 fi
 mkdir -p "$GAMEDIR/nand" "$GAMEDIR/data" "$GAMEDIR/crashes"

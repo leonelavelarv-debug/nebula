@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # smg-pak.sh: game.pak (lo que juega el port de Super Mario Galaxy en la RG35XX H) desde TU disco del juego en ISO, RVZ,
-# WIA, WBFS, GCZ o CISO. Para Termux (Android), Linux o macOS; usa nebula-pak (crates/nebula-import) y lo compila si
-# hace falta.
+# WIA, WBFS, GCZ o CISO. Para la consola (con nebula-pak al lado: el lanzador lo usa solo), Termux (Android), Linux o
+# macOS; usa nebula-pak (crates/nebula-import) y fuera de la consola lo compila si hace falta.
 #
 #   bash smg-pak.sh                         busca la imagen en Descargas (Termux) y en la carpeta actual
 #   bash smg-pak.sh juego.rvz               esa imagen; game.pak queda a su lado
@@ -74,9 +74,15 @@ if [ -n "$free_kb" ] && [ "$free_kb" -lt "$need_kb" ]; then
   fail "hacen falta ~4.3 GB libres en $(dirname "$out") (hay $((free_kb / 1024)) MB)."
 fi
 
-# 4. nebula-pak: el de PATH, el ya compilado del repo, o se compila (cargo; en Termux se instala rust si falta).
-pak_tool="$(command -v nebula-pak 2>/dev/null || true)"
+# 4. nebula-pak: el de al lado (la carpeta del port en la consola), el de PATH, el ya compilado del repo, o se compila
+#    (cargo; en Termux se instala rust si falta).
+pak_tool=""
+[ -x "$here/nebula-pak" ] && pak_tool="$here/nebula-pak"
+[ -z "$pak_tool" ] && pak_tool="$(command -v nebula-pak 2>/dev/null || true)"
 [ -z "$pak_tool" ] && [ -x "$repo/target/release/nebula-pak" ] && pak_tool="$repo/target/release/nebula-pak"
+if [ -z "$pak_tool" ] && [ -d /userdata ] && ! command -v cargo >/dev/null 2>&1; then
+  fail "falta nebula-pak junto a $0: bajalo de GitHub (Actions > \"nebula-pak (consola ARM64)\" > nebula-pak-aarch64) y copialo ahi."
+fi
 if [ -z "$pak_tool" ]; then
   if ! command -v cargo >/dev/null 2>&1; then
     if $termux; then
@@ -99,4 +105,4 @@ start=$(date +%s)
 "$pak_tool" "$image" "$out.part"
 mv -f "$out.part" "$out"
 say "Hecho en $(( $(date +%s) - start )) s: $out ($(du -h "$out" | cut -f1))"
-say "Copialo a la consola en: roms/ports/smg/gamedata/game.pak"
+case "$out" in */gamedata/game.pak) ;; *) say "Copialo a la consola en: roms/ports/smg/gamedata/game.pak" ;; esac
