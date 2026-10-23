@@ -265,9 +265,11 @@ ninja -C build-aarch64
 
 - **Salto de frames** (`GALAXY_FRAMESKIP=auto|0|1|2|3`, `GALAXY_FRAMESKIP_MAX`): un frame saltado se analiza entero
   (estado GX, display lists, tokens, peeks) pero no dibuja, no copia texturas ni limpia el EFB, así que su copia a
-  pantalla repite el último frame dibujado. `auto` compara el tiempo ocupado del hilo de render (sin sus esperas al
-  juego) con un frame de 60 Hz y salta el siguiente cuando va atrasado, como mucho 2 seguidos; `[frameskip]` en
-  log.txt cuenta los saltados cada 600 frames. El juego conserva su velocidad y baja la fluidez.
+  pantalla repite el último frame dibujado. `auto` mantiene un ritmo estable (dibujar 1 y saltar n: 60, 30 o 20
+  imágenes por segundo) para que cada imagen dure lo mismo en pantalla: mide el tiempo ocupado del hilo de render (sin
+  sus esperas al juego) de los frames dibujados y saltados, elige el n más bajo cuyo ciclo cabe en n+1 frames de 60 Hz
+  (tolerando un 5 % de lentitud), sube n tras ~10 frames dibujados que no caben (al instante si va >25 % atrasado) y lo
+  baja solo con margen durante ~1 s. `[frameskip]` en log.txt da el ritmo y los costes cada 600 frames.
 - Cachés más pequeñas: display lists 192 MiB, copias EFB 64 MiB, pool de texturas 128 MiB, prefetch de disco 2 MiB.
 - CPU, GPU y memoria en `performance` mientras se juega (`NEBULA_PERF=1`), restaurados al salir.
 - `memoria:` en log.txt cada 60 s (RSS de nebula y memoria libre).

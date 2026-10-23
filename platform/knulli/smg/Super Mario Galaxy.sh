@@ -27,7 +27,8 @@ mkdir -p "$GAMEDIR/nand" "$GAMEDIR/data" "$GAMEDIR/crashes"
 #                                        (el juego mantiene su velocidad), menos memoria para caches; normal: sin saltos
 NEBULA_PERFIL="${NEBULA_PERFIL:-bajo}"
 if [ "$NEBULA_PERFIL" = "bajo" ]; then
-  #   GALAXY_FRAMESKIP=auto|0|1|2|3      auto: salta solo cuando va atrasado (GALAXY_FRAMESKIP_MAX seguidos, 2)
+  #   GALAXY_FRAMESKIP=auto|0|1|2|3      auto: ritmo estable de 60, 30 o 20 imagenes por segundo segun lo que
+  #                                      cueste dibujar (GALAXY_FRAMESKIP_MAX=2: 20 como minimo); 1: siempre 30
   export GALAXY_FRAMESKIP="${GALAXY_FRAMESKIP:-auto}"
   export GALAXY_FRAMESKIP_MAX="${GALAXY_FRAMESKIP_MAX:-2}"
   export GALAXY_GX_DISPLAY_LIST_CACHE_MB="${GALAXY_GX_DISPLAY_LIST_CACHE_MB:-192}"

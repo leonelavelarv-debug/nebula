@@ -2143,7 +2143,13 @@ private:
     unsigned frameskip_run_ = 0;
     std::int64_t frameskip_last_ns_ = 0;
     std::int64_t frameskip_last_idle_ns_ = 0;
-    std::int64_t frameskip_debt_ns_ = 0;
+    // Auto: a steady cadence (draw one, skip n) chosen from the measured cost of drawn and skipped frames, so
+    // every shown frame lasts as long as the others; n changes only after the measurements agree for a while.
+    unsigned frameskip_n_ = 0;
+    unsigned frameskip_up_votes_ = 0;
+    unsigned frameskip_down_votes_ = 0;
+    double frameskip_drawn_ms_ = 0.0;
+    double frameskip_skipped_ms_ = 0.0;
     std::int64_t frameskip_idle_ns_ = 0;
     std::uint64_t frameskip_frames_ = 0;
     std::uint64_t frameskip_skipped_ = 0;

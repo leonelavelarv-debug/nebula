@@ -17559,13 +17559,13 @@ int frameskip_mode() {
 }  // namespace
 
 bool GxBackend::frameskip_next_skipped() const noexcept {
-    // Only a fixed pattern is known before the display copy; auto decides at it (and then skips the clear).
+    // The cadence in force decides the next frame at the display copy, so it is known before it.
     const int mode = frameskip_mode();
-    if (mode > 0) {
-        const unsigned run = frameskip_skipping_ ? frameskip_run_ + 1u : 0u;
-        return run < static_cast<unsigned>(mode);
+    if (mode == 0) {
+        return false;
     }
-    return mode < 0;  // auto might skip: keep the depth
+    const unsigned n = mode > 0 ? static_cast<unsigned>(mode) : frameskip_n_;
+    return frameskip_skipping_ ? frameskip_run_ + 1u < n : n > 0u;
 }
 
 void GxBackend::frameskip_after_display_copy() {
@@ -17573,10 +17573,11 @@ void GxBackend::frameskip_after_display_copy() {
     if (mode == 0) {
         return;
     }
-    static const unsigned max_run = static_cast<unsigned>(
-        std::clamp<std::uint64_t>(read_env_u64("GALAXY_FRAMESKIP_MAX", 2u), 1u, 4u));
+    static const unsigned max_n = static_cast<unsigned>(
+        std::clamp<std::uint64_t>(read_env_u64("GALAXY_FRAMESKIP_MAX", 2u), 1u, 3u));
     ++frameskip_frames_;
-    if (frameskip_skipping_) {
+    const bool was_skipped = frameskip_skipping_;
+    if (was_skipped) {
         ++frameskip_skipped_;
         ++frameskip_run_;
     } else {
@@ -17584,29 +17585,64 @@ void GxBackend::frameskip_after_display_copy() {
     }
     const std::int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-    bool skip = false;
-    if (mode > 0) {
-        // After a drawn frame skip `mode` frames, then draw one.
-        skip = frameskip_skipping_ ? frameskip_run_ < static_cast<unsigned>(mode) : true;
-    } else {
-        // Auto: the render thread's busy time (not its waits for the game) against a 60 Hz game frame. Behind:
-        // skip the next frame, at most GALAXY_FRAMESKIP_MAX in a row.
-        constexpr std::int64_t kFrameNs = 16'683'333;
-        if (frameskip_last_ns_ != 0) {
-            const std::int64_t busy = (now - frameskip_last_ns_) - (frameskip_idle_ns_ - frameskip_last_idle_ns_);
-            frameskip_debt_ns_ = std::clamp<std::int64_t>(frameskip_debt_ns_ + busy - kFrameNs, -kFrameNs,
-                                                          3 * kFrameNs);
-        }
-        skip = frameskip_debt_ns_ > kFrameNs / 4 && (!frameskip_skipping_ || frameskip_run_ < max_run);
+    // The render thread's busy time for the frame that just ended (its waits for the game left out).
+    double busy_ms = -1.0;
+    if (frameskip_last_ns_ != 0) {
+        busy_ms = static_cast<double>((now - frameskip_last_ns_) - (frameskip_idle_ns_ - frameskip_last_idle_ns_)) /
+            1e6;
     }
     frameskip_last_ns_ = now;
     frameskip_last_idle_ns_ = frameskip_idle_ns_;
-    frameskip_skipping_ = skip;
+
+    // The next frame follows the cadence in force (frameskip_next_skipped predicted it).
+    const unsigned n = mode > 0 ? static_cast<unsigned>(mode) : frameskip_n_;
+    frameskip_skipping_ = was_skipped ? frameskip_run_ < n : n > 0u;
+
+    if (mode < 0 && busy_ms >= 0.0 && busy_ms < 1000.0) {
+        double& average = was_skipped ? frameskip_skipped_ms_ : frameskip_drawn_ms_;
+        average = average == 0.0 ? busy_ms : average * 0.9 + busy_ms * 0.1;
+        if (!was_skipped) {
+            // One vote per drawn frame. A cycle of one drawn and n skipped frames must fit n + 1 game frames.
+            constexpr double kFrameMs = 1000.0 / 59.94;
+            const double skipped = frameskip_skipped_ms_ != 0.0 ? frameskip_skipped_ms_ : frameskip_drawn_ms_ * 0.3;
+            const auto fits = [&](unsigned k, double margin) {
+                return frameskip_drawn_ms_ + k * skipped <= (k + 1u) * kFrameMs * margin;
+            };
+            unsigned wanted = max_n;
+            for (unsigned k = 0; k <= max_n; ++k) {
+                if (fits(k, 1.05)) {  // up to 5 % slower beats a third fewer pictures
+                    wanted = k;
+                    break;
+                }
+            }
+            if (wanted > frameskip_n_) {
+                frameskip_down_votes_ = 0u;
+                // Far behind: at once; a little: after about a third of a second of drawn frames.
+                const bool far = !fits(frameskip_n_, 1.25);
+                if (far || ++frameskip_up_votes_ >= 10u) {
+                    frameskip_n_ = std::min(frameskip_n_ + 1u, max_n);
+                    frameskip_up_votes_ = 0u;
+                }
+            } else if (wanted < frameskip_n_ && fits(frameskip_n_ - 1u, 0.97)) {
+                frameskip_up_votes_ = 0u;
+                // Faster only with room to spare for about two seconds of drawn frames.
+                if (++frameskip_down_votes_ >= 60u / (frameskip_n_ + 1u)) {
+                    --frameskip_n_;
+                    frameskip_down_votes_ = 0u;
+                }
+            } else {
+                frameskip_up_votes_ = 0u;
+                frameskip_down_votes_ = 0u;
+            }
+        }
+    }
     if (frameskip_frames_ % 600u == 0u) {
-        std::fprintf(stderr, "[frameskip] %s: %llu of the last 600 game frames skipped (%llu draws), debt %.1f ms\n",
-                     mode < 0 ? "auto" : "fixed", static_cast<unsigned long long>(frameskip_skipped_),
-                     static_cast<unsigned long long>(frameskip_draws_),
-                     static_cast<double>(frameskip_debt_ns_) / 1e6);
+        std::fprintf(stderr,
+                     "[frameskip] %s: 1 of %u frames drawn now; %llu of the last 600 skipped (%llu draws); drawn %.1f ms, "
+                     "skipped %.1f ms\n",
+                     mode < 0 ? "auto" : "fixed", (mode > 0 ? static_cast<unsigned>(mode) : frameskip_n_) + 1u,
+                     static_cast<unsigned long long>(frameskip_skipped_),
+                     static_cast<unsigned long long>(frameskip_draws_), frameskip_drawn_ms_, frameskip_skipped_ms_);
         frameskip_skipped_ = 0u;
         frameskip_draws_ = 0u;
     }
