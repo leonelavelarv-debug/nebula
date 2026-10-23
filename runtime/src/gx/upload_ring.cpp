@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <string>
 
-#if !defined(NEBULA_GPU_VULKAN)
+#if !defined(NEBULA_GPU_VULKAN) && !defined(NEBULA_GPU_GLES)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -177,7 +177,7 @@ UploadRing::Allocation UploadRing::upload_immutable(
 
 }  // namespace galaxy::gx
 
-#if !defined(NEBULA_GPU_VULKAN)
+#if !defined(NEBULA_GPU_VULKAN) && !defined(NEBULA_GPU_GLES)
 namespace galaxy::gx::gpu {
 
 UploadMemory create_upload_memory(Device* device, std::size_t bytes, const char* name) {

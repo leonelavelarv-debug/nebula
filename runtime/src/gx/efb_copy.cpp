@@ -500,7 +500,7 @@ std::optional<EfbCopyRect> efb_identity_copy_rect(
 
 }  // namespace galaxy::gx
 
-#if !defined(NEBULA_GPU_VULKAN)
+#if !defined(NEBULA_GPU_VULKAN) && !defined(NEBULA_GPU_GLES)
 namespace galaxy::gx::gpu {
 
 TextureRef create_render_texture(Device* device, std::uint32_t width, std::uint32_t height) {

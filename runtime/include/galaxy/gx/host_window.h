@@ -99,4 +99,26 @@ void draw_native_settings_hint(UiCanvas& renderer);
 [[nodiscard]] std::string driver_log();
 #endif
 
+#if defined(NEBULA_GPU_GLES)
+// The window's OpenGL ES 3.x context (platform/knulli): made current on the calling thread by gles_create_context;
+// gles_make_current(window, false) releases it from the calling thread, true makes it current there.
+[[nodiscard]] bool gles_create_context(NativeWindow window);
+bool gles_make_current(NativeWindow window, bool current) noexcept;
+void gles_destroy_context(NativeWindow window) noexcept;
+// GetProcAddress of the window system.
+[[nodiscard]] void* gles_proc_address(const char* name) noexcept;
+void gles_swap_buffers(NativeWindow window) noexcept;
+void gles_set_swap_interval(int interval) noexcept;
+// The drawable's size in pixels.
+void gles_drawable_size(NativeWindow window, int& width, int& height) noexcept;
+// A context sharing objects with the window's (shader compiles on workers), made while the window's context is
+// current on the calling thread; null when the platform has none. gles_make_worker_current makes it current on the
+// calling thread (null: releases that thread's).
+[[nodiscard]] void* gles_create_worker_context() noexcept;
+bool gles_make_worker_current(void* context) noexcept;
+void gles_destroy_worker_context(void* context) noexcept;
+// What the graphics driver wrote to the log (nothing here).
+[[nodiscard]] std::string driver_log();
+#endif
+
 }  // namespace galaxy::gx::host_window

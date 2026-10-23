@@ -214,9 +214,37 @@ sobrecoste de punto flotante medido arriba.
 | Módulo del juego (`libsmg_game.so`, 1 891 unidades) para aarch64 / glibc 2.27 | **Compila y enlaza** (M) |
 | Host sin gráficos (`nebula_native_host`) para aarch64 | Compila con tres arreglos: includes de logros/Discord fuera del bloque del renderer (rotos en 0592580), `-ldl -lpthread` para glibc < 2.34, `runtime_settings.cpp` + `input_bindings.cpp` en el host (M) |
 | `nebula-pak`: `game.pak` desde el disco del usuario en Linux/Termux/macOS | `crates/nebula-import/src/bin/nebula-pak.rs` |
-| Benchmark de la lógica en el aparato (`GALAXY_BENCH=1`, `GALAXY_TEST_GALAXY_TOUR=auto`) | Port `smgbench` (`platform/knulli/smgbench`): recorre las galaxias del disco y registra fps, CPU del hilo del juego y galaxia |
-| Renderer GX para Mali-G31 (GLES 3.2) | Pendiente: el backend Vulkan de Nebula tiene ~11 900 líneas y GxBackend usa 149 métodos del renderer; KNULLI no tiene Vulkan |
-| Ventana/entrada/audio en KNULLI | Pendiente: SDL3 de Nebula no trae el driver "mali" (fbdev) que usa KNULLI; EGL directo sobre fbdev + SDL para mando y audio |
+| Benchmark de la lógica en el aparato (`GALAXY_BENCH=1`, `GALAXY_TEST_GALAXY_TOUR=auto`) | Port `smgbench` (`platform/knulli/smgbench`). **Resultado (M):** las 44 galaxias a 60,0 fps (mínimo 59,9), hilo del juego entre 11 % y 51 % de un núcleo A53 (media 32 %), 12 min 18 s sin cuelgues; `smgbench/results/rg35xxh-knulli-bench-1.txt` |
+| Renderer GX en OpenGL ES 3.2 (`runtime/src/gx/gles`) | **Escrito y probado en x86 con Mesa llvmpipe** (M): traducción de los 12 uber shaders, del shader de conversión EFB y de shaders especializados (HLSL → glslang → SPIR-V → SPIRV-Cross → GLSL ES 3.20); limpiezas, peeks de color y profundidad, campo de profundidad del puntero, copia EFB→XFB, presentación, orientación, profundidad invertida y cull de un draw GX real (`nebula_gles_renderer_tests`, 0 fallos). Sin probar aún con el juego (los datos solo están en el aparato del usuario) |
+| Ventana/entrada/audio en KNULLI | `platform/knulli/game`: SDL2 del sistema (driver mali/fbdev), contexto GLES 3.2, contextos EGL compartidos para compilar shaders en hilos, mando como SDL GameController (esquema Nintendo por defecto), audio por cola SDL2 |
+| Port `smg` (`platform/knulli/smg`) | Lanzador PortMaster con modo 4:3 nativo del juego y capturas de diagnóstico |
+
+### Diseño del renderer GLES (H)
+
+- Misma interfaz que `RendererVk` (GxBackend no cambia salvo `gx_backend.h`, que elige el backend, y la decodificación de
+  texturas en hilos, apagada en GLES porque GL sube los bytes en cuanto TextureCache registra la subida).
+- `gpu::Address` como en Vulkan: los bits altos nombran un buffer GL persistente (`EXT_buffer_storage`, coherente), los
+  bajos el byte. Los anillos de vértices/índices/constantes/matrices son esos buffers (32/6/6/12 MiB por frame, dos
+  frames; `GALAXY_GLES_RING_*_MB`).
+- El EFB es RGBA8 + profundidad `D32F` (exacta para el z24 invertido de GX: los peeks devuelven el valor escrito). Se dibuja
+  con la fila superior de D3D primero (el vertex shader niega y), así copias, texturas y peeks conservan la orientación de
+  D3D y solo la presentación voltea (`glBlitFramebuffer`).
+- Paleta de matrices: SSBO en el vertex shader si el driver los tiene; si no, `usamplerBuffer` en la unidad 8
+  (`GALAXY_GLES_PALETTE=texture` lo fuerza).
+- Programas: binarios del driver en `data/shadercache/RMGE01/gles-<driver>/`; las claves vistas se vuelven a construir al
+  arrancar en hilos con contextos EGL compartidos. `GALAXY_GLES_PENDING=wait|skip|uber`.
+- Sin equivalente en GLES: blending de doble fuente (la alfa del TEV se mezcla con la alfa de salida), logic op, LOD bias
+  de los samplers, depth clamp, líneas/puntos anchos. Interpolación, trazado de rayos y posproceso: no disponibles, como
+  en Vulkan.
+
+Probar en un PC Linux (sin juego):
+
+```sh
+cmake -S platform/knulli/game -B build-gles -G Ninja -DNEBULA_DEPS=<deps> -DNEBULA_SDL2_PREFIX=<sdl2>
+ninja -C build-gles nebula_gles_shader_tests nebula_gles_renderer_tests
+EGL_PLATFORM=surfaceless build-gles/nebula_gles_shader_tests
+SDL_VIDEODRIVER=offscreen build-gles/nebula_gles_renderer_tests
+```
 
 Compilar el módulo y el host:
 

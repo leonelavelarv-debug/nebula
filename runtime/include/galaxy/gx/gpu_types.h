@@ -112,6 +112,94 @@ inline constexpr unsigned kMaxTexture2DDimension = 4096u;
 [[nodiscard]] TextureRef create_render_texture(Device* device, std::uint32_t width, std::uint32_t height);
 
 }  // namespace galaxy::gx::gpu
+#elif defined(NEBULA_GPU_GLES)
+// OpenGL ES 3.2 (gles/gles_context.h): the same shapes as Vulkan's, over GL object names.
+namespace galaxy::gx::gles {
+struct Device;    // the GL context the renderer made current (one per process)
+struct Pipeline;  // a linked program with its render state (pipeline_cache_gles.h)
+struct Texture;
+struct Buffer;
+}  // namespace galaxy::gx::gles
+
+namespace galaxy::gx::gpu {
+
+using Device = gles::Device;
+using Pipeline = gles::Pipeline;
+using Resource = gles::Buffer;
+// The renderer's own address space, as Vulkan's: the top bits name a buffer, the low ones a byte in it.
+using Address = std::uint64_t;
+struct Table {
+    std::uint64_t ptr = 0;  // a texture or sampler table's id (RendererGles)
+};
+using Topology = std::uint32_t;  // GL_TRIANGLES, GL_LINES, GL_POINTS
+enum TopologyType : std::uint8_t {
+    kTopologyTypePointValue = 1,
+    kTopologyTypeLineValue = 2,
+    kTopologyTypeTriangleValue = 3,
+};
+struct VertexView {
+    Address BufferLocation = 0;
+    std::uint32_t SizeInBytes = 0;
+    std::uint32_t StrideInBytes = 0;
+};
+struct IndexView {
+    Address BufferLocation = 0;
+    std::uint32_t SizeInBytes = 0;
+    std::uint32_t Format = 0;  // 16-bit indices only
+};
+struct Rect {
+    std::int32_t left = 0;
+    std::int32_t top = 0;
+    std::int32_t right = 0;
+    std::int32_t bottom = 0;
+};
+
+inline constexpr TopologyType kTopologyTypeTriangle = kTopologyTypeTriangleValue;
+inline constexpr TopologyType kTopologyTypeLine = kTopologyTypeLineValue;
+inline constexpr TopologyType kTopologyTypePoint = kTopologyTypePointValue;
+inline constexpr Topology kTopologyTriangleList = 0x0004u;  // GL_TRIANGLES
+inline constexpr Topology kTopologyLineList = 0x0001u;      // GL_LINES
+inline constexpr Topology kTopologyPointList = 0x0000u;     // GL_POINTS
+
+[[nodiscard]] inline VertexView vertex_view(Address address, std::uint32_t size, std::uint32_t stride) noexcept {
+    return VertexView{address, size, stride};
+}
+[[nodiscard]] inline IndexView index_view(Address address, std::uint32_t size) noexcept {
+    return IndexView{address, size, 16u};
+}
+[[nodiscard]] inline Rect rect(std::int32_t left, std::int32_t top, std::int32_t right, std::int32_t bottom) noexcept {
+    return Rect{left, top, right, bottom};
+}
+[[nodiscard]] inline bool is_null(Table table) noexcept {
+    return table.ptr == 0;
+}
+
+using TextureRef = std::shared_ptr<gles::Texture>;
+using BufferRef = std::shared_ptr<gles::Buffer>;
+[[nodiscard]] Resource* raw(const BufferRef& buffer) noexcept;
+using TextureObject = gles::Texture;
+[[nodiscard]] inline TextureObject* raw(const TextureRef& texture) noexcept { return texture.get(); }
+[[nodiscard]] TextureRef texture_ref(TextureObject* texture);
+struct CpuDescriptor {
+    std::uint64_t ptr = 0;
+};
+struct DeviceRef {
+    Device* handle = nullptr;
+    DeviceRef& operator=(Device* device) noexcept {
+        handle = device;
+        return *this;
+    }
+    [[nodiscard]] Device* Get() const noexcept { return handle; }
+    void Reset() noexcept { handle = nullptr; }
+    explicit operator bool() const noexcept { return handle != nullptr; }
+    bool operator!=(std::nullptr_t) const noexcept { return handle != nullptr; }
+    bool operator==(std::nullptr_t) const noexcept { return handle == nullptr; }
+};
+inline constexpr unsigned kMaxTexture2DDimension = 4096u;
+
+[[nodiscard]] TextureRef create_render_texture(Device* device, std::uint32_t width, std::uint32_t height);
+
+}  // namespace galaxy::gx::gpu
 #else
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN

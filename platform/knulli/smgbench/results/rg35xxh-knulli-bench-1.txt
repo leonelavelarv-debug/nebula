@@ -1,0 +1,164 @@
+[    2.759] presence: At the title screen | 
+[    2.793] tour: stops 44, 900 frames apart
+[bench] stage=FileSelect fps=59.2 retraces/s=60.1 sim_cpu=18%
+[   17.776] tour: 1/44 AstroGalaxy 1
+[   18.543] presence: Observatory Grounds | 0 Power Stars
+[bench] stage=AstroGalaxy fps=60.0 retraces/s=60.0 sim_cpu=25%
+[bench] stage=AstroGalaxy fps=60.0 retraces/s=60.0 sim_cpu=43%
+[   33.559] tour: 2/44 BattleShipGalaxy 1
+[   34.909] presence: Battlerock Galaxy | Battlerock Barrage
+[bench] stage=BattleShipGalaxy fps=60.0 retraces/s=60.0 sim_cpu=33%
+[   49.926] tour: 3/44 BeltConveyerExGalaxy 1
+[bench] stage=BattleShipGalaxy fps=60.0 retraces/s=60.0 sim_cpu=30%
+[   50.709] presence: Sweet Sweet Galaxy | Rocky Road
+[bench] stage=BeltConveyerExGalaxy fps=60.0 retraces/s=60.0 sim_cpu=17%
+[   65.726] tour: 4/44 BreakDownPlanetGalaxy 1
+[   66.243] presence: Hurry-Scurry Galaxy | Shrinking Satellite
+[bench] stage=BreakDownPlanetGalaxy fps=60.0 retraces/s=60.0 sim_cpu=23%
+[bench] stage=BreakDownPlanetGalaxy fps=60.0 retraces/s=60.0 sim_cpu=33%
+[   81.259] tour: 5/44 CannonFleetGalaxy 1
+[   82.859] presence: Dreadnought Galaxy | Infiltrating the Dreadnought
+[bench] stage=CannonFleetGalaxy fps=60.0 retraces/s=60.0 sim_cpu=32%
+[   97.876] tour: 6/44 CocoonExGalaxy 1
+[   98.659] presence: Sling Pod Galaxy | A Very Sticky Situation
+[bench] stage=CocoonExGalaxy fps=60.0 retraces/s=60.0 sim_cpu=35%
+[bench] stage=CocoonExGalaxy fps=60.0 retraces/s=60.0 sim_cpu=39%
+[  113.676] tour: 7/44 CosmosGardenGalaxy 1
+[  115.809] presence: Gusty Garden Galaxy | Bunnies in the Wind
+[bench] stage=CosmosGardenGalaxy fps=60.0 retraces/s=60.0 sim_cpu=50%
+[bench] stage=CosmosGardenGalaxy fps=60.0 retraces/s=60.0 sim_cpu=39%
+[  130.826] tour: 8/44 CubeBubbleExLv1Galaxy 1
+[  131.743] presence: Bubble Breeze Galaxy | Through the Poison Swamp
+[bench] stage=CubeBubbleExLv1Galaxy fps=60.0 retraces/s=60.0 sim_cpu=30%
+[  146.759] tour: 9/44 CubeBubbleExLv2Galaxy 1
+[  148.026] presence: Bubble Blast Galaxy | The Electric Labyrinth
+[bench] stage=CubeBubbleExLv2Galaxy fps=59.9 retraces/s=59.9 sim_cpu=34%
+[bench] stage=CubeBubbleExLv2Galaxy fps=60.0 retraces/s=60.0 sim_cpu=45%
+[  163.042] tour: 10/44 DarkRoomGalaxy 1
+[  163.876] presence: Matter Splatter Galaxy | Watch Your Step
+[bench] stage=DarkRoomGalaxy fps=60.0 retraces/s=60.0 sim_cpu=26%
+[  178.892] tour: 11/44 EggStarGalaxy 1
+[bench] stage=DarkRoomGalaxy fps=59.9 retraces/s=59.9 sim_cpu=20%
+[  181.209] presence: Good Egg Galaxy | Dino Piranha
+[bench] stage=EggStarGalaxy fps=60.0 retraces/s=60.0 sim_cpu=28%
+[  196.226] tour: 12/44 FactoryGalaxy 1
+[  198.643] presence: Toy Time Galaxy | Heavy Metal Mecha-Bowser
+[bench] stage=FactoryGalaxy fps=59.9 retraces/s=60.0 sim_cpu=39%
+[bench] stage=FactoryGalaxy fps=60.0 retraces/s=60.0 sim_cpu=39%
+[  213.659] tour: 13/44 FishTunnelGalaxy 1
+[  214.643] presence: Bigmouth Galaxy | Bigmouth's Gold Bait
+[bench] stage=FishTunnelGalaxy fps=59.9 retraces/s=59.9 sim_cpu=30%
+[  229.659] tour: 14/44 FlipPanelExGalaxy 1
+[  230.193] presence: Flipswitch Galaxy | Painting the Planet Yellow
+[bench] stage=FlipPanelExGalaxy fps=60.0 retraces/s=60.0 sim_cpu=24%
+[bench] stage=FlipPanelExGalaxy fps=60.0 retraces/s=60.0 sim_cpu=17%
+[  245.209] tour: 15/44 FloaterOtaKingGalaxy 1
+[  246.059] presence: Bowser Jr.'s Lava Reactor | King Kaliente's Spicy Return
+[bench] stage=FloaterOtaKingGalaxy fps=60.0 retraces/s=60.0 sim_cpu=22%
+[bench] stage=FloaterOtaKingGalaxy fps=60.0 retraces/s=60.0 sim_cpu=20%
+[  261.076] tour: 16/44 HeavenlyBeachGalaxy 1
+[  263.126] presence: Beach Bowl Galaxy | Sunken Treasure
+[bench] stage=HeavenlyBeachGalaxy fps=60.0 retraces/s=60.0 sim_cpu=32%
+[  278.142] tour: 17/44 HeavensDoorGalaxy 1
+[  279.476] presence: Gateway Galaxy | Grand Star Rescue
+[bench] stage=HeavensDoorGalaxy fps=60.0 retraces/s=60.0 sim_cpu=40%
+[bench] stage=HeavensDoorGalaxy fps=60.0 retraces/s=60.0 sim_cpu=21%
+[  294.492] tour: 18/44 HellProminenceGalaxy 1
+[  296.626] presence: Melty Molten Galaxy | The Sinking Lava Spire
+[bench] stage=HellProminenceGalaxy fps=59.9 retraces/s=59.9 sim_cpu=35%
+[bench] stage=HellProminenceGalaxy fps=60.0 retraces/s=60.0 sim_cpu=36%
+[  311.642] tour: 19/44 HoneyBeeExGalaxy 1
+[  312.609] presence: Honeyclimb Galaxy | Scaling the Sticky Wall
+[bench] stage=HoneyBeeExGalaxy fps=60.0 retraces/s=60.0 sim_cpu=21%
+[  327.626] tour: 20/44 HoneyBeeKingdomGalaxy 1
+[  329.593] presence: Honeyhive Galaxy | Bee
+[bench] stage=HoneyBeeKingdomGalaxy fps=60.0 retraces/s=60.0 sim_cpu=28%
+[bench] stage=HoneyBeeKingdomGalaxy fps=60.0 retraces/s=60.0 sim_cpu=47%
+[  344.609] tour: 21/44 IceVolcanoGalaxy 1
+[  346.643] presence: Freezeflame Galaxy | The Frozen Peak of Baron Brrr
+[bench] stage=IceVolcanoGalaxy fps=60.0 retraces/s=60.0 sim_cpu=51%
+[bench] stage=IceVolcanoGalaxy fps=60.0 retraces/s=60.0 sim_cpu=37%
+[  361.659] tour: 22/44 KoopaBattleVs1Galaxy 1
+[  362.976] presence: Bowser's Star Reactor | The Fiery Stronghold
+[bench] stage=KoopaBattleVs1Galaxy fps=60.0 retraces/s=60.0 sim_cpu=37%
+[  377.992] tour: 23/44 KoopaBattleVs2Galaxy 1
+[  379.509] presence: Bowser's Dark Matter Plant | Darkness on the Horizon
+[bench] stage=KoopaBattleVs2Galaxy fps=60.0 retraces/s=60.0 sim_cpu=32%
+[bench] stage=KoopaBattleVs2Galaxy fps=60.0 retraces/s=60.0 sim_cpu=20%
+[  394.526] tour: 24/44 KoopaBattleVs3Galaxy 1
+[  396.843] presence: Bowser's Galaxy Reactor | The Fate of the Universe
+[bench] stage=KoopaBattleVs3Galaxy fps=60.0 retraces/s=60.0 sim_cpu=31%
+[bench] stage=KoopaBattleVs3Galaxy fps=60.0 retraces/s=60.0 sim_cpu=41%
+[  411.859] tour: 25/44 KoopaJrShipLv1Galaxy 1
+[  413.393] presence: Bowser Jr.'s Airship Armada | Sinking the Airships
+[bench] stage=KoopaJrShipLv1Galaxy fps=60.0 retraces/s=60.0 sim_cpu=30%
+[  428.409] tour: 26/44 OceanFloaterLandGalaxy 1
+[  429.993] presence: Buoy Base Galaxy | The Floating Fortress
+[bench] stage=OceanFloaterLandGalaxy fps=60.0 retraces/s=60.0 sim_cpu=35%
+[bench] stage=OceanFloaterLandGalaxy fps=60.0 retraces/s=60.0 sim_cpu=39%
+[  445.009] tour: 27/44 OceanPhantomCaveGalaxy 1
+[  447.493] presence: Deep Dark Galaxy | The Underground Ghost Ship
+[bench] stage=OceanPhantomCaveGalaxy fps=60.0 retraces/s=60.0 sim_cpu=39%
+[bench] stage=OceanPhantomCaveGalaxy fps=60.0 retraces/s=60.0 sim_cpu=34%
+[  462.509] tour: 28/44 OceanRingGalaxy 1
+[  463.893] presence: Sea Slide Galaxy | Going after Guppy
+[bench] stage=OceanRingGalaxy fps=60.0 retraces/s=60.0 sim_cpu=31%
+[  478.909] tour: 29/44 PeachCastleFinalGalaxy 1
+[  479.959] presence: Grand Finale Galaxy | The Star Festival
+[bench] stage=PeachCastleFinalGalaxy fps=60.0 retraces/s=60.0 sim_cpu=38%
+[bench] stage=PeachCastleFinalGalaxy fps=60.0 retraces/s=60.0 sim_cpu=44%
+[  494.976] tour: 30/44 PeachCastleGardenGalaxy 1
+[  496.043] presence: Castle Gardens | Peach's Castle
+[bench] stage=PeachCastleGardenGalaxy fps=60.0 retraces/s=60.0 sim_cpu=42%
+[bench] stage=PeachCastleGardenGalaxy fps=60.0 retraces/s=60.0 sim_cpu=37%
+[  511.059] tour: 31/44 PhantomGalaxy 1
+[  513.326] presence: Ghostly Galaxy | Luigi and the Haunted Mansion
+[bench] stage=PhantomGalaxy fps=60.0 retraces/s=60.0 sim_cpu=30%
+[  528.342] tour: 32/44 ReverseKingdomGalaxy 1
+[  530.326] presence: Gold Leaf Galaxy | Star Bunnies on the Hunt
+[bench] stage=ReverseKingdomGalaxy fps=60.0 retraces/s=60.0 sim_cpu=31%
+[bench] stage=ReverseKingdomGalaxy fps=60.0 retraces/s=60.0 sim_cpu=31%
+[  545.342] tour: 33/44 SandClockGalaxy 1
+[  547.093] presence: Dusty Dune Galaxy | Soaring on the Desert Winds
+[bench] stage=SandClockGalaxy fps=60.0 retraces/s=60.0 sim_cpu=42%
+[bench] stage=SandClockGalaxy fps=60.0 retraces/s=60.0 sim_cpu=32%
+[  562.109] tour: 34/44 SkullSharkGalaxy 1
+[  562.859] presence: Bonefin Galaxy | Kingfin's Fearsome Waters
+[bench] stage=SkullSharkGalaxy fps=60.0 retraces/s=60.0 sim_cpu=27%
+[  577.876] tour: 35/44 SnowCapsuleGalaxy 1
+[  578.509] presence: Snow Cap Galaxy | Star Bunnies in the Snow
+[bench] stage=SnowCapsuleGalaxy fps=60.0 retraces/s=60.0 sim_cpu=28%
+[bench] stage=SnowCapsuleGalaxy fps=60.0 retraces/s=60.0 sim_cpu=34%
+[  593.526] tour: 36/44 StarDustGalaxy 1
+[  595.143] presence: Space Junk Galaxy | Pull Star Path
+[bench] stage=StarDustGalaxy fps=60.0 retraces/s=60.0 sim_cpu=36%
+[  610.159] tour: 37/44 SurfingLv1Galaxy 1
+[bench] stage=StarDustGalaxy fps=60.0 retraces/s=60.0 sim_cpu=35%
+[  611.426] presence: Loopdeeloop Galaxy | Surfing 101
+[bench] stage=SurfingLv1Galaxy fps=60.0 retraces/s=60.0 sim_cpu=31%
+[  626.442] tour: 38/44 SurfingLv2Galaxy 1
+[  627.526] presence: Loopdeeswoop Galaxy | The Galaxy's Greatest Wave
+[bench] stage=SurfingLv2Galaxy fps=60.0 retraces/s=60.0 sim_cpu=29%
+[bench] stage=SurfingLv2Galaxy fps=60.0 retraces/s=60.0 sim_cpu=28%
+[  642.542] tour: 39/44 TamakoroExLv1Galaxy 1
+[  643.293] presence: Rolling Green Galaxy | Rolling in the Clouds
+[bench] stage=TamakoroExLv1Galaxy fps=60.0 retraces/s=60.0 sim_cpu=19%
+[  658.309] tour: 40/44 TamakoroExLv2Galaxy 1
+[  659.309] presence: Rolling Gizmo Galaxy | Gizmos, Gears, and Gadgets
+[bench] stage=TamakoroExLv2Galaxy fps=60.0 retraces/s=60.0 sim_cpu=27%
+[bench] stage=TamakoroExLv2Galaxy fps=60.0 retraces/s=60.0 sim_cpu=24%
+[  674.326] tour: 41/44 TearDropGalaxy 1
+[  675.143] presence: Drip Drop Galaxy | Giant Eel Outbreak
+[bench] stage=TearDropGalaxy fps=60.0 retraces/s=60.0 sim_cpu=29%
+[  690.159] tour: 42/44 TeresaMario2DGalaxy 1
+[bench] stage=TearDropGalaxy fps=60.0 retraces/s=60.0 sim_cpu=43%
+[  690.976] presence: Boo's Boneyard Galaxy | Racing the Spooky Speedster
+[bench] stage=TeresaMario2DGalaxy fps=60.0 retraces/s=60.0 sim_cpu=11%
+[  705.992] tour: 43/44 TransformationExGalaxy 1
+[  707.009] presence: Sand Spiral Galaxy | Choosing a Favorite Snack
+[bench] stage=TransformationExGalaxy fps=60.0 retraces/s=60.0 sim_cpu=20%
+[bench] stage=TransformationExGalaxy fps=60.0 retraces/s=60.0 sim_cpu=25%
+[  722.026] tour: 44/44 TriLegLv1Galaxy 1
+[  723.293] presence: Bowser Jr.'s Robot Reactor | Megaleg's Moon
+[bench] stage=TriLegLv1Galaxy fps=60.0 retraces/s=60.0 sim_cpu=26%
+[  738.309] tour: done

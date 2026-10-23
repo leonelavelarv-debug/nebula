@@ -41,6 +41,9 @@
 #if defined(NEBULA_GPU_VULKAN)
 #include "galaxy/gx/vk/pipeline_cache_vk.h"
 #include "galaxy/gx/vk/renderer_vk.h"
+#elif defined(NEBULA_GPU_GLES)
+#include "galaxy/gx/gles/pipeline_cache_gles.h"
+#include "galaxy/gx/gles/renderer_gles.h"
 #else
 #include "galaxy/gx/pipeline_cache.h"
 #include "galaxy/gx/renderer_d3d12.h"

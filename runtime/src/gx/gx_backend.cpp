@@ -401,7 +401,11 @@ std::string present_snapshot_path() {
         presents % every > std::min(after, every - 1u)) {
         return {};
     }
+#if defined(_WIN32)
     return directory + "\\present_" + std::to_string(presents) + ".ppm";
+#else
+    return directory + "/present_" + std::to_string(presents) + ".ppm";
+#endif
 }
 
 bool capture_present_requested(std::uint64_t request) {
@@ -929,8 +933,16 @@ bool async_texture_decode_enabled() {
         if (getenv_s(&length, value, sizeof(value),
                      "GALAXY_GX_ASYNC_TEXTURE_DECODE") != 0 ||
             length <= 1u) {
+#if defined(NEBULA_GPU_GLES)
+            // GL uploads the staging bytes when TextureCache records the upload (texture_backend_gles.h).
+            return false;
+#else
             return true;
+#endif
         }
+#if defined(NEBULA_GPU_GLES)
+        return false;
+#endif
         return value[0] != '0' && value[0] != 'n' && value[0] != 'N';
     }();
     return enabled;
@@ -7702,7 +7714,7 @@ RtTextureSource GxBackend::rt_texture_source(unsigned map) const noexcept {
     if (handle.resource == nullptr) {
         return {};
     }
-#if defined(NEBULA_GPU_VULKAN)
+#if defined(NEBULA_GPU_VULKAN) || defined(NEBULA_GPU_GLES)
     return {};  // no ray tracing on Vulkan yet
 #else
     D3D12_CPU_DESCRIPTOR_HANDLE view = texture_cache_.backend().srv_cpu_base();

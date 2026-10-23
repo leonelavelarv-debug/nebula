@@ -11,6 +11,8 @@
 
 #if defined(NEBULA_GPU_VULKAN)
 #include "galaxy/gx/vk/texture_backend_vk.h"
+#elif defined(NEBULA_GPU_GLES)
+#include "galaxy/gx/gles/texture_backend_gles.h"
 #else
 #include "galaxy/gx/placed_texture_allocator.h"
 

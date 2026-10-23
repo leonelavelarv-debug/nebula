@@ -51,7 +51,9 @@ inline int64_t perf_hint_retrace() noexcept { return 0; }
 #if defined(NEBULA_HOST_SDL)
 #include "sdl_host.h"
 
+#if !defined(NEBULA_HOST_SDL2)  // KNULLI's SDL2 (platform/knulli/game) needs no SDL_main
 #include <SDL3/SDL_main.h>
+#endif
 #endif
 
 #include <algorithm>

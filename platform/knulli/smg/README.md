@@ -1,0 +1,20 @@
+# Super Mario Galaxy (RG35XX H, KNULLI)
+
+Super Mario Galaxy con gráficos en la consola: el código descompilado de Petari compilado nativo para ARM64, el host
+de Nebula y su renderer GX en OpenGL ES 3.2 (Mali-G31). Primera versión de prueba.
+
+1. Copia `Super Mario Galaxy.sh` y la carpeta `smg/` a `ports`.
+2. Copia tu `game.pak` (el mismo de `smgbench`) a `smg/gamedata/`.
+3. Ejecuta **Super Mario Galaxy** desde Ports. SELECT+START sale.
+
+La primera vez cada efecto nuevo compila su shader y el juego se detiene un momento (tirones); se guardan en
+`smg/data/shadercache` y la siguiente vez cargan rápido.
+
+Controles (esquema Nintendo): stick izquierdo = Nunchuk, A = saltar, B = saltar/atrás, X/Y/R2 = giro, L1 = Wii B
+(disparar trozos de estrella), L2 = Z (agacharse), stick derecho = puntero, R1 = centrar puntero, cruceta = cámara,
+START = +, SELECT = −. `NEBULA_PAD_SCHEME=xbox` en el lanzador cambia A y B de lado.
+
+Para diagnóstico manda `smg/log.txt`, `smg/crashes/` y alguna captura de `smg/shots/` (cada 30 s, formato PPM).
+
+Contiene código de Nebula (GPL-3.0), Petari (CC0), glslang (BSD/Apache-2.0), SPIRV-Cross (Apache-2.0) y
+SPIRV-Tools (Apache-2.0); ningún dato de Nintendo: el juego viene de tu disco.
