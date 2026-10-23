@@ -4,19 +4,18 @@ Super Mario Galaxy con gráficos en la consola: el código descompilado de Petar
 de Nebula y su renderer GX en OpenGL ES 3.2 (Mali-G31). Primera versión de prueba.
 
 1. Copia `Super Mario Galaxy.sh` y la carpeta `smg/` a `ports` (el zip ya viene así: se descomprime dentro de `ports`).
-2. El juego: pon tu disco (ISO, RVZ, WIA, WBFS, GCZ o CISO) en `smg/gamedata/` (o en `roms/wii/`) y abre
-   **Cactus Galaxy Wrapper** en Ports (o directamente el juego, que lo abre solo si falta `game.pak`). Lo convierte
-   ahí mismo en `smg/gamedata/game.pak` con `smg/nebula-pak` (nativo, viene en el port: sin Termux ni otro equipo),
-   con el avance en pantalla y un saguaro que crece hasta florecer. Tarda lo que la tarjeta en escribir ~4 GB (unos
-   minutos); hacen falta ~3.4 GB libres (ext4) o ~4.3 GB (exFAT; FAT32 no sirve, no admite ficheros de más de 4 GB).
-   Sale en el idioma de tu KNULLI (español, English, français, português, italiano o Deutsch). Antes de instalar
-   pregunta el idioma del juego (Español, English, Français y, con el parche de la traducción en `smg/patches/`,
-   Português do Brasil, que se aplica al disco al convertir); en el menú, ◄► lo cambia luego.
-   Cruceta: elegir; A: convertir; B: salir o cancelar; X: borrar el disco al terminar. Solo vale el disco USA
-   (RMGE01).
+2. Ejecuta **Super Mario Galaxy** desde Ports. La primera vez se abre **Cactus Galaxy Wrapper** (va dentro del port):
+   - Sin el juego, te pide el disco: copia tu ISO o RVZ (también WIA, WBFS, GCZ o CISO) de Super Mario Galaxy USA
+     (RMGE01) a `smg/gamedata/` (o a `roms/wii/`) y aparece solo. Eliges el idioma del juego (Español, English,
+     Français y, con el parche de la traducción en `smg/patches/`, Português do Brasil, que se aplica al convertir)
+     y lo convierte ahí mismo en `smg/gamedata/game.pak` con `smg/nebula-pak` (sin Termux ni otro equipo). Tarda lo
+     que la tarjeta en escribir ~4 GB; hacen falta ~3.4 GB libres (ext4) o ~4.3 GB (exFAT; FAT32 no sirve).
+   - Con el juego ya en `smg/gamedata/`, te ofrece los idiomas del juego.
+   Después el juego arranca directamente; **mantén SELECT (o L1) al abrirlo** para volver a las opciones. Sale en el
+   idioma de tu KNULLI. `NEBULA_PAK_DELETE_IMAGE=1` en el lanzador borra la imagen al terminar.
    - También se puede hacer fuera: `bash tools/cactus-galaxy-wrapper.sh <imagen> [carpeta smg]` en Termux, Linux o
      macOS.
-3. Ejecuta **Super Mario Galaxy** desde Ports. MENU (Function) + START sale, como en el resto de KNULLI.
+3. MENU (Function) + START sale, como en el resto de KNULLI.
 4. Portada y ficha: el primer arranque con red baja la portada, la captura y la pantalla de título de
    libretro-thumbnails a `smg/` y escribe la ficha (descripción, desarrollador, fecha...) en `ports/gamelist.xml`
    (`smg/gamelist.py`; la primera vez guarda una copia en `gamelist.xml.antes-smg`). La ficha se da a EmulationStation por su API local (127.0.0.1:1234, la de los scrapers de Batocera) para que no

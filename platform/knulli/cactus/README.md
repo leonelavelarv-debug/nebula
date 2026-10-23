@@ -4,8 +4,11 @@ La interfaz de la consola (RG35XX H, KNULLI) que convierte el disco de Super Mar
 `game.pak` del port: un desierto de noche bajo una galaxia, con un saguaro que crece con el avance y florece al
 terminar. La conversión la hace `nebula-pak` (`platform/knulli/pak`) como proceso aparte.
 
-- En Ports: **Cactus Galaxy Wrapper** (`platform/knulli/smg/Cactus Galaxy Wrapper.sh`). El lanzador del juego la abre
-  sola (`--auto`) si falta `game.pak`; con un único disco válido, convierte sin preguntar y deja arrancar el juego.
+- Va dentro del port: el lanzador de Super Mario Galaxy la abre (`--setup`) la primera vez (sin `game.pak` o sin
+  idioma elegido) y cuando se mantiene SELECT o L1 al abrir el juego (`--held` lo mira en 0,35 s). Sin `game.pak`
+  pide el disco y lo detecta en cuanto se copia; con un único disco válido va directo al idioma y lo convierte; con
+  `game.pak` ofrece los idiomas del juego (A: jugar; los que necesitan otro game.pak, PT-BR o el idioma que este
+  sustituyó, lo rehacen desde el disco). Salida 0: arrancar el juego; 1: volver sin jugar; 3: sin pantalla.
 - Busca discos en `smg/gamedata/`, `smg/` y `roms/wii/`; los comprueba con `nebula-pak --identify`.
 - Idioma del juego: al convertir pregunta Español, English o Français (lo que trae el disco USA) y lo guarda en
   `smg/idioma.txt`, que el lanzador del juego pasa como `GALAXY_LANGUAGE`. En el menú, ◄► lo cambia en cualquier

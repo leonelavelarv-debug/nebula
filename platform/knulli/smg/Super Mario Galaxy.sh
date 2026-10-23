@@ -17,10 +17,11 @@ cd "$GAMEDIR" || exit 1
 exec > >(tee "$GAMEDIR/log.txt") 2>&1
 chmod +x "$GAMEDIR/nebula"
 echo "nebula: $(md5sum "$GAMEDIR/nebula" | cut -c1-12) del $(date -r "$GAMEDIR/nebula" '+%F %T' 2>/dev/null)"
-# Sin game.pak: Cactus Galaxy Wrapper (smg/cactus-galaxy-wrapper, la interfaz; convierte con smg/nebula-pak, nativo:
-# sin Termux ni otro equipo) busca tu disco (ISO, RVZ, WIA, WBFS, GCZ o CISO) en smg/gamedata/ y en roms/wii/, lo
-# convierte una vez en smg/gamedata/game.pak mostrando el avance y deja arrancar el juego. Tambien esta en Ports como
-# "Cactus Galaxy Wrapper". NEBULA_PAK_DELETE_IMAGE=1 borra la imagen al terminar.
+# Cactus Galaxy Wrapper (smg/cactus-galaxy-wrapper, dentro del port) se abre la primera vez: sin game.pak pide el
+# disco (ISO, RVZ, WIA, WBFS, GCZ o CISO en smg/gamedata/ o roms/wii/; lo detecta en cuanto se copia), pregunta el
+# idioma y lo convierte con smg/nebula-pak (nativo: sin Termux ni otro equipo); con game.pak, ofrece los idiomas del
+# juego. Despues arranca el juego directamente; manteniendo SELECT (o L1) al abrirlo vuelven las opciones.
+# NEBULA_PAK_DELETE_IMAGE=1 borra la imagen al terminar de convertir.
 screen_message() {
   echo "$1"
   if type pm_message >/dev/null 2>&1; then pm_message "$1"; else
@@ -28,16 +29,26 @@ screen_message() {
   fi
 }
 for tool in nebula-pak cactus-galaxy-wrapper; do [ -f "$GAMEDIR/$tool" ] && chmod +x "$GAMEDIR/$tool"; done
-if [ ! -f "$GAMEDIR/gamedata/game.pak" ] && [ -x "$GAMEDIR/cactus-galaxy-wrapper" ]; then
-  delete=""; [ "${NEBULA_PAK_DELETE_IMAGE:-0}" = "1" ] && delete="--delete-image"
-  SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig" "$GAMEDIR/cactus-galaxy-wrapper" --smg "$GAMEDIR" --auto $delete
-  cactus=$?
-  echo "Cactus Galaxy Wrapper: salida $cactus"
-else
-  cactus=0
+cactus=0
+if [ -x "$GAMEDIR/cactus-galaxy-wrapper" ]; then
+  wrapper=0
+  if [ ! -f "$GAMEDIR/gamedata/game.pak" ] || [ ! -f "$GAMEDIR/idioma.txt" ]; then
+    wrapper=1  # primera vez
+  elif SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig" "$GAMEDIR/cactus-galaxy-wrapper" --held; then
+    wrapper=1  # SELECT mantenido al abrir
+  fi
+  if [ "$wrapper" = 1 ]; then
+    delete=""; [ "${NEBULA_PAK_DELETE_IMAGE:-0}" = "1" ] && delete="--delete-image"
+    SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig" "$GAMEDIR/cactus-galaxy-wrapper" --smg "$GAMEDIR" --setup $delete
+    cactus=$?
+    echo "Cactus Galaxy Wrapper: salida $cactus"
+    if [ "$cactus" = 1 ]; then  # salir sin jugar
+      pm_finish; exit 0
+    fi
+  fi
 fi
-# Sin pantalla para la interfaz (salida 3): la version de texto, con el avance en la consola.
-if [ ! -f "$GAMEDIR/gamedata/game.pak" ] && [ "$cactus" = 3 ] && [ -x "$GAMEDIR/nebula-pak" ] && [ -f "$GAMEDIR/cactus-galaxy-wrapper.sh" ]; then
+# Sin pantalla para la interfaz (salida 3) o sin ella: la version de texto, con el avance en la consola.
+if [ ! -f "$GAMEDIR/gamedata/game.pak" ] && { [ "$cactus" = 3 ] || [ ! -x "$GAMEDIR/cactus-galaxy-wrapper" ]; } && [ -x "$GAMEDIR/nebula-pak" ] && [ -f "$GAMEDIR/cactus-galaxy-wrapper.sh" ]; then
   image=$(find "$GAMEDIR/gamedata" -maxdepth 1 -type f \( -iname '*.iso' -o -iname '*.rvz' -o -iname '*.wia' \
     -o -iname '*.wbfs' -o -iname '*.gcz' -o -iname '*.ciso' \) 2>/dev/null | head -1)
   if [ -n "$image" ]; then

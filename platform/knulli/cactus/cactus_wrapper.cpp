@@ -745,7 +745,7 @@ double now_seconds() {
 // ---------------------------------------------------------------------------------------------------------------
 // The app.
 
-enum class Screen { Menu, Language, Converting, Done, Failed };
+enum class Screen { NeedDisc, Menu, Language, Converting, Done, Failed };
 
 // The languages of the USA disc, as GALAXY_LANGUAGE names them (the launcher reads smg/idioma.txt), and Brazilian
 // Portuguese: the disc patched on the way with a translation's xdelta (smg/patches/), into one of those three slots.
@@ -842,6 +842,35 @@ struct App {
     language_choice = std::find(list.begin(), list.end(), language) != list.end() ? language : list[0];
     screen = Screen::Language;
   }
+  // With game.pak already made (no disc chosen): its languages, plus those that need it made again (PT-BR when the
+  // patch is there, or the language the PT-BR one replaced) if a valid disc is at hand.
+  bool pak_mode() const { return pending.path.empty(); }
+  const Image* valid_disc() {
+    for (const Image& im : images) if (im.status == 0) return &im;
+    return nullptr;
+  }
+  std::vector<int> language_options() {
+    if (!pak_mode()) return install_languages();
+    std::vector<int> out = menu_languages();
+    std::lock_guard<std::mutex> lock(images_mutex);
+    if (valid_disc() != nullptr) {
+      if (pak_patched_slot >= 0) out.push_back(pak_patched_slot);
+      else if (!patch_file.empty()) out.push_back(kPtBr);
+    }
+    return out;
+  }
+  bool needs_reinstall(int which) const {
+    if (!pak_mode()) return false;
+    const std::vector<int> have = menu_languages();
+    return std::find(have.begin(), have.end(), which) == have.end();
+  }
+  void show_installed_languages() {
+    pending = Image();
+    language_choice = language;
+    screen = Screen::Language;
+  }
+  std::vector<std::string> scan_dirs;
+  double rescan_at = 0;
   void find_patch() {
     for (const std::string& dir : {smg + "/patches", gamedata, smg}) {
       DIR* d = opendir(dir.c_str());
@@ -984,11 +1013,33 @@ struct App {
         if (key == kConfirm && selected < int(images.size()) && images[selected].status == 0) ask_language(images[selected]);
         break;
       }
-      case Screen::Language:
-        if (key == kUp || key == kPrev) language_choice = step(install_languages(), language_choice, -1);
-        if (key == kDown || key == kNext) language_choice = step(install_languages(), language_choice, 1);
-        if (key == kBack) screen = Screen::Menu;
-        if (key == kConfirm) start_conversion(pending, language_choice);
+      case Screen::Language: {
+        const std::vector<int> options = language_options();
+        if (key == kUp || key == kPrev) language_choice = step(options, language_choice, -1);
+        if (key == kDown || key == kNext) language_choice = step(options, language_choice, 1);
+        if (key == kBack) {
+          if (pak_mode()) quit = true;  // leave without playing
+          else screen = Screen::Menu;
+        }
+        if (key == kConfirm) {
+          if (!pak_mode()) {
+            start_conversion(pending, language_choice);
+          } else if (!needs_reinstall(language_choice)) {
+            save_language(language_choice);  // the game starts in it
+            result = 0;
+            quit = true;
+          } else {
+            images_mutex.lock();
+            const Image* disc = valid_disc();
+            const Image chosen = disc ? *disc : Image();
+            images_mutex.unlock();
+            if (!chosen.path.empty()) start_conversion(chosen, language_choice);
+          }
+        }
+        break;
+      }
+      case Screen::NeedDisc:
+        if (key == kBack) quit = true;
         break;
       case Screen::Converting:
         if (key == kBack && job && !cancelling) { cancelling = true; kill(job->pid, SIGTERM); }
@@ -997,7 +1048,12 @@ struct App {
         if (key == kConfirm || key == kBack) quit = true;
         break;
       case Screen::Failed:
-        if (key == kConfirm) { screen = Screen::Menu; refresh_disk(); }
+        if (key == kConfirm) {
+          refresh_disk();
+          error.clear();
+          if (have_pak) show_installed_languages();
+          else screen = images.empty() ? Screen::NeedDisc : Screen::Menu;
+        }
         if (key == kBack) quit = true;
         break;
     }
@@ -1005,6 +1061,27 @@ struct App {
 
   void tick() {
     finish_job();
+    if (screen == Screen::NeedDisc && now_seconds() > rescan_at) {  // the disc copied in while we wait
+      rescan_at = now_seconds() + 2.0;
+      if (identified) {
+        std::vector<Image> found = find_images(scan_dirs);
+        if (!found.empty()) {
+          if (identify_thread.joinable()) identify_thread.join();
+          {
+            std::lock_guard<std::mutex> lock(images_mutex);
+            images = std::move(found);
+            selected = 0;
+          }
+          printf("[cactus] disco encontrado: %s\n", images[0].path.c_str());
+          fflush(stdout);
+          identified = false;
+          refresh_disk();
+          start_identify();
+          auto_mode = true;
+          screen = Screen::Menu;
+        }
+      }
+    }
     if (auto_mode && screen == Screen::Menu && identified && !job && error.empty()) {
       std::lock_guard<std::mutex> lock(images_mutex);
       int valid = 0, which = -1;
@@ -1034,6 +1111,7 @@ struct App {
       cv.star(120.0f + std::cos(ang) * 46.0f, top + 10.0f + std::sin(ang) * 14.0f, 7.0f, 0xffe066, 0.95f, time * 3.0f);
     }
     switch (screen) {
+      case Screen::NeedDisc: draw_need_disc(cv, time); break;
       case Screen::Menu: draw_menu(cv); break;
       case Screen::Language: draw_language(cv, time); break;
       case Screen::Converting: draw_converting(cv, time); break;
@@ -1103,10 +1181,25 @@ struct App {
     hints(cv, 436, {{"X", std::string(T(S_DELETE_DISC)) + (delete_after ? T(S_YES) : T(S_NO))}});
   }
 
+  void draw_need_disc(Canvas& cv, float time) {
+    text_center(cv, kCenter, 136, fit(T(S_NEED_DISC), 14), 3, kGold);
+    int y = 180;
+    for (const std::string& l : wrap(T(S_NEED_DISC_HELP), 22)) {
+      const bool folder = l.find("ports/smg") != std::string::npos;
+      text(cv, folder ? kCenter - text_width(l, 2) / 2 : kLeft + 4, y, l, 2, folder ? kGreen : kWhite);
+      y += folder ? 26 : 22;
+    }
+    const int dots = int(time * 2.0f) % 4;
+    std::string searching = T(S_SEARCHING);
+    if (searching.size() > 3 && searching.compare(searching.size() - 3, 3, "\xE2\x80\xA6") == 0) searching.resize(searching.size() - 3);
+    text_center(cv, kCenter, 384, searching + std::string(size_t(dots), '.'), 2, kMuted, 0.7f + 0.3f * std::sin(time * 3.0f));
+    hints(cv, 430, {{"B", T(S_EXIT)}});
+  }
+
   void draw_language(Canvas& cv, float time) {
     text_center(cv, kCenter, 128, T(S_GAME_LANGUAGE), 2, kGold);
     text_center(cv, kCenter, 150, T(S_GAME_LANGUAGE_SUB), 2, kMuted);
-    const std::vector<int> list = install_languages();
+    const std::vector<int> list = language_options();
     const int spacing = list.size() > 3 ? 46 : 58, box = list.size() > 3 ? 44 : 50;
     for (size_t row = 0; row < list.size(); ++row) {
       const int i = list[row];
@@ -1120,9 +1213,24 @@ struct App {
       text(cv, kLeft + 50, y, kLanguages[i].name, 3, sel ? kWhite : kMuted);
       text(cv, kLeft + 50, y + 24, kLanguages[i].note, 2, sel ? kGreen : 0x8f82a8);
     }
-    text_center(cv, kCenter, 364, fit(pending.name, 22), 2, kMuted);
-    text_center(cv, kCenter, 384, fit(T(S_CHANGE_LATER), 22), 2, 0x8f82a8);
-    hints(cv, 430, {{"A", T(S_INSTALL)}, {"B", T(S_BACK)}});
+    if (!pak_mode()) {
+      text_center(cv, kCenter, 364, fit(pending.name, 22), 2, kMuted);
+      text_center(cv, kCenter, 384, fit(T(S_CHANGE_LATER), 22), 2, 0x8f82a8);
+      hints(cv, 430, {{"A", T(S_INSTALL)}, {"B", T(S_BACK)}});
+    } else if (needs_reinstall(language_choice)) {
+      std::string disc;
+      {
+        std::lock_guard<std::mutex> lock(images_mutex);
+        if (const Image* d = valid_disc()) disc = d->name;
+      }
+      text_center(cv, kCenter, 364, fit(T(S_REINSTALL), 22), 2, kGold);
+      text_center(cv, kCenter, 384, fit(disc, 22), 2, kMuted);
+      hints(cv, 430, {{"A", T(S_INSTALL)}, {"B", T(S_EXIT)}});
+    } else {
+      text_center(cv, kCenter, 364, fit(T(S_PAK_READY), 22), 2, kGreen);
+      text_center(cv, kCenter, 384, fit(T(S_CHANGE_LATER), 22), 2, 0x8f82a8);
+      hints(cv, 430, {{"A", T(S_PLAY)}, {"B", T(S_EXIT)}});
+    }
   }
 
   void draw_converting(Canvas& cv, float time) {
@@ -1219,6 +1327,10 @@ int demo(const std::string& out) {
   app.images = {a, b, c, d};
   app.patch_file = "patches/pt-br.xdelta";  // the demo shows the PT-BR option
   app.load_language();  // no smg/idioma.txt here: the game's language follows the interface's
+  app.screen = Screen::NeedDisc;
+  app.draw(cv, scene, 0.9f);
+  save_png(cv, out + "/0-falta-disco.png");
+  app.screen = Screen::Menu;
   app.draw(cv, scene, 1.3f);
   save_png(cv, out + "/1-menu.png");
   app.pending = a;
@@ -1229,6 +1341,15 @@ int demo(const std::string& out) {
   app.language_choice = kPtBr;
   app.draw(cv, scene, 2.0f);
   save_png(cv, out + "/1c-idioma-ptbr.png");
+  app.have_pak = true;  // game.pak already made: its languages, PT-BR to reinstall with the patch
+  app.show_installed_languages();
+  app.draw(cv, scene, 2.2f);
+  save_png(cv, out + "/1d-idiomas-con-game-pak.png");
+  app.language_choice = kPtBr;
+  app.draw(cv, scene, 2.4f);
+  save_png(cv, out + "/1e-reinstalar-ptbr.png");
+  app.have_pak = false;
+  app.pending = a;
   app.screen = Screen::Converting;
   app.converted_name = a.name;
   app.demo_percent = 37; app.demo_done = 1251; app.demo_total = 3381; app.demo_speed = 14.8;
@@ -1270,6 +1391,26 @@ int demo(const std::string& out) {
 }
 
 #ifndef CACTUS_NO_SDL
+bool select_held() {
+  SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+  if (SDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0) return false;
+  std::vector<SDL_GameController*> pads;
+  for (int i = 0; i < SDL_NumJoysticks(); ++i) if (SDL_IsGameController(i)) pads.push_back(SDL_GameControllerOpen(i));
+  bool held = false;
+  const double until = now_seconds() + 0.35;
+  while (!held && now_seconds() < until) {
+    SDL_GameControllerUpdate();
+    for (SDL_GameController* p : pads) {
+      if (p && (SDL_GameControllerGetButton(p, SDL_CONTROLLER_BUTTON_BACK) ||
+                SDL_GameControllerGetButton(p, SDL_CONTROLLER_BUTTON_LEFTSHOULDER))) held = true;
+    }
+    SDL_Delay(15);
+  }
+  for (SDL_GameController* p : pads) if (p) SDL_GameControllerClose(p);
+  SDL_Quit();
+  return held;
+}
+
 int run_ui(App& app) {
   SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0) {
@@ -1309,6 +1450,7 @@ int run_ui(App& app) {
       if (k == "down") test_keys.push_back(App::kDown);
       if (k == "prev") test_keys.push_back(App::kPrev);
       if (k == "next") test_keys.push_back(App::kNext);
+      if (k == "wait") test_keys.push_back(App::Key(-1));
       at = comma + 1;
     }
   }
@@ -1346,7 +1488,10 @@ int run_ui(App& app) {
       }
     }
     if (!test_keys.empty() && app.identified && now_seconds() > next_test_key) {
-      if (next_test_key > 0) { app.press(test_keys.front()); test_keys.erase(test_keys.begin()); }
+      if (next_test_key > 0) {
+        if (int(test_keys.front()) >= 0) app.press(test_keys.front());
+        test_keys.erase(test_keys.begin());
+      }
       next_test_key = now_seconds() + 0.5;
     }
     app.tick();
@@ -1380,7 +1525,8 @@ int main(int argc, char** argv) {
     if (a == "--demo" && i + 1 < argc) demo_dir = argv[++i];
     else if (a == "--lang" && i + 1 < argc) setenv("CACTUS_LANG", argv[++i], 1);
     else if (a == "--smg" && i + 1 < argc) app.smg = argv[++i];
-    else if (a == "--auto") { app.auto_mode = true; app.auto_quit = true; }
+    else if (a == "--auto" || a == "--setup") { app.auto_mode = true; app.auto_quit = true; }
+    else if (a == "--held") return select_held() ? 0 : 1;
     else if (a == "--delete-image") app.delete_after = true;
     else { fprintf(stderr, "uso: cactus-galaxy-wrapper [--smg <carpeta smg>] [--auto] [--delete-image] [--lang es|en|fr|pt|it|de] | --demo <carpeta>\n"); return 2; }
   }
@@ -1399,9 +1545,14 @@ int main(int argc, char** argv) {
   if (access(app.tool.c_str(), X_OK) != 0) app.tool = app.smg + "/nebula-pak";
   std::string ports = app.smg.substr(0, app.smg.rfind('/'));
   std::string roms = ports.substr(0, ports.rfind('/'));
-  app.images = find_images({app.gamedata, app.smg, roms + "/wii", "/userdata/roms/wii", "/roms/wii", "/roms2/wii",
-                            "/storage/roms/wii"});
+  app.scan_dirs = {app.gamedata, app.smg, roms + "/wii", "/userdata/roms/wii", "/roms/wii", "/roms2/wii", "/storage/roms/wii"};
+  app.images = find_images(app.scan_dirs);
   app.refresh_disk();
+  app.auto_quit = true;
+  // The first screen: the game's languages if game.pak is there, the discs to install from, or a request for one.
+  if (app.have_pak) app.show_installed_languages();
+  else if (app.images.empty()) app.screen = Screen::NeedDisc;
+  else app.screen = Screen::Menu;
   printf("[cactus] Cactus Galaxy Wrapper: %zu imagen(es), destino %s\n", app.images.size(), app.output.c_str());
   app.start_identify();
 #ifndef CACTUS_NO_SDL
@@ -1412,5 +1563,5 @@ int main(int argc, char** argv) {
   if (app.identify_thread.joinable()) app.identify_thread.join();
   if (ui == 3) return 3;
   app.refresh_disk();
-  return app.have_pak ? 0 : 1;
+  return app.result == 0 && app.have_pak ? 0 : 1;
 }
