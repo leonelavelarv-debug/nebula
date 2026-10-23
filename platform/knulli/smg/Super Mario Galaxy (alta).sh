@@ -56,6 +56,8 @@ export GALAXY_GLES_RESOLUTION="${GALAXY_GLES_RESOLUTION:-100}"
 #   GALAXY_GLES_SHARPEN=0.8              nitidez al ampliar la imagen interna (0: apagada, 0.5 suave, 1.5 fuerte; sin halos)
 export GALAXY_GLES_SHARPEN="${GALAXY_GLES_SHARPEN:-0.8}"
 export NEBULA_PAD_SCHEME="${NEBULA_PAD_SCHEME:-nintendo}"
+#   GALAXY_LANGUAGE=spanish|english|french  idioma del juego (textos y menus; el disco USA trae los tres)
+export GALAXY_LANGUAGE="${GALAXY_LANGUAGE:-spanish}"
 #   GALAXY_EXPERIMENTAL_NATIVE_4_3=1     el modo 4:3 del propio juego (la pantalla es 4:3); 0: 16:9 con franjas
 export GALAXY_EXPERIMENTAL_NATIVE_4_3="${GALAXY_EXPERIMENTAL_NATIVE_4_3:-1}"
 # El host SDL activa el aspecto dinamico por defecto, que no se combina con el 4:3 fijo.
