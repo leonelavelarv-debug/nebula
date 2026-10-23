@@ -322,7 +322,8 @@ void RendererGles::shutdown() {
         if (palette_texture_ != 0u) glDeleteTextures(1, &palette_texture_);
         if (conversion_program_ != 0u) glDeleteProgram(conversion_program_);
         if (xfb_program_ != 0u) glDeleteProgram(xfb_program_);
-        xfb_program_ = 0u;
+        if (xfb_full_program_ != 0u) glDeleteProgram(xfb_full_program_);
+        xfb_program_ = xfb_full_program_ = 0u;
         last_xfb_.reset();
         if (glDeleteQueries != nullptr) {
             if (gpu_part_ != kGpuNone) {
@@ -486,38 +487,78 @@ GLuint RendererGles::build_utility_program(std::string_view vs_hlsl, std::string
 bool RendererGles::create_utility_programs() {
     conversion_program_ =
         build_utility_program(blit_vertex_shader_source(), efb_conversion_shader_source(), "EFB conversion");
-    // A divided EFB reaches the display copy at a fraction of its size: that copy's upscale (bilinear) gets a
-    // contrast-adaptive sharpen in the same pass (GALAXY_GLES_SHARPEN, 0 off; four more bilinear taps a pixel,
-    // clamped to their range so edges get no halos).
+    // The display copy's own conversion (the 2x or 4/3 upscale of a divided EFB, bilinear) gets filters in the same
+    // pass, from the four bilinear taps half a texel diagonally around each sample:
+    //  - GALAXY_GLES_AA=1: on an edge (the taps' luma range over 1/8 of their brightest, at least 1/32) an FXAA
+    //    blend along the edge's direction, two to four more taps (FXAA 3.11's, the edge's direction from the same
+    //    corners), so the low resolution's stairs soften;
+    //  - GALAXY_GLES_SHARPEN (0 off): off the edges, a contrast-adaptive sharpen clamped to the taps' range (no halos).
+    // xfb_program_ for a divided EFB (both), xfb_full_program_ at 100 % (the anti-aliasing only).
     xfb_program_ = 0u;
+    xfb_full_program_ = 0u;
     const char* sharpen_env = std::getenv("GALAXY_GLES_SHARPEN");
     const float sharpen = std::clamp(sharpen_env != nullptr ? static_cast<float>(std::atof(sharpen_env)) : 0.5f,
                                      0.0f, 2.0f);
-    if (conversion_program_ != 0u && (efb_divided() || !dynamic_levels_.empty()) && sharpen > 0.0f) {
+    const char* aa_env = std::getenv("GALAXY_GLES_AA");
+    const bool aa = aa_env != nullptr && aa_env[0] == '1';
+    const auto build = [&](float strength, bool antialias, const char* what) -> GLuint {
         std::string source(efb_conversion_shader_source());
         const std::string tap = "tex_sample = srctex.SampleLevel(s_lin, sample_pos * inv, 0);";
         const std::size_t at = source.find(tap);
-        if (at != std::string::npos) {
-            char strength[32];
-            std::snprintf(strength, sizeof(strength), "%.3f", static_cast<double>(sharpen));
-            const std::string sharpened = tap + R"HLSL(
-        {
-            const float4 a = srctex.SampleLevel(s_lin, (sample_pos + float2(-0.5, -0.5)) * inv, 0);
-            const float4 b = srctex.SampleLevel(s_lin, (sample_pos + float2( 0.5, -0.5)) * inv, 0);
-            const float4 c = srctex.SampleLevel(s_lin, (sample_pos + float2(-0.5,  0.5)) * inv, 0);
-            const float4 d = srctex.SampleLevel(s_lin, (sample_pos + float2( 0.5,  0.5)) * inv, 0);
-            const float3 lo = min(min(min(a.rgb, b.rgb), min(c.rgb, d.rgb)), tex_sample.rgb);
-            const float3 hi = max(max(max(a.rgb, b.rgb), max(c.rgb, d.rgb)), tex_sample.rgb);
-            const float3 blur = (a.rgb + b.rgb + c.rgb + d.rgb) * 0.25;
-            tex_sample.rgb = clamp(tex_sample.rgb + )HLSL" + std::string(strength) +
-                R"HLSL( * (tex_sample.rgb - blur), lo, hi);
-        })HLSL";
-            source.replace(at, tap.size(), sharpened);
-            xfb_program_ = build_utility_program(blit_vertex_shader_source(), source, "display copy (sharpened)");
-            if (xfb_program_ != 0u) {
-                std::fprintf(stderr, "[gles] display copy sharpened (strength %.2f)\n", static_cast<double>(sharpen));
-            }
+        if (at == std::string::npos) {
+            return 0u;
         }
+        char value[32];
+        std::snprintf(value, sizeof(value), "%.3f", static_cast<double>(strength));
+        std::string filters = tap + R"HLSL(
+        {
+            const float4 nw = srctex.SampleLevel(s_lin, (sample_pos + float2(-0.5, -0.5)) * inv, 0);
+            const float4 ne = srctex.SampleLevel(s_lin, (sample_pos + float2( 0.5, -0.5)) * inv, 0);
+            const float4 sw = srctex.SampleLevel(s_lin, (sample_pos + float2(-0.5,  0.5)) * inv, 0);
+            const float4 se = srctex.SampleLevel(s_lin, (sample_pos + float2( 0.5,  0.5)) * inv, 0);
+            const float3 luma = float3(0.299, 0.587, 0.114);
+            const float l_nw = dot(nw.rgb, luma), l_ne = dot(ne.rgb, luma);
+            const float l_sw = dot(sw.rgb, luma), l_se = dot(se.rgb, luma);
+            const float l_m = dot(tex_sample.rgb, luma);
+            const float l_min = min(l_m, min(min(l_nw, l_ne), min(l_sw, l_se)));
+            const float l_max = max(l_m, max(max(l_nw, l_ne), max(l_sw, l_se)));
+            const bool edge = ANTIALIAS && (l_max - l_min) > max(1.0 / 32.0, l_max * 0.125);
+            [branch] if (edge) {
+                float2 dir = float2(-((l_nw + l_ne) - (l_sw + l_se)), (l_nw + l_sw) - (l_ne + l_se));
+                const float reduce = max((l_nw + l_ne + l_sw + l_se) * (0.25 / 8.0), 1.0 / 128.0);
+                dir = clamp(dir / (min(abs(dir.x), abs(dir.y)) + reduce), -4.0, 4.0);
+                const float3 a = 0.5 * (srctex.SampleLevel(s_lin, (sample_pos + dir * (1.0 / 3.0 - 0.5)) * inv, 0).rgb +
+                                        srctex.SampleLevel(s_lin, (sample_pos + dir * (2.0 / 3.0 - 0.5)) * inv, 0).rgb);
+                const float3 b = a * 0.5 + 0.25 * (srctex.SampleLevel(s_lin, (sample_pos - dir * 0.5) * inv, 0).rgb +
+                                                   srctex.SampleLevel(s_lin, (sample_pos + dir * 0.5) * inv, 0).rgb);
+                const float l_b = dot(b, luma);
+                tex_sample.rgb = (l_b < l_min || l_b > l_max) ? a : b;
+            } else {
+                const float3 lo = min(min(min(nw.rgb, ne.rgb), min(sw.rgb, se.rgb)), tex_sample.rgb);
+                const float3 hi = max(max(max(nw.rgb, ne.rgb), max(sw.rgb, se.rgb)), tex_sample.rgb);
+                const float3 blur = (nw.rgb + ne.rgb + sw.rgb + se.rgb) * 0.25;
+                tex_sample.rgb = clamp(tex_sample.rgb + STRENGTH * (tex_sample.rgb - blur), lo, hi);
+            }
+        })HLSL";
+        const auto replace_all = [](std::string& text, const std::string& from, const std::string& to) {
+            for (std::size_t p = text.find(from); p != std::string::npos; p = text.find(from, p + to.size())) {
+                text.replace(p, from.size(), to);
+            }
+        };
+        replace_all(filters, "ANTIALIAS", antialias ? "true" : "false");
+        replace_all(filters, "STRENGTH", value);
+        source.replace(at, tap.size(), filters);
+        return build_utility_program(blit_vertex_shader_source(), source, what);
+    };
+    if (conversion_program_ != 0u && (efb_divided() || !dynamic_levels_.empty()) && (sharpen > 0.0f || aa)) {
+        xfb_program_ = build(sharpen, aa, "display copy (filtered)");
+        if (xfb_program_ != 0u) {
+            std::fprintf(stderr, "[gles] display copy filtered: sharpen %.2f, anti-aliasing %s\n",
+                         static_cast<double>(sharpen), aa ? "on" : "off");
+        }
+    }
+    if (conversion_program_ != 0u && aa && (!efb_divided() || !dynamic_levels_.empty())) {
+        xfb_full_program_ = build(0.0f, true, "display copy (anti-aliased)");
     }
     return conversion_program_ != 0u;
 }
@@ -1359,7 +1400,7 @@ void RendererGles::copy_efb_to_xfb(const EfbCopyParams& params, XfbTexture& dest
     } else {
         const EfbCopySamplingGeometry sampling = compute_xfb_sampling_geometry(params, dest.width, dest.height,
                                                                                efb_scale_);
-        conversion_override_ = efb_divided() ? xfb_program_ : 0u;
+        conversion_override_ = efb_divided() ? xfb_program_ : xfb_full_program_;
         record_conversion_blit(*dest.texture, dest.width, dest.height, params, false, false, true, 15u,
                                sampling.src_x, sampling.src_y, sampling.step_x, sampling.step_y,
                                sampling.filter_row_offset);

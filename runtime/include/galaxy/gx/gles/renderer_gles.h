@@ -410,7 +410,8 @@ private:
 
     // The renderer's own programs and objects.
     GLuint conversion_program_ = 0;
-    GLuint xfb_program_ = 0;           // the display copy's conversion, sharpened (divided EFB), or 0
+    GLuint xfb_program_ = 0;           // the display copy's conversion, filtered (divided EFB), or 0
+    GLuint xfb_full_program_ = 0;      // the same at 100 %: anti-aliasing only (GALAXY_GLES_AA), or 0
     GLuint conversion_override_ = 0;   // the program conversion_draw uses instead, while set
     // The last display copy, which a skipped frame's copy repeats (same EFB, same parameters).
     struct XfbKey {

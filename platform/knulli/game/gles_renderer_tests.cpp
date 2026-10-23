@@ -253,6 +253,39 @@ int main() {
     renderer.end_frame(true);
     renderer.begin_frame(true);
     renderer.end_frame(true);
+
+    // GLES_TEST_EDGE_PPM=<file>: a white diagonal on black through the display copy and present, the window saved
+    // (to look at the upscale's filters by eye).
+    if (const char* edge_ppm = std::getenv("GLES_TEST_EDGE_PPM"); edge_ppm != nullptr) {
+        renderer.begin_frame(true);
+        renderer.clear_efb(0xFF00u, 0x0000u, 0xFFFFFFu, true, true, true);
+        for (unsigned y = 0; y < 528u; ++y) {
+            renderer.clear_efb(0xFFFFu, 0xFFFFu, 0u, true, true, false, 0, y, std::min(640u, 160u + y * 3u / 4u), 1u,
+                               1u);
+        }
+        XfbTexture out{};
+        out.texture = galaxy::gx::gpu::create_render_texture(renderer.device(), 640u, 528u);
+        out.width = 640u;
+        out.height = 528u;
+        renderer.copy_efb_to_xfb(copy_params(0, 0, 640, 528, true), out);
+        renderer.present(&out, false, false);
+        const int ew = static_cast<int>(host_window::backbuffer_width);
+        const int eh = static_cast<int>(host_window::backbuffer_height);
+        std::vector<std::uint8_t> rgba(static_cast<std::size_t>(ew) * eh * 4u);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, ew, eh, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        if (FILE* f = std::fopen(edge_ppm, "wb")) {
+            std::fprintf(f, "P6\n%d %d\n255\n", ew, eh);
+            for (int y = eh - 1; y >= 0; --y) {
+                for (int x = 0; x < ew; ++x) {
+                    std::fwrite(rgba.data() + (static_cast<std::size_t>(y) * ew + x) * 4u, 1, 3, f);
+                }
+            }
+            std::fclose(f);
+        }
+        renderer.end_frame(true);
+    }
     pipelines.shutdown();
     renderer.shutdown();
     std::printf("gles renderer tests: %d failed\n", g_failures);
