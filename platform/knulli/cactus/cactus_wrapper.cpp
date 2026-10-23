@@ -177,6 +177,8 @@ const Glyph kExtra[] = {
     {0x2192, {"........", "....#...", "....##..", "#######.", "#######.", "....##..", "....#...", "........"}},  // ->
     {0x2191, {"...##...", "..####..", ".######.", "...##...", "...##...", "...##...", "...##...", "........"}},  // up
     {0x2193, {"...##...", "...##...", "...##...", "...##...", ".######.", "..####..", "...##...", "........"}},  // down
+    {0x25C4, {"........", ".....##.", "...####.", ".######.", ".######.", "...####.", ".....##.", "........"}},  // <
+    {0x25BA, {"........", ".##.....", ".####...", ".######.", ".######.", ".####...", ".##.....", "........"}},  // >
     {0x2026, {"........", "........", "........", "........", "........", "........", "##.##.##", "##.##.##"}},  // ...
 };
 
@@ -658,7 +660,20 @@ double now_seconds() {
 // ---------------------------------------------------------------------------------------------------------------
 // The app.
 
-enum class Screen { Menu, Converting, Done, Failed };
+enum class Screen { Menu, Language, Converting, Done, Failed };
+
+// The languages of the USA disc, as GALAXY_LANGUAGE names them (the launcher reads smg/idioma.txt).
+struct Language {
+  const char* key;
+  const char* name;
+  const char* note;
+};
+const Language kLanguages[] = {
+    {"spanish", "Español", "textos y menús"},
+    {"english", "English", "texts and menus"},
+    {"french", "Français", "textes et menus"},
+};
+constexpr int kLanguageCount = 3;
 
 struct App {
   std::string smg, gamedata, tool, output;
@@ -676,6 +691,36 @@ struct App {
   bool have_pak = false;
   bool quit = false;
   int result = 1;
+  int language = 0, language_choice = 0;
+  std::string language_file;
+  Image pending;  // the disc waiting for its language
+
+  void load_language() {
+    language = 0;
+    if (FILE* f = fopen(language_file.c_str(), "r")) {
+      char word[32] = {};
+      if (fscanf(f, "%31s", word) == 1) {
+        for (int i = 0; i < kLanguageCount; ++i) if (lower(word) == kLanguages[i].key) language = i;
+      }
+      fclose(f);
+    }
+  }
+  void save_language(int which) {
+    language = which;
+    const std::string temporary = language_file + ".tmp";
+    if (FILE* f = fopen(temporary.c_str(), "w")) {
+      fprintf(f, "%s\n", kLanguages[which].key);
+      fclose(f);
+      rename(temporary.c_str(), language_file.c_str());
+    }
+    printf("[cactus] idioma del juego: %s\n", kLanguages[which].key);
+    fflush(stdout);
+  }
+  void ask_language(const Image& im) {
+    pending = im;
+    language_choice = language;
+    screen = Screen::Language;
+  }
 
   void refresh_disk() {
     struct statvfs fs;
@@ -769,7 +814,7 @@ struct App {
   }
 
   // Buttons: confirm (A/START), back (B/SELECT), toggle (X), up, down.
-  enum Key { kConfirm, kBack, kToggle, kUp, kDown };
+  enum Key { kConfirm, kBack, kToggle, kUp, kDown, kPrev, kNext };
   void press(Key key) {
     switch (screen) {
       case Screen::Menu: {
@@ -778,14 +823,18 @@ struct App {
         if (key == kDown && selected + 1 < int(images.size())) ++selected;
         if (key == kToggle) delete_after = !delete_after;
         if (key == kBack) quit = true;
-        if (key == kConfirm && selected < int(images.size()) && images[selected].status == 0) {
-          const Image im = images[selected];
-          images_mutex.unlock();
-          start_conversion(im);
-          images_mutex.lock();
+        if (key == kPrev || key == kNext) {  // the game's language, even with game.pak already made
+          save_language((language + (key == kNext ? 1 : kLanguageCount - 1)) % kLanguageCount);
         }
+        if (key == kConfirm && selected < int(images.size()) && images[selected].status == 0) ask_language(images[selected]);
         break;
       }
+      case Screen::Language:
+        if (key == kUp || key == kPrev) language_choice = (language_choice + kLanguageCount - 1) % kLanguageCount;
+        if (key == kDown || key == kNext) language_choice = (language_choice + 1) % kLanguageCount;
+        if (key == kBack) screen = Screen::Menu;
+        if (key == kConfirm) { save_language(language_choice); start_conversion(pending); }
+        break;
       case Screen::Converting:
         if (key == kBack && job && !cancelling) { cancelling = true; kill(job->pid, SIGTERM); }
         break;
@@ -806,12 +855,7 @@ struct App {
       int valid = 0, which = -1;
       for (int i = 0; i < int(images.size()); ++i) if (images[i].status == 0) { ++valid; which = i; }
       auto_mode = false;  // only once
-      if (valid == 1) {
-        const Image im = images[which];
-        images_mutex.unlock();
-        start_conversion(im);
-        images_mutex.lock();
-      }
+      if (valid == 1) ask_language(images[which]);  // straight to the language, then it installs
     }
     if (screen == Screen::Done && result == 0 && done_at > 0 && auto_quit && now_seconds() - done_at > 6.0) quit = true;
   }
@@ -836,6 +880,7 @@ struct App {
     }
     switch (screen) {
       case Screen::Menu: draw_menu(cv); break;
+      case Screen::Language: draw_language(cv, time); break;
       case Screen::Converting: draw_converting(cv, time); break;
       case Screen::Done: draw_done(cv); break;
       case Screen::Failed: draw_failed(cv); break;
@@ -885,16 +930,43 @@ struct App {
     // Where it goes and how much room there is.
     const int sy = 350;
     for (int x = kLeft + 10; x < kPanelX + kPanelW - 26; x += 4) cv.blend(x, sy - 8, 0x43a152, 0.6f);
-    if (have_pak) text(cv, kLeft, sy, fit("Ya hay game.pak: se cambia", 22), 2, kGold);
-    else text(cv, kLeft, sy, "Destino: gamedata/", 2, kMuted);
+    {  // the game's language: left/right change it
+      int x = kLeft;
+      x += text(cv, x, sy, "\xE2\x97\x84 ", 2, kGold);
+      x += text(cv, x, sy, "Idioma: ", 2, kMuted);
+      x += text(cv, x, sy, kLanguages[language].name, 2, kWhite);
+      text(cv, x, sy, " \xE2\x96\xBA", 2, kGold);
+    }
     if (free_mib >= 0) {
       const bool low = free_mib < 3400.0;
-      text(cv, kLeft, sy + 20, fit("Libre: " + mib_text(free_mib) + (low ? " (poco)" : ""), 22), 2, low ? kRed : kMuted);
+      const std::string room = mib_text(free_mib) + (low ? " (poco)" : "");
+      text(cv, kLeft, sy + 20, fit((have_pak ? "Hay game.pak · " : "Libre: ") + room, 22), 2, low ? kRed : kMuted);
+    } else if (have_pak) {
+      text(cv, kLeft, sy + 20, "Ya hay game.pak", 2, kGold);
     }
     const bool can = selected < int(images.size()) && images[selected].status == 0;
     if (can) hints(cv, 406, {{"A", "Convertir"}, {"B", "Salir"}});
     else hints(cv, 406, {{"B", "Salir"}});
     hints(cv, 436, {{"X", std::string("Borrar disco: ") + (delete_after ? "Sí" : "No")}});
+  }
+
+  void draw_language(Canvas& cv, float time) {
+    text_center(cv, kCenter, 128, "Idioma del juego", 2, kGold);
+    text_center(cv, kCenter, 150, "Language · Langue", 2, kMuted);
+    for (int i = 0; i < kLanguageCount; ++i) {
+      const int y = 184 + i * 58;
+      const bool sel = i == language_choice;
+      if (sel) {
+        cv.rrect(kLeft + 10, y - 6, kPanelW - 52, 50, 10, 0x2f7d3e, 0.55f);
+        cv.rrect_outline(kLeft + 10, y - 6, kPanelW - 52, 50, 10, 2, 0x7fd88a, 0.9f);
+        cv.star(float(kLeft + 30), float(y + 18), 9.0f, 0xffe066, 1.0f, time * 2.0f);
+      }
+      text(cv, kLeft + 50, y, kLanguages[i].name, 3, sel ? kWhite : kMuted);
+      text(cv, kLeft + 50, y + 26, kLanguages[i].note, 2, sel ? kGreen : 0x8f82a8);
+    }
+    text_center(cv, kCenter, 364, fit(pending.name, 22), 2, kMuted);
+    text_center(cv, kCenter, 384, "Se cambia luego con \xE2\x97\x84\xE2\x96\xBA", 2, 0x8f82a8);
+    hints(cv, 430, {{"A", "Instalar"}, {"B", "Volver"}});
   }
 
   void draw_converting(Canvas& cv, float time) {
@@ -939,7 +1011,8 @@ struct App {
     text_center(cv, kCenter, 194, "game.pak creado", 2, kWhite);
     text_center(cv, kCenter, 230, fit(converted_name, 22), 2, kMuted);
     text_center(cv, kCenter, 254, "en " + duration_text(took), 2, kMuted);
-    if (deleted) text_center(cv, kCenter, 278, "Disco borrado", 2, kMuted);
+    text_center(cv, kCenter, 278, std::string("Idioma: ") + kLanguages[language].name, 2, kWhite);
+    if (deleted) text_center(cv, kCenter, 298, "Disco borrado", 2, kMuted);
     text_center(cv, kCenter, 318, "Tu cactus floreció", 2, kPink);
     if (auto_quit) {
       const int left = std::max(0, 6 - int(now_seconds() - done_at));
@@ -996,6 +1069,11 @@ int demo(const std::string& out) {
   app.images = {a, b, c, d};
   app.draw(cv, scene, 1.3f);
   save_png(cv, out + "/1-menu.png");
+  app.pending = a;
+  app.screen = Screen::Language;
+  app.language_choice = 0;
+  app.draw(cv, scene, 1.8f);
+  save_png(cv, out + "/1b-idioma.png");
   app.screen = Screen::Converting;
   app.converted_name = a.name;
   app.demo_percent = 37; app.demo_done = 1251; app.demo_total = 3381; app.demo_speed = 14.8;
@@ -1058,6 +1136,23 @@ int run_ui(App& app) {
   Canvas cv;
   const double start = now_seconds();
   bool guide = false;
+  // Tests: CACTUS_TEST_KEYS="next,confirm" presses those keys, one each half second once the discs are checked.
+  std::vector<App::Key> test_keys;
+  if (const char* keys = getenv("CACTUS_TEST_KEYS")) {
+    std::string all = keys;
+    for (size_t at = 0; at <= all.size();) {
+      const size_t comma = std::min(all.find(',', at), all.size());
+      const std::string k = all.substr(at, comma - at);
+      if (k == "confirm") test_keys.push_back(App::kConfirm);
+      if (k == "back") test_keys.push_back(App::kBack);
+      if (k == "up") test_keys.push_back(App::kUp);
+      if (k == "down") test_keys.push_back(App::kDown);
+      if (k == "prev") test_keys.push_back(App::kPrev);
+      if (k == "next") test_keys.push_back(App::kNext);
+      at = comma + 1;
+    }
+  }
+  double next_test_key = 0;
   while (!app.quit) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
@@ -1074,6 +1169,8 @@ int run_ui(App& app) {
         if (b == SDL_CONTROLLER_BUTTON_Y) app.press(App::kToggle);  // the RG35XX H's X (top) is SDL's Y
         if (b == SDL_CONTROLLER_BUTTON_DPAD_UP) app.press(App::kUp);
         if (b == SDL_CONTROLLER_BUTTON_DPAD_DOWN) app.press(App::kDown);
+        if (b == SDL_CONTROLLER_BUTTON_DPAD_LEFT) app.press(App::kPrev);
+        if (b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) app.press(App::kNext);
       }
       if (e.type == SDL_KEYDOWN) {  // gptokeyb or a keyboard
         switch (e.key.keysym.sym) {
@@ -1082,9 +1179,15 @@ int run_ui(App& app) {
           case SDLK_x: app.press(App::kToggle); break;
           case SDLK_UP: app.press(App::kUp); break;
           case SDLK_DOWN: app.press(App::kDown); break;
+          case SDLK_LEFT: app.press(App::kPrev); break;
+          case SDLK_RIGHT: app.press(App::kNext); break;
           default: break;
         }
       }
+    }
+    if (!test_keys.empty() && app.identified && now_seconds() > next_test_key) {
+      if (next_test_key > 0) { app.press(test_keys.front()); test_keys.erase(test_keys.begin()); }
+      next_test_key = now_seconds() + 0.5;
     }
     app.tick();
     app.draw(cv, scene, float(now_seconds() - start));
@@ -1122,6 +1225,8 @@ int main(int argc, char** argv) {
   app.gamedata = app.smg + "/gamedata";
   mkdir(app.gamedata.c_str(), 0755);
   app.output = app.gamedata + "/game.pak";
+  app.language_file = app.smg + "/idioma.txt";
+  app.load_language();
   app.tool = dir_of_exe() + "/nebula-pak";
   if (access(app.tool.c_str(), X_OK) != 0) app.tool = app.smg + "/nebula-pak";
   std::string ports = app.smg.substr(0, app.smg.rfind('/'));

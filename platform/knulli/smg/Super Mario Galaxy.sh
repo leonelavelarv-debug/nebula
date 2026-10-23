@@ -126,8 +126,15 @@ export GALAXY_NO_BLUR="${GALAXY_NO_BLUR:-1}"
 #   GALAXY_GLES_AA=1                     suaviza los bordes dentados (antialiasing tipo FXAA en la misma copia); 0: apagado
 export GALAXY_GLES_AA="${GALAXY_GLES_AA:-1}"
 export NEBULA_PAD_SCHEME="${NEBULA_PAD_SCHEME:-nintendo}"
-#   GALAXY_LANGUAGE=spanish|english|french  idioma del juego (textos y menus; el disco USA trae los tres)
-export GALAXY_LANGUAGE="${GALAXY_LANGUAGE:-spanish}"
+#   GALAXY_LANGUAGE=spanish|english|french  idioma del juego (textos y menus; el disco USA trae los tres). Sin fijarlo
+#                                         aqui vale el que se eligio al instalar con Cactus Galaxy Wrapper
+# El idioma elegido en Cactus Galaxy Wrapper (smg/idioma.txt; ◄► en su menu lo cambia), si no se fija aqui.
+if [ -z "${GALAXY_LANGUAGE:-}" ] && [ -f "$GAMEDIR/idioma.txt" ]; then
+  GALAXY_LANGUAGE=$(head -c 16 "$GAMEDIR/idioma.txt" | tr -cd 'a-z')
+fi
+case "${GALAXY_LANGUAGE:-}" in spanish|english|french) ;; *) GALAXY_LANGUAGE=spanish ;; esac
+export GALAXY_LANGUAGE
+echo "idioma del juego: $GALAXY_LANGUAGE"
 #   GALAXY_EXPERIMENTAL_NATIVE_4_3=1     el modo 4:3 del propio juego (la pantalla es 4:3); 0: 16:9 con franjas
 export GALAXY_EXPERIMENTAL_NATIVE_4_3="${GALAXY_EXPERIMENTAL_NATIVE_4_3:-1}"
 # El host SDL activa el aspecto dinamico por defecto, que no se combina con el 4:3 fijo.

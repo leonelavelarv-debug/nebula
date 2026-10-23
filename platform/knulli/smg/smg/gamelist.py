@@ -148,8 +148,8 @@ CACTUS_SCRIPT = "./Cactus Galaxy Wrapper.sh"
 CACTUS_INFO = {
     "name": "Cactus Galaxy Wrapper",
     "desc": ("Convierte tu disco de Super Mario Galaxy (USA) en ISO, RVZ, WIA, WBFS, GCZ o CISO en el game.pak del "
-             "port, aquí mismo en la consola: busca el disco en roms/ports/smg/gamedata y en roms/wii, muestra el "
-             "avance y el saguaro florece cuando termina. Cruceta para elegir, A para convertir, B para salir."),
+             "port, aquí mismo en la consola: busca el disco en roms/ports/smg/gamedata y en roms/wii, pregunta en qué "
+             "idioma instalar el juego, muestra el avance y el saguaro florece cuando termina. Cruceta para elegir, A para convertir, B para salir."),
     "developer": "Nebula",
     "publisher": "Nebula",
     "genre": "Herramienta",

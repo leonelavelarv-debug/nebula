@@ -7,6 +7,9 @@ terminar. La conversión la hace `nebula-pak` (`platform/knulli/pak`) como proce
 - En Ports: **Cactus Galaxy Wrapper** (`platform/knulli/smg/Cactus Galaxy Wrapper.sh`). El lanzador del juego la abre
   sola (`--auto`) si falta `game.pak`; con un único disco válido, convierte sin preguntar y deja arrancar el juego.
 - Busca discos en `smg/gamedata/`, `smg/` y `roms/wii/`; los comprueba con `nebula-pak --identify`.
+- Idioma del juego: al convertir pregunta Español, English o Français (lo que trae el disco USA) y lo guarda en
+  `smg/idioma.txt`, que el lanzador del juego pasa como `GALAXY_LANGUAGE`. En el menú, ◄► lo cambia en cualquier
+  momento, también con el `game.pak` ya hecho.
 - Controles: cruceta para elegir, A (derecha) convertir, B (abajo) salir o cancelar, X borrar el disco al terminar,
   MENU + START salir. `CACTUS_SWAP_AB=1` cambia A y B.
 - `cactus-galaxy-wrapper --demo <carpeta>` escribe capturas PNG de cada pantalla y los fotogramas del cactus
