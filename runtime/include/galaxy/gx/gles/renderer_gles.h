@@ -323,6 +323,10 @@ private:
     };
 
     bool make_current();
+    [[nodiscard]] unsigned efb_width() const noexcept { return kEfbWidth * efb_scale_ / efb_divisor_; }
+    [[nodiscard]] unsigned efb_height() const noexcept { return kEfbHeight * efb_scale_ / efb_divisor_; }
+    [[nodiscard]] std::array<int, 4> physical_rect(const std::array<int, 4>& rect) const noexcept;
+    void to_physical(EfbConversionShaderConstants& constants, bool peek) const noexcept;
     bool create_efb(unsigned scale);
     void destroy_efb() noexcept;
     bool create_utility_programs();
@@ -363,6 +367,7 @@ private:
 
     // The EFB.
     unsigned efb_scale_ = 1;
+    unsigned efb_divisor_ = 1;  // GALAXY_GLES_EFB_DIVISOR: the EFB's texels are this many logical pixels a side
     gpu::TextureRef efb_color_;
     gpu::TextureRef efb_depth_;
     GLuint efb_framebuffer_ = 0;
@@ -458,6 +463,11 @@ private:
         std::uint64_t clears = 0;
         std::uint64_t peeks = 0;
         std::uint64_t pipeline_changes = 0;
+        std::uint64_t skipped_draws = 0;
+        std::uint64_t sync_peeks = 0;
+        std::uint64_t sync_fields = 0;
+        std::int64_t draw_ns = 0;
+        std::int64_t sync_peek_ns = 0;
         std::int64_t present_wait_ns = 0;
         std::int64_t frame_wait_ns = 0;
         double gpu_ms = 0.0;

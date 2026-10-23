@@ -133,6 +133,13 @@ bool RendererGles::initialize(int window_width, int window_height, unsigned efb_
             --efb_scale_;
         }
         efb_scale_ = std::min(efb_scale_, host_window::display_efb_scale_cap());
+        // GALAXY_GLES_EFB_DIVISOR=2: the EFB drawn at half the Wii's resolution (320x264), a quarter of the pixels
+        // (the Mali-G31's fill rate); copies, peeks and the picture keep the Wii's sizes.
+        {
+            const char* divisor = std::getenv("GALAXY_GLES_EFB_DIVISOR");
+            efb_divisor_ = divisor != nullptr && efb_scale_ == 1u ? std::clamp<unsigned>(
+                static_cast<unsigned>(std::strtoul(divisor, nullptr, 10)), 1u, 4u) : 1u;
+        }
         if (!create_efb(efb_scale_) || !create_utility_programs()) {
             shutdown();
             return false;
@@ -194,7 +201,7 @@ bool RendererGles::initialize(int window_width, int window_height, unsigned efb_
         return false;
     }
     context.check_errors("initialize");
-    std::cout << "[Renderer] OpenGL ES EFB=" << kEfbWidth * efb_scale_ << 'x' << kEfbHeight * efb_scale_
+    std::cout << "[Renderer] OpenGL ES EFB=" << efb_width() << 'x' << efb_height()
               << " drawable=" << drawable_width_ << 'x' << drawable_height_ << '\n';
     return true;
 }
@@ -312,8 +319,9 @@ bool RendererGles::vblank_grid(std::int64_t& vblank, std::int64_t& period) const
 
 bool RendererGles::create_efb(unsigned scale) {
     gles::Context& context = gles::Context::get();
-    const unsigned w = kEfbWidth * scale;
-    const unsigned h = kEfbHeight * scale;
+    (void)scale;
+    const unsigned w = efb_width();
+    const unsigned h = efb_height();
     efb_color_ = context.create_texture(w, h, 1u, GL_RGBA8, true, "EFB colour");
     efb_depth_ = context.create_texture(w, h, 1u, GL_DEPTH_COMPONENT32F, true, "EFB depth");
     if (!efb_color_ || !efb_depth_) {
@@ -423,6 +431,48 @@ GLuint RendererGles::framebuffer_for(gles::Texture& texture) {
     return texture.framebuffer;
 }
 
+std::array<int, 4> RendererGles::physical_rect(const std::array<int, 4>& rect) const noexcept {
+    if (efb_divisor_ == 1u) {
+        return rect;
+    }
+    const int d = static_cast<int>(efb_divisor_);
+    const int left = rect[0] / d;
+    const int top = rect[1] / d;
+    const int right = (rect[0] + rect[2] + d - 1) / d;
+    const int bottom = (rect[1] + rect[3] + d - 1) / d;
+    return {left, top, right - left, bottom - top};
+}
+
+// The conversion shader's EFB coordinates (src_xform, the copy's row clamps and filter offset; a peek's texel and block)
+// in the divided EFB's texels.
+void RendererGles::to_physical(EfbConversionShaderConstants& c, bool peek) const noexcept {
+    if (efb_divisor_ == 1u) {
+        return;
+    }
+    const float d = static_cast<float>(efb_divisor_);
+    auto& v = c.values;
+    if (peek) {
+        v[0] = std::floor(v[0] / d);
+        v[1] = std::floor(v[1] / d);
+        v[2] /= d;
+        v[3] /= d;
+        v[11] /= d;
+        v[12] /= d;
+        v[14] /= d;
+        if (v[15] >= 0.0f) {
+            v[15] = 1.0f;  // one texel holds the whole logical pixel
+        }
+        return;
+    }
+    v[0] /= d;
+    v[1] /= d;
+    v[2] /= d;
+    v[3] /= d;
+    v[11] /= d;
+    v[12] /= d;
+    v[14] /= d;
+}
+
 void RendererGles::bind_efb_framebuffer() {
     if (bound_.framebuffer != efb_framebuffer_) {
         glBindFramebuffer(GL_FRAMEBUFFER, efb_framebuffer_);
@@ -487,19 +537,23 @@ void RendererGles::begin_frame(bool) {
     last_frame_slot_wait_us_ =
         static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(waited).count());
     window_stats_.frame_wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(waited).count();
-    if (timer_pending_[frame_slot_] && glGetQueryObjectui64vEXT != nullptr) {
+    GLuint available = GL_FALSE;
+    if (timer_pending_[frame_slot_] && glGetQueryObjectuiv != nullptr) {
+        glGetQueryObjectuiv(timer_queries_[frame_slot_], GL_QUERY_RESULT_AVAILABLE, &available);
+    }
+    if (timer_pending_[frame_slot_] && available == GL_TRUE && glGetQueryObjectui64vEXT != nullptr) {
         GLuint64 ns = 0;
         glGetQueryObjectui64vEXT(timer_queries_[frame_slot_], GL_QUERY_RESULT, &ns);
         GLint disjoint = 0;
         glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
-        if (disjoint == 0) {
+        if (disjoint == 0 && ns < 1'000'000'000ull) {
             const double ms = static_cast<double>(ns) / 1e6;
             window_stats_.gpu_ms += ms;
             window_stats_.gpu_max_ms = std::max(window_stats_.gpu_max_ms, ms);
             ++window_stats_.gpu_frames;
         }
-        timer_pending_[frame_slot_] = false;
     }
+    timer_pending_[frame_slot_] = false;
     context.collect();
     frame.retired.clear();
     refresh_default_sampler_table();
@@ -595,14 +649,20 @@ void RendererGles::report_stats() {
         const double frames = 600.0;
         std::fprintf(stderr,
                      "[gles] render thread %.1f ms/s (swap waits %.1f, frame-slot waits %.1f ms/s); a frame: %.0f draws, "
-                     "%.1f copies, %.1f clears, %.1f peeks, %.0f program changes; GPU %.2f ms average, %.2f longest; "
+                     "%.1f copies, %.1f clears, %.1f peeks (%.2f waited, %.2f whole fields), %.0f program changes, %.1f "
+                     "draws skipped; in draw() %.1f ms/s, waited peeks %.1f ms/s; GPU %.2f ms average, %.2f longest; "
                      "rings peak KiB v=%zu i=%zu c=%zu m=%zu; textures %llu KiB uploaded\n",
                      static_cast<double>(cpu - last_cpu) / 1e6 / seconds,
                      static_cast<double>(window_stats_.present_wait_ns) / 1e6 / seconds,
                      static_cast<double>(window_stats_.frame_wait_ns) / 1e6 / seconds,
                      static_cast<double>(window_stats_.draws) / frames, static_cast<double>(window_stats_.copies) / frames,
                      static_cast<double>(window_stats_.clears) / frames, static_cast<double>(window_stats_.peeks) / frames,
+                     static_cast<double>(window_stats_.sync_peeks) / frames,
+                     static_cast<double>(window_stats_.sync_fields) / frames,
                      static_cast<double>(window_stats_.pipeline_changes) / frames,
+                     static_cast<double>(window_stats_.skipped_draws) / frames,
+                     static_cast<double>(window_stats_.draw_ns) / 1e6 / seconds,
+                     static_cast<double>(window_stats_.sync_peek_ns) / 1e6 / seconds,
                      window_stats_.gpu_frames != 0u ? window_stats_.gpu_ms / window_stats_.gpu_frames : 0.0,
                      window_stats_.gpu_max_ms, vertex_ring_.take_peak_bytes_per_frame() >> 10u,
                      index_ring_.take_peak_bytes_per_frame() >> 10u, constant_ring_.take_peak_bytes_per_frame() >> 10u,
@@ -624,6 +684,7 @@ void RendererGles::bind_efb(const float xf_vp[6]) {
     float x = 0.0f, y = 0.0f;
     float w = static_cast<float>(kEfbWidth * efb_scale_);
     float h = static_cast<float>(kEfbHeight * efb_scale_);
+    const float divide = 1.0f / static_cast<float>(efb_divisor_);
     if (xf_vp != nullptr) {
         const float scale = static_cast<float>(efb_scale_);
         const float hw = std::abs(xf_vp[0]) * scale;
@@ -634,16 +695,17 @@ void RendererGles::bind_efb(const float xf_vp[6]) {
         h = hh * 2.0f;
     }
     // Render targets are drawn top row first (D3D's rows), so GL's viewport takes D3D's rectangle as it is.
-    const std::array<int, 4> viewport{static_cast<int>(std::lround(x)), static_cast<int>(std::lround(y)),
-                                      static_cast<int>(std::lround(w)), static_cast<int>(std::lround(h))};
+    const std::array<int, 4> viewport{static_cast<int>(std::lround(x * divide)),
+                                      static_cast<int>(std::lround(y * divide)),
+                                      static_cast<int>(std::lround(w * divide)),
+                                      static_cast<int>(std::lround(h * divide))};
     glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
     glDepthRangef(0.0f, 1.0f);
     bound_.viewport = viewport;
     bound_.depth_range = {0.0f, 1.0f};
     bound_.viewport_valid = true;
     glEnable(GL_SCISSOR_TEST);
-    const std::array<int, 4> scissor{0, 0, static_cast<int>(kEfbWidth * efb_scale_),
-                                     static_cast<int>(kEfbHeight * efb_scale_)};
+    const std::array<int, 4> scissor{0, 0, static_cast<int>(efb_width()), static_cast<int>(efb_height())};
     glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
     bound_.scissor = scissor;
     bound_.scissor_valid = true;
@@ -668,6 +730,7 @@ void RendererGles::clear_efb(std::uint32_t clear_ar, std::uint32_t clear_gb, std
         }
         rect = {scaled.left, scaled.top, scaled.right - scaled.left, scaled.bottom - scaled.top};
     }
+    rect = physical_rect(rect);
     if (pixel_format != 1u && color_enable) {
         alpha_enable = true;  // no destination alpha: it reads as one either way
     }
@@ -675,8 +738,15 @@ void RendererGles::clear_efb(std::uint32_t clear_ar, std::uint32_t clear_gb, std
         return;
     }
     const EfbClearValues clear = make_efb_clear_values(clear_ar, clear_gb, clear_z24, pixel_format);
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(rect[0], rect[1], rect[2], rect[3]);
+    // A whole-EFB clear without the scissor: a tiled GPU then clears its tiles instead of loading them.
+    const bool whole = rect[0] == 0 && rect[1] == 0 && rect[2] == static_cast<int>(efb_width()) &&
+        rect[3] == static_cast<int>(efb_height());
+    if (whole) {
+        glDisable(GL_SCISSOR_TEST);
+    } else {
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(rect[0], rect[1], rect[2], rect[3]);
+    }
     bound_.scissor_valid = false;
     bound_.scissor_input_valid = false;
     glColorMask(color_enable, color_enable, color_enable, alpha_enable);
@@ -860,9 +930,16 @@ void RendererGles::apply_pipeline_state(const gles::Pipeline& p) {
 
 void RendererGles::draw(const DrawCall& call) {
     if (call.pipeline == nullptr) {
+        ++window_stats_.skipped_draws;
         return;
     }
     ++window_stats_.draws;
+    const std::int64_t start = monotonic_ns();
+    struct Timed {
+        std::int64_t start;
+        std::int64_t& total;
+        ~Timed() { total += monotonic_ns() - start; }
+    } timed{start, window_stats_.draw_ns};
     gles::Context& context = gles::Context::get();
     bind_efb_framebuffer();
     if (enabled_attributes_ == ~0u || bound_.pipeline == nullptr) {
@@ -958,8 +1035,8 @@ void RendererGles::draw(const DrawCall& call) {
         if (scaled.empty()) {
             return;
         }
-        const std::array<int, 4> scissor{scaled.left, scaled.top, scaled.right - scaled.left,
-                                         scaled.bottom - scaled.top};
+        const std::array<int, 4> scissor = physical_rect(
+            {scaled.left, scaled.top, scaled.right - scaled.left, scaled.bottom - scaled.top});
         if (!bound_.scissor_valid || scissor != bound_.scissor) {
             glEnable(GL_SCISSOR_TEST);
             glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
@@ -973,9 +1050,11 @@ void RendererGles::draw(const DrawCall& call) {
     if (call.has_viewport) {
         const ScaledGxViewport scaled = compute_scaled_gx_viewport(call.xf_viewport, efb_scale_);
         if (scaled.valid()) {
+            const float divide = 1.0f / static_cast<float>(efb_divisor_);
             const std::array<int, 4> viewport{
-                static_cast<int>(std::lround(scaled.x)), static_cast<int>(std::lround(scaled.y)),
-                static_cast<int>(std::lround(scaled.width)), static_cast<int>(std::lround(scaled.height))};
+                static_cast<int>(std::lround(scaled.x * divide)), static_cast<int>(std::lround(scaled.y * divide)),
+                static_cast<int>(std::lround(scaled.width * divide)),
+                static_cast<int>(std::lround(scaled.height * divide))};
             const std::array<float, 2> range{scaled.min_depth, scaled.max_depth};
             if (!bound_.viewport_valid || viewport != bound_.viewport) {
                 glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
@@ -1067,9 +1146,10 @@ void RendererGles::record_conversion_blit(gles::Texture& dest, unsigned dest_w, 
                                           const EfbCopyParams& params, bool is_depth_copy, bool intensity,
                                           bool keep_alpha, std::uint8_t copy_format, float src_x, float src_y,
                                           float step_x, float step_y, float filter_row_offset) {
-    const EfbConversionShaderConstants constants =
+    EfbConversionShaderConstants constants =
         make_efb_conversion_constants(params, is_depth_copy, intensity, keep_alpha, copy_format, src_x, src_y,
                                       step_x, step_y, filter_row_offset, efb_scale_, kEfbHeight);
+    to_physical(constants, false);
     conversion_draw(framebuffer_for(dest), dest_w, dest_h, is_depth_copy, constants);
 }
 
@@ -1143,7 +1223,7 @@ bool RendererGles::copy_efb_to_texture(const EfbCopyParams& params, TextureCache
     EfbCopyDest& current = efb_copy_dests_[dest_key];
     gles::Texture& texture = *current.texture;
     const auto identity = efb_identity_copy_rect(params, is_depth_copy, efb_scale_, w, h);
-    if (const auto& box = identity) {
+    if (const auto& box = identity; box && efb_divisor_ == 1u) {
         // An exact colour copy: the EFB's texels as they are.
         const GLuint target = framebuffer_for(texture);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, efb_framebuffer_);
@@ -1258,7 +1338,9 @@ void RendererGles::record_peek_field(gles::Texture& target, EfbPeekKind kind,
                                      Readback& readback) {
     ++window_stats_.peeks;
     const GLuint framebuffer = framebuffer_for(target);
-    conversion_draw(framebuffer, width, height, kind == EfbPeekKind::Depth, constants);
+    EfbConversionShaderConstants physical = constants;
+    to_physical(physical, true);
+    conversion_draw(framebuffer, width, height, kind == EfbPeekKind::Depth, physical);
     ensure_readback(readback, static_cast<std::size_t>(width) * height * 4u);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, readback.buffer);
@@ -1287,6 +1369,13 @@ bool RendererGles::complete_readback(Readback& readback) {
 
 bool RendererGles::peek_efb(std::uint16_t x, std::uint16_t y, EfbPeekKind kind, std::uint32_t& value) {
     value = 0u;
+    ++window_stats_.sync_peeks;
+    const std::int64_t start = monotonic_ns();
+    struct Timed {
+        std::int64_t start;
+        std::int64_t& total;
+        ~Timed() { total += monotonic_ns() - start; }
+    } timed{start, window_stats_.sync_peek_ns};
     if (pointer_depth_fence_ != 0u) {
         throw std::logic_error("GXPeek resources still own an unpublished pointer field");
     }
@@ -1306,6 +1395,7 @@ bool RendererGles::peek_efb(std::uint16_t x, std::uint16_t y, EfbPeekKind kind, 
 }
 
 bool RendererGles::capture_pointer_depth(std::span<std::uint32_t> pixels) {
+    ++window_stats_.sync_fields;
     if (pixels.size() != kEfbWidth * kEfbHeight) {
         throw std::invalid_argument("pointer depth field requires 640x528 pixels");
     }
@@ -1444,8 +1534,8 @@ bool RendererGles::debug_copy_efb_to_readback() {
     if (efb_capture_path_.empty() || !make_current()) {
         return false;
     }
-    const unsigned w = kEfbWidth * efb_scale_;
-    const unsigned h = kEfbHeight * efb_scale_;
+    const unsigned w = efb_width();
+    const unsigned h = efb_height();
     std::vector<std::uint8_t> rgba(static_cast<std::size_t>(w) * h * 4u);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, efb_framebuffer_);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
