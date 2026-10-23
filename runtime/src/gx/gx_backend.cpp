@@ -11390,9 +11390,17 @@ bool GxBackend::peek_efb_published(
     EfbPeekKind kind,
     std::uint16_t token,
     std::uint32_t& value) {
-    if (!initialized_ || !async_render_thread_enabled() ||
-        x >= kEfbWidth || y >= kEfbHeight) {
+    if (!initialized_ || !async_render_thread_enabled()) {
         return false;
+    }
+    if (x >= kEfbWidth || y >= kEfbHeight) {
+#if defined(NEBULA_GPU_GLES)
+        // What the synchronous peek answers outside the EFB, without its FIFO drain and GPU round trip.
+        value = 0u;
+        return true;
+#else
+        return false;
+#endif
     }
     AsyncPeekFieldState& state = async_peek_[async_peek_channel(kind, token)];
     state.last_request = ++async_peek_requests_;
@@ -11400,19 +11408,49 @@ bool GxBackend::peek_efb_published(
     if (read_async_peek_field(state, x, y, kind, value)) {
         return true;
     }
-    // A channel just bound: the latest field of the kind, so a new token never stalls on the
-    // synchronous path.
-    AsyncPeekFieldState* latest = nullptr;
+    // A channel just bound: the other published fields of the kind, most recently asked first, so a new token
+    // never stalls on the synchronous path.
+    std::array<AsyncPeekFieldState*, Renderer::kAsyncPeekFieldChannels> others{};
+    std::size_t count = 0;
     for (AsyncPeekFieldState& other : async_peek_) {
         const std::uint32_t key = other.key.load(std::memory_order_relaxed);
         if (&other != &state && key != kAsyncPeekUnbound && async_peek_key_kind(key) == kind &&
-            (latest == nullptr || other.last_request > latest->last_request) &&
             (other.published.load(std::memory_order_acquire) & 0xFFFFFFFFu) != 0u) {
-            latest = &other;
+            others[count++] = &other;
         }
     }
-    return latest != nullptr &&
-        read_async_peek_field(*latest, x, y, kind, value);
+    std::sort(others.begin(), others.begin() + static_cast<std::ptrdiff_t>(count),
+              [](const AsyncPeekFieldState* a, const AsyncPeekFieldState* b) {
+                  return a->last_request > b->last_request;
+              });
+    for (std::size_t i = 0; i < count; ++i) {
+        if (read_async_peek_field(*others[i], x, y, kind, value)) {
+            return true;
+        }
+    }
+#if defined(NEBULA_GPU_GLES)
+    // Why the game waits (diagnostics): nothing published on the channel yet, or a binding newer than its field.
+    {
+        const std::uint64_t published = state.published.load(std::memory_order_acquire);
+        const unsigned reason = (published & 0xFFFFFFFFu) == 0u ? 0u : 1u;
+        ++sync_peek_reasons_[reason];
+        const std::uint64_t total = sync_peek_reasons_[0] + sync_peek_reasons_[1];
+        if (total <= 16u || total % 500u == 0u) {
+            unsigned bound = 0;
+            for (const AsyncPeekFieldState& other : async_peek_) {
+                bound += other.key.load(std::memory_order_relaxed) != kAsyncPeekUnbound ? 1u : 0u;
+            }
+            std::fprintf(stderr,
+                         "[peek] sync %llu: %s (%u,%u) token %u: unpublished %llu, stale %llu; %u of %zu channels "
+                         "bound\n",
+                         static_cast<unsigned long long>(total), kind == EfbPeekKind::Depth ? "depth" : "colour",
+                         static_cast<unsigned>(x), static_cast<unsigned>(y), static_cast<unsigned>(token),
+                         static_cast<unsigned long long>(sync_peek_reasons_[0]),
+                         static_cast<unsigned long long>(sync_peek_reasons_[1]), bound, async_peek_.size());
+        }
+    }
+#endif
+    return false;
 }
 
 void GxBackend::poll_async_peek_fields() {

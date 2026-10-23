@@ -1575,6 +1575,10 @@ private:
     std::uint64_t async_peek_requests_ = 0;  // simulation thread
     // Render owner: records the fields of channels bound to `token` where the stream reaches it.
     void record_async_peek_fields_at_token(std::uint16_t token);
+#if defined(NEBULA_GPU_GLES)
+    // Sync peeks a published field could not answer, by reason (diagnostics, logged now and then).
+    std::uint64_t sync_peek_reasons_[2]{};
+#endif
     FramePeCompletionContract frame_pe_completions_;
     std::size_t render_chunks_in_flight_ = 0;
     std::size_t present_chunks_in_flight_ = 0;

@@ -16,6 +16,7 @@ GAMEDIR="/$directory/ports/smg"
 cd "$GAMEDIR" || exit 1
 exec > >(tee "$GAMEDIR/log.txt") 2>&1
 chmod +x "$GAMEDIR/nebula"
+echo "nebula: $(md5sum "$GAMEDIR/nebula" | cut -c1-12) del $(date -r "$GAMEDIR/nebula" '+%F %T' 2>/dev/null)"
 if [ ! -f "$GAMEDIR/gamedata/game.pak" ]; then
   echo "Falta gamedata/game.pak (hazlo con nebula-pak desde tu disco de Super Mario Galaxy USA)."
   pm_finish; exit 1
@@ -63,27 +64,47 @@ export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 
 #   NEBULA_PERF=1                        CPU, GPU y memoria a su frecuencia maxima mientras se juega (0: lo que tenga el sistema)
 PERF_SAVED=""
-perf_restore() {
-  for entry in $PERF_SAVED; do echo "${entry#*=}" > "${entry%%=*}" 2>/dev/null; done
+perf_restore() {  # al reves de como se cambiaron (el minimo vuelve antes que el maximo)
+  local list="" entry
+  for entry in $PERF_SAVED; do list="$entry $list"; done
+  for entry in $list; do echo "${entry#*=}" > "${entry%%=*}" 2>/dev/null; done
   PERF_SAVED=""
 }
+perf_set() {  # fichero valor: lo escribe y apunta el valor anterior para restaurarlo al salir
+  local old; old=$(cat "$1" 2>/dev/null)
+  [ "$old" = "$2" ] && return 0
+  if echo "$2" > "$1" 2>/dev/null; then PERF_SAVED="$PERF_SAVED $1=$old"; echo "rendimiento: $1 $old -> $2"
+  else echo "rendimiento: no se pudo escribir $2 en $1 (sigue en $old)"; fi
+}
+top_freq() { tr ' ' '\n' < "$1" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1; }
+# Como estan las frecuencias (diagnostico).
+for dir in /sys/devices/system/cpu/cpufreq/policy*; do
+  [ -d "$dir" ] && echo "cpu $(basename "$dir"): $(cat "$dir/scaling_governor" 2>/dev/null) [$(cat "$dir/scaling_available_governors" 2>/dev/null)] $(cat "$dir/scaling_cur_freq" 2>/dev/null) kHz ($(cat "$dir/scaling_min_freq" 2>/dev/null)-$(cat "$dir/scaling_max_freq" 2>/dev/null), hasta $(cat "$dir/cpuinfo_max_freq" 2>/dev/null))"
+done
+for dir in /sys/class/devfreq/*; do
+  [ -d "$dir" ] && echo "devfreq $(basename "$dir"): $(cat "$dir/governor" 2>/dev/null) [$(cat "$dir/available_governors" 2>/dev/null)] $(cat "$dir/cur_freq" 2>/dev/null) Hz ($(cat "$dir/min_freq" 2>/dev/null)-$(cat "$dir/max_freq" 2>/dev/null); $(cat "$dir/available_frequencies" 2>/dev/null))"
+done
 if [ "${NEBULA_PERF:-1}" = "1" ]; then
-  for gov in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor /sys/class/devfreq/*/governor; do
-    [ -w "$gov" ] || continue
-    dir=$(dirname "$gov")
-    case "$gov" in
-      /sys/class/devfreq/*) case "$(basename "$dir")" in *gpu*|*mali*|*1800000*|*dmc*) ;; *) continue ;; esac
-        avail="$dir/available_governors" ;;
-      *) avail="$dir/scaling_available_governors" ;;
-    esac
-    grep -qw performance "$avail" 2>/dev/null || continue
-    old=$(cat "$gov")
-    [ "$old" = "performance" ] && continue
-    echo performance > "$gov" 2>/dev/null && PERF_SAVED="$PERF_SAVED $gov=$old"
-    echo "rendimiento: $gov $old -> performance"
+  for dir in /sys/devices/system/cpu/cpufreq/policy*; do
+    [ -d "$dir" ] || continue
+    if grep -qw performance "$dir/scaling_available_governors" 2>/dev/null; then
+      perf_set "$dir/scaling_governor" performance
+    else
+      top=$(cat "$dir/cpuinfo_max_freq" 2>/dev/null)
+      [ -n "$top" ] && perf_set "$dir/scaling_max_freq" "$top" && perf_set "$dir/scaling_min_freq" "$top"
+    fi
   done
-  for f in /sys/class/devfreq/*/cur_freq; do
-    case "$f" in *gpu*|*mali*|*1800000*) echo "gpu: $(cat "$f" 2>/dev/null) Hz (max $(cat "$(dirname "$f")/max_freq" 2>/dev/null))" ;; esac
+  for dir in /sys/class/devfreq/*; do
+    case "$(basename "$dir")" in *gpu*|*mali*|*1800000*|*dmc*) ;; *) continue ;; esac
+    if grep -qw performance "$dir/available_governors" 2>/dev/null; then
+      perf_set "$dir/governor" performance
+    fi
+    # Sin "performance" (o si el driver no le hace caso): el minimo en la frecuencia mas alta.
+    top=$(top_freq "$dir/available_frequencies")
+    if [ -n "$top" ]; then
+      perf_set "$dir/max_freq" "$top"
+      perf_set "$dir/min_freq" "$top"
+    fi
   done
   trap perf_restore EXIT
 fi
@@ -93,7 +114,8 @@ pm_platform_helper "$GAMEDIR/nebula"
 # Memoria del juego y libre en el sistema, cada 60 s (diagnostico para el perfil bajo).
 ( while sleep 60; do
     pid=$(pidof nebula 2>/dev/null | cut -d' ' -f1); [ -n "$pid" ] || continue
-    echo "memoria: nebula $(grep VmRSS /proc/$pid/status | tr -s ' ' | cut -d' ' -f2) kB, libre $(grep MemAvailable /proc/meminfo | tr -s ' ' | cut -d' ' -f2) kB"
+    gpu=""; for f in /sys/class/devfreq/*/cur_freq; do case "$f" in *gpu*|*mali*|*1800000*) gpu="$(cat "$f" 2>/dev/null)";; esac; done
+    echo "memoria: nebula $(grep VmRSS /proc/$pid/status | tr -s ' ' | cut -d' ' -f2) kB, libre $(grep MemAvailable /proc/meminfo | tr -s ' ' | cut -d' ' -f2) kB; cpu $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq 2>/dev/null) kHz, gpu $gpu Hz"
   done ) &
 MEMLOG_PID=$!
 ./nebula --pak "$GAMEDIR/gamedata/game.pak" --nand "$GAMEDIR/nand"
