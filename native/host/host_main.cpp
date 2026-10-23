@@ -2939,6 +2939,17 @@ int main(int argc, char** argv) {
                      message.c_str(), galaxy::host::mii_library_count());
         (void)galaxy::host::take_mii_installs();  // in the file the game reads at boot
     }
+#if defined(NEBULA_HOST_RENDERER)
+    // The player's settings before the mods: their text follows the game's language, which the first question
+    // fixes for the session (game_language_for_boot), so GALAXY_LANGUAGE / settings.ini must already be in.
+    try {
+        galaxy::load_runtime_settings_from_file();
+        std::fprintf(stderr, "[settings] game language: %s\n",
+                     galaxy::game_language_key(galaxy::get_runtime_settings().language));
+    } catch (const std::exception& failure) {
+        die("the settings did not load: %s", failure.what());
+    }
+#endif
     {
         // Mods: the mods folder next to the settings (galaxy::mods), applied before the game reads its disc.
         const fs::path settings_folder = galaxy::runtime_settings_folder();
