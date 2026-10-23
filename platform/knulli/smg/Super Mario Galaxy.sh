@@ -71,8 +71,8 @@ if [ "${NEBULA_SHOTS:-1}" = "1" ]; then
   mkdir -p "$GAMEDIR/shots"
   export GALAXY_PRESENT_SNAPSHOT_DIR="$GAMEDIR/shots" GALAXY_PRESENT_SNAPSHOT_EVERY=1800 GALAXY_PRESENT_SNAPSHOT_LAST=18000
 fi
-#   NEBULA_PROFILE=60                    a los 60 s (y 30 y 60 s despues) anota en log.txt donde gastan su tiempo los hilos
-export NEBULA_PROFILE="${NEBULA_PROFILE:-60}"
+#   NEBULA_PROFILE=150                   a los 150 s (y 30 y 60 s despues) anota en log.txt donde gastan su tiempo los hilos
+export NEBULA_PROFILE="${NEBULA_PROFILE:-150}"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 
 #   NEBULA_PERF=1                        CPU, GPU y memoria a su frecuencia maxima mientras se juega (0: lo que tenga el sistema)

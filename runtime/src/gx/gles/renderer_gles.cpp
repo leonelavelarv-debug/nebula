@@ -205,13 +205,13 @@ bool RendererGles::initialize(int window_width, int window_height, unsigned efb_
         }
         // Ring sizes (GALAXY_GLES_RING_*_MB): Vulkan's defaults scaled to a handheld's memory; the peaks are logged.
         gpu::Device* const dev = context.device();
-        if (!vertex_ring_.initialize(dev, "vertex", env_megabytes("GALAXY_GLES_RING_VERTEX_MB", 28u << 20u),
+        if (!vertex_ring_.initialize(dev, "vertex", env_megabytes("GALAXY_GLES_RING_VERTEX_MB", 20u << 20u),
                                      kFramesInFlight) ||
             !index_ring_.initialize(dev, "index", env_megabytes("GALAXY_GLES_RING_INDEX_MB", 6u << 20u),
                                     kFramesInFlight) ||
             !constant_ring_.initialize(dev, "constant", env_megabytes("GALAXY_GLES_RING_CONSTANT_MB", 6u << 20u),
                                        kFramesInFlight) ||
-            !matrix_ring_.initialize(dev, "matrix", env_megabytes("GALAXY_GLES_RING_MATRIX_MB", 8u << 20u),
+            !matrix_ring_.initialize(dev, "matrix", env_megabytes("GALAXY_GLES_RING_MATRIX_MB", 4u << 20u),
                                      kFramesInFlight)) {
             std::cerr << "[Renderer] upload rings unavailable\n";
             shutdown();

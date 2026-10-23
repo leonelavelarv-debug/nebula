@@ -47,7 +47,11 @@ namespace galaxy::gx {
 
 namespace {
 
+#if defined(NEBULA_GPU_GLES)
+static constexpr std::uint64_t kUploadArenaChunkBytes = 8ull << 20;  // a chunk a frame slot, more when needed
+#else
 static constexpr std::uint64_t kUploadArenaChunkBytes = 16ull << 20;
+#endif
 static constexpr std::uint64_t kContentCacheBudgetBytes = 64ull << 20;
 static constexpr std::size_t kContentCacheMaxEntries = 4096u;
 
