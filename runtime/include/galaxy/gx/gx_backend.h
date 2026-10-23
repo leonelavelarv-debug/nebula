@@ -1561,18 +1561,6 @@ private:
         std::atomic<std::uint64_t> published_answers{0};
         std::uint64_t last_request = 0;  // simulation thread
         std::uint64_t completed = 0;
-#if defined(NEBULA_GPU_GLES)
-        // The pixels the game peeked since the last field (simulation thread grows, render thread takes): a field
-        // reads back only their box (plus a margin), since a tiler GPU's readback mapping is uncached. A slot
-        // answers only inside the box it read (logical x0, y0, x1, y1, ends exclusive).
-        std::atomic<std::uint16_t> want_x0{0xFFFFu};
-        std::atomic<std::uint16_t> want_y0{0xFFFFu};
-        std::atomic<std::uint16_t> want_x1{0u};
-        std::atomic<std::uint16_t> want_y1{0u};
-        std::array<std::uint16_t, 4> last_region{0u, 0u, 640u, 528u};
-        std::array<std::uint16_t, 4> pending_region{0u, 0u, 640u, 528u};
-        std::array<std::array<std::uint16_t, 4>, 3> slot_region{};
-#endif
     };
     static constexpr std::uint32_t async_peek_key(EfbPeekKind kind, std::uint16_t token) noexcept {
         return (kind == EfbPeekKind::Depth ? 0u : 0x10000u) | token;
@@ -1587,12 +1575,6 @@ private:
     std::uint64_t async_peek_requests_ = 0;  // simulation thread
     // Render owner: records the fields of channels bound to `token` where the stream reaches it.
     void record_async_peek_fields_at_token(std::uint16_t token);
-#if defined(NEBULA_GPU_GLES)
-    // Render thread: the box the next field of `state` reads, from the peeks since the last one.
-    void take_async_peek_region(AsyncPeekFieldState& state, std::size_t channel);
-    // Sync peeks a published field could not answer, by reason (diagnostics, logged now and then).
-    std::uint64_t sync_peek_reasons_[4]{};
-#endif
     FramePeCompletionContract frame_pe_completions_;
     std::size_t render_chunks_in_flight_ = 0;
     std::size_t present_chunks_in_flight_ = 0;

@@ -108,35 +108,6 @@ int main() {
         expect(false, "depth field captured", 0, 1);
     }
 
-    // An async colour field limited to a box across the red/blue edge (odd edges: the divided EFB rounds out).
-    {
-        renderer.set_async_peek_field_region(1u, 101u, 251u, 141u, 277u);
-        const std::uint64_t fence = renderer.submit_async_peek_field(1u, EfbPeekKind::Color, 0u);
-        if (fence != 0u) {
-            (void)galaxy::gx::gles::Context::get().wait(fence, UINT64_MAX);
-            const bool completed = renderer.try_complete_async_peek_field(1u);
-            expect(completed, "boxed field completed", completed ? 1u : 0u, 1u);
-            const std::uint8_t* rgba = renderer.async_peek_field_rgba(1u, 0u);
-            const auto pixel = [&](unsigned x, unsigned y) {
-                const std::uint8_t* p = rgba + (static_cast<std::size_t>(y) * kEfbWidth + x) * 4u;
-                return argb(p[3], p[0], p[1], p[2]);
-            };
-            if (rgba != nullptr) {
-                expect(pixel(101, 251) == argb(0xFF, 0xFF, 0, 0), "boxed field (101,251) red", pixel(101, 251),
-                       argb(0xFF, 0xFF, 0, 0));
-                expect(pixel(140, 263) == argb(0xFF, 0xFF, 0, 0), "boxed field (140,263) red", pixel(140, 263),
-                       argb(0xFF, 0xFF, 0, 0));
-                expect(pixel(120, 264) == argb(0xFF, 0, 0, 0xFF), "boxed field (120,264) blue", pixel(120, 264),
-                       argb(0xFF, 0, 0, 0xFF));
-                expect(pixel(140, 276) == argb(0xFF, 0, 0, 0xFF), "boxed field (140,276) blue", pixel(140, 276),
-                       argb(0xFF, 0, 0, 0xFF));
-                expect(pixel(300, 400) == 0u, "boxed field (300,400) not read", pixel(300, 400), 0u);
-            }
-        } else {
-            expect(false, "boxed field submitted", 0, 1);
-        }
-    }
-
     // An async colour field (the game's later GXPeekARGB answers): red above row 264, blue from it.
     {
         const std::uint64_t fence = renderer.submit_async_peek_field(0u, EfbPeekKind::Color, 1u);

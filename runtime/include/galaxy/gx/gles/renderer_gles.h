@@ -245,8 +245,6 @@ public:
     [[nodiscard]] bool record_async_peek_field_in_frame(std::size_t channel, EfbPeekKind kind, std::size_t slot);
     [[nodiscard]] bool try_complete_async_peek_field(std::size_t channel);
     [[nodiscard]] const std::uint8_t* async_peek_field_rgba(std::size_t channel, std::size_t slot) const noexcept;
-    // The box of the EFB the channel's next field reads back (the rest of its slot keeps older pixels).
-    void set_async_peek_field_region(std::size_t channel, unsigned x0, unsigned y0, unsigned x1, unsigned y1) noexcept;
     [[nodiscard]] bool async_peek_field_pending(std::size_t channel) const noexcept {
         return async_fields_[channel].fence != 0u;
     }
@@ -315,9 +313,6 @@ private:
         unsigned divisor = 1;
         unsigned width = 0;
         unsigned height = 0;
-        unsigned origin_x = 0;  // the first texel read (a field's box)
-        unsigned origin_y = 0;
-        unsigned field_width = 0;  // data's row length in pixels (0: data is the texels as read)
         std::vector<std::uint8_t> staging;
     };
     struct AsyncField {
@@ -325,7 +320,6 @@ private:
         std::array<Readback, kAsyncPeekFieldSlots> readbacks;
         std::uint64_t fence = 0;
         std::size_t pending_slot = 0;
-        std::array<unsigned, 4> region{0u, 0u, kEfbWidth, kEfbHeight};  // the next field's box (logical, ends exclusive)
     };
     struct TextureTable {
         std::array<GLuint, 8> names{};
@@ -362,7 +356,7 @@ private:
                                 float src_x, float src_y, float step_x, float step_y, float filter_row_offset);
     // The peek conversion of a whole 640x528 field (or one pixel) into `target`, read into `readback`.
     void record_peek_field(gles::Texture& target, EfbPeekKind kind, const EfbConversionShaderConstants& constants,
-                           unsigned width, unsigned height, Readback& readback, const std::array<unsigned, 4>* region = nullptr);
+                           unsigned width, unsigned height, Readback& readback);
     bool complete_readback(Readback& readback);
     void ensure_readback(Readback& readback, std::size_t bytes, std::size_t data_bytes);
     void report_stats();
