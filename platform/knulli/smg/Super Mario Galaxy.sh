@@ -23,6 +23,21 @@ fi
 mkdir -p "$GAMEDIR/nand" "$GAMEDIR/data" "$GAMEDIR/crashes"
 
 # Ajustes (se pueden cambiar aqui):
+#   NEBULA_PERFIL=bajo|normal            bajo (por defecto): pocos recursos -- salta frames cuando el render no llega
+#                                        (el juego mantiene su velocidad), menos memoria para caches; normal: sin saltos
+NEBULA_PERFIL="${NEBULA_PERFIL:-bajo}"
+if [ "$NEBULA_PERFIL" = "bajo" ]; then
+  #   GALAXY_FRAMESKIP=auto|0|1|2|3      auto: salta solo cuando va atrasado (GALAXY_FRAMESKIP_MAX seguidos, 2)
+  export GALAXY_FRAMESKIP="${GALAXY_FRAMESKIP:-auto}"
+  export GALAXY_FRAMESKIP_MAX="${GALAXY_FRAMESKIP_MAX:-2}"
+  export GALAXY_GX_DISPLAY_LIST_CACHE_MB="${GALAXY_GX_DISPLAY_LIST_CACHE_MB:-192}"
+  export GALAXY_EFB_COPY_DEST_BUDGET_MB="${GALAXY_EFB_COPY_DEST_BUDGET_MB:-64}"
+  export GALAXY_TEXTURE_POOL_MB="${GALAXY_TEXTURE_POOL_MB:-128}"
+  export GALAXY_DISC_PREFETCH_BYTES="${GALAXY_DISC_PREFETCH_BYTES:-2097152}"
+else
+  export GALAXY_FRAMESKIP="${GALAXY_FRAMESKIP:-0}"
+fi
+echo "perfil: $NEBULA_PERFIL (frameskip $GALAXY_FRAMESKIP)"
 #   GALAXY_GLES_PENDING=wait|skip|uber  shaders nuevos: esperar (tirones la 1a vez), saltar el dibujo, o uber
 #   NEBULA_PAD_SCHEME=nintendo|xbox      A a la derecha (nintendo) o abajo (xbox)
 export NEBULA_DATA_DIR="$GAMEDIR/data"
@@ -74,7 +89,15 @@ fi
 
 $GPTOKEYB "nebula" &
 pm_platform_helper "$GAMEDIR/nebula"
+# Memoria del juego y libre en el sistema, cada 60 s (diagnostico para el perfil bajo).
+( while sleep 60; do
+    pid=$(pidof nebula 2>/dev/null | cut -d' ' -f1); [ -n "$pid" ] || continue
+    echo "memoria: nebula $(grep VmRSS /proc/$pid/status | tr -s ' ' | cut -d' ' -f2) kB, libre $(grep MemAvailable /proc/meminfo | tr -s ' ' | cut -d' ' -f2) kB"
+  done ) &
+MEMLOG_PID=$!
 ./nebula --pak "$GAMEDIR/gamedata/game.pak" --nand "$GAMEDIR/nand"
-echo "terminado: status $?"
+status=$?
+pkill -P "$MEMLOG_PID" 2>/dev/null; kill "$MEMLOG_PID" 2>/dev/null
+echo "terminado: status $status"
 perf_restore
 pm_finish

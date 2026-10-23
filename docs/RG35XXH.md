@@ -258,3 +258,16 @@ AARCH64_XTOOLS=/ruta/x-tools/aarch64-rpi3-linux-gnu cmake -S native -B build-aar
   "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld -static-libstdc++ -static-libgcc"
 ninja -C build-aarch64
 ```
+
+### Perfil de bajos recursos (lanzador `smg`)
+
+`NEBULA_PERFIL=bajo` (por defecto en el lanzador; `normal` lo apaga):
+
+- **Salto de frames** (`GALAXY_FRAMESKIP=auto|0|1|2|3`, `GALAXY_FRAMESKIP_MAX`): un frame saltado se analiza entero
+  (estado GX, display lists, tokens, peeks) pero no dibuja, no copia texturas ni limpia el EFB, así que su copia a
+  pantalla repite el último frame dibujado. `auto` compara el tiempo ocupado del hilo de render (sin sus esperas al
+  juego) con un frame de 60 Hz y salta el siguiente cuando va atrasado, como mucho 2 seguidos; `[frameskip]` en
+  log.txt cuenta los saltados cada 600 frames. El juego conserva su velocidad y baja la fluidez.
+- Cachés más pequeñas: display lists 192 MiB, copias EFB 64 MiB, pool de texturas 128 MiB, prefetch de disco 2 MiB.
+- CPU, GPU y memoria en `performance` mientras se juega (`NEBULA_PERF=1`), restaurados al salir.
+- `memoria:` en log.txt cada 60 s (RSS de nebula y memoria libre).

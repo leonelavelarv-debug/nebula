@@ -11096,6 +11096,7 @@ void GxBackend::render_thread_main() {
                 renderer_.any_async_peek_field_pending();
             // Draining for a stop: queued frames present without sub-frames.
             interp_stopping_ = stop_render_thread_;
+            const auto idle_start = std::chrono::steady_clock::now();
             if (interp_sequence_.active && frame_queue_.empty() && !stop_render_thread_) {
                 // Coarse and interruptible to about 1.5 ms before the slot
                 // (the condition variable wakes on the 1 ms scheduler tick),
@@ -11124,6 +11125,8 @@ void GxBackend::render_thread_main() {
                     return stop_render_thread_ || !frame_queue_.empty();
                 });
             }
+            frameskip_idle_ns_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - idle_start).count();
             // A due slot goes before queued chunks, so presents keep their
             // cadence while a game frame's chunks stream in; except a slot
             // that would show the frame itself (t >= 1) while the next
@@ -15350,7 +15353,9 @@ void GxBackend::flush_pending_draw_batch() {
     if (pending_draw_batch_.rt && (!pending_draw_batch_.hidden || pending_draw_batch_.traced)) {
         renderer_.rt_note_draw(pending_draw_batch_.call, pending_draw_batch_.rt_info);
     }
-    if (!pending_draw_batch_.hidden) {
+    if (frameskip_skipping_) [[unlikely]] {
+        ++frameskip_draws_;
+    } else if (!pending_draw_batch_.hidden) {
         renderer_.draw(pending_draw_batch_.call);
     }
     if (pending_draw_batch_.debake_model != 0u) [[unlikely]] {
@@ -16376,7 +16381,7 @@ void GxBackend::on_draw(
         sc.x1 < 0 || sc.y1 < 0 ||
         sc.x0 >= static_cast<std::int32_t>(kEfbWidth) ||
         sc.y0 >= static_cast<std::int32_t>(kEfbHeight);
-    const bool cull_reject =
+    const bool cull_reject = frameskip_skipping_ ||
         cull_all_suppresses_primitive(state_.gen_mode().cull, primitive);
     if (cull_reject || (scissor_reject && !capture_draws_ &&
         capture_texaddr_target() == 0u &&
@@ -17349,7 +17354,8 @@ void GxBackend::on_efb_copy(std::uint32_t exec_command) {
 
 #if defined(NEBULA_GPU_GLES)
     // A display copy that clears the whole EFB's depth afterwards: the depth before it is never read again.
-    if (params.copy_to_xfb && params.clear && state_.z_mode().update_enable && params.src_x == 0u &&
+    if (params.copy_to_xfb && params.clear && !frameskip_next_skipped() && state_.z_mode().update_enable &&
+        params.src_x == 0u &&
         params.src_y == 0u && params.src_width >= kEfbWidth && params.src_height >= kEfbHeight) {
         renderer_.discard_efb_depth_at_next_copy();
     }
@@ -17384,6 +17390,7 @@ void GxBackend::on_efb_copy(std::uint32_t exec_command) {
             end_side_layer();
             mirror_opened_scene_ = false;
             renderer_.copy_efb_to_xfb(params, *xfb);
+            frameskip_after_display_copy();
             // The display copy ends the 2D layer: later work and the next
             // frame use the render-resolution EFB again.
             display_copy_on_output_ = renderer_.output_efb_active() && !params.clear;
@@ -17478,7 +17485,9 @@ void GxBackend::on_efb_copy(std::uint32_t exec_command) {
         // showed it for two frames (DLSS, HUD at output resolution).
         const bool from_display = display_copy_on_output_ && !is_depth_copy && !params.clear;
         display_copy_on_output_ = display_copy_on_output_ && !params.clear;
-        const bool alias_updated = from_display
+        // A skipped frame keeps the textures its copies made the last time they were drawn.
+        const bool alias_updated = frameskip_skipping_ ? false
+            : from_display
             ? renderer_.copy_output_efb_to_texture(params, texture_cache_)
             : renderer_.copy_efb_to_texture(params, texture_cache_, is_depth_copy);
         if (alias_updated) {
@@ -17501,7 +17510,8 @@ void GxBackend::on_efb_copy(std::uint32_t exec_command) {
     // ClearScreen(srcRect) with colorEnable = blendmode.colorupdate, alphaEnable =
     // blendmode.alphaupdate, zEnable = zmode.updateenable). A full-target clear here wiped EFB content
     // that later copies in the same frame still needed.
-    if (params.clear) {
+    // While frames are skipped the EFB keeps the last drawn frame (the next drawn frame clears it first).
+    if (params.clear && !frameskip_skipping_) {
         const BlendMode bm = state_.blend_mode();
         const ZMode zm = state_.z_mode();
         renderer_.clear_efb(
@@ -17527,6 +17537,78 @@ void GxBackend::on_efb_copy(std::uint32_t exec_command) {
                   << " src=" << params.src_width << 'x' << params.src_height
                   << " dst=0x" << std::hex << params.dest_addr << std::dec
                   << " clear=" << (params.clear ? 1 : 0) << '\n';
+    }
+}
+
+namespace {
+// GALAXY_FRAMESKIP: 0 off, 1-3 frames skipped after each drawn one, -1 auto.
+int frameskip_mode() {
+    static const int mode = [] {
+        const char* value = std::getenv("GALAXY_FRAMESKIP");
+        if (value == nullptr || *value == '\0') {
+            return 0;
+        }
+        if (std::strcmp(value, "auto") == 0) {
+            return -1;
+        }
+        const long n = std::strtol(value, nullptr, 10);
+        return static_cast<int>(std::clamp<long>(n, 0, 3));
+    }();
+    return mode;
+}
+}  // namespace
+
+bool GxBackend::frameskip_next_skipped() const noexcept {
+    // Only a fixed pattern is known before the display copy; auto decides at it (and then skips the clear).
+    const int mode = frameskip_mode();
+    if (mode > 0) {
+        const unsigned run = frameskip_skipping_ ? frameskip_run_ + 1u : 0u;
+        return run < static_cast<unsigned>(mode);
+    }
+    return mode < 0;  // auto might skip: keep the depth
+}
+
+void GxBackend::frameskip_after_display_copy() {
+    const int mode = frameskip_mode();
+    if (mode == 0) {
+        return;
+    }
+    static const unsigned max_run = static_cast<unsigned>(
+        std::clamp<std::uint64_t>(read_env_u64("GALAXY_FRAMESKIP_MAX", 2u), 1u, 4u));
+    ++frameskip_frames_;
+    if (frameskip_skipping_) {
+        ++frameskip_skipped_;
+        ++frameskip_run_;
+    } else {
+        frameskip_run_ = 0u;
+    }
+    const std::int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    bool skip = false;
+    if (mode > 0) {
+        // After a drawn frame skip `mode` frames, then draw one.
+        skip = frameskip_skipping_ ? frameskip_run_ < static_cast<unsigned>(mode) : true;
+    } else {
+        // Auto: the render thread's busy time (not its waits for the game) against a 60 Hz game frame. Behind:
+        // skip the next frame, at most GALAXY_FRAMESKIP_MAX in a row.
+        constexpr std::int64_t kFrameNs = 16'683'333;
+        if (frameskip_last_ns_ != 0) {
+            const std::int64_t busy = (now - frameskip_last_ns_) - (frameskip_idle_ns_ - frameskip_last_idle_ns_);
+            frameskip_debt_ns_ = std::clamp<std::int64_t>(frameskip_debt_ns_ + busy - kFrameNs, -kFrameNs,
+                                                          3 * kFrameNs);
+        }
+        skip = frameskip_debt_ns_ > kFrameNs / 4 && (!frameskip_skipping_ || frameskip_run_ < max_run);
+    }
+    frameskip_last_ns_ = now;
+    frameskip_last_idle_ns_ = frameskip_idle_ns_;
+    frameskip_skipping_ = skip;
+    if (frameskip_frames_ % 600u == 0u) {
+        std::fprintf(stderr, "[frameskip] %s: %llu of the last 600 game frames skipped (%llu draws), debt %.1f ms\n",
+                     mode < 0 ? "auto" : "fixed", static_cast<unsigned long long>(frameskip_skipped_),
+                     static_cast<unsigned long long>(frameskip_draws_),
+                     static_cast<double>(frameskip_debt_ns_) / 1e6);
+        frameskip_skipped_ = 0u;
+        frameskip_draws_ = 0u;
     }
 }
 

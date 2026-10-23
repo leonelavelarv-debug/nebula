@@ -2134,6 +2134,20 @@ private:
     // The last display copy came from the output EFB and nothing has drawn or cleared since: an EFB-to-texture
     // copy now takes that picture (RendererD3D12::copy_output_efb_to_texture), not the render EFB's scene.
     bool display_copy_on_output_ = false;
+    // Frame skipping (GALAXY_FRAMESKIP=0|1|2|3|auto, GALAXY_FRAMESKIP_MAX for auto): a skipped game frame is
+    // parsed (GX state, display lists, tokens) but draws nothing, copies no textures and keeps the EFB, so its
+    // display copy and peeks show the last drawn frame. Render thread only.
+    void frameskip_after_display_copy();
+    [[nodiscard]] bool frameskip_next_skipped() const noexcept;
+    bool frameskip_skipping_ = false;
+    unsigned frameskip_run_ = 0;
+    std::int64_t frameskip_last_ns_ = 0;
+    std::int64_t frameskip_last_idle_ns_ = 0;
+    std::int64_t frameskip_debt_ns_ = 0;
+    std::int64_t frameskip_idle_ns_ = 0;
+    std::uint64_t frameskip_frames_ = 0;
+    std::uint64_t frameskip_skipped_ = 0;
+    std::uint64_t frameskip_draws_ = 0;
 
     // Bring-up stats, reported every 300 frames.
     std::uint64_t stat_draws_issued_ = 0;
