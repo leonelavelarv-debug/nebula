@@ -5,6 +5,7 @@
 
 #include "sdl_host.h"
 
+#include "galaxy/gx/gles/gles_context.h"
 #include "galaxy/gx/gles/pipeline_cache_gles.h"
 #include "galaxy/gx/gles/renderer_gles.h"
 #include "galaxy/gx/uber_constants.h"
@@ -95,8 +96,42 @@ int main() {
                0x123456u);
         expect(field[500u * kEfbWidth + 600u] >= 0xFFFFFEu, "depth field (600,500)", field[500u * kEfbWidth + 600u],
                0xFFFFFFu);
+        // Both sides of the clears' edges (a divided EFB expands each physical texel on the CPU).
+        expect(field[263u * kEfbWidth + 319u] == 0x123456u, "depth field (319,263)", field[263u * kEfbWidth + 319u],
+               0x123456u);
+        expect(field[527u * kEfbWidth + 0u] == 0x123456u, "depth field (0,527)", field[527u * kEfbWidth], 0x123456u);
+        expect(field[264u * kEfbWidth + 320u] >= 0xFFFFFEu, "depth field (320,264)", field[264u * kEfbWidth + 320u],
+               0xFFFFFFu);
+        expect(field[527u * kEfbWidth + 639u] >= 0xFFFFFEu, "depth field (639,527)", field[527u * kEfbWidth + 639u],
+               0xFFFFFFu);
     } else {
         expect(false, "depth field captured", 0, 1);
+    }
+
+    // An async colour field (the game's later GXPeekARGB answers): red above row 264, blue from it.
+    {
+        const std::uint64_t fence = renderer.submit_async_peek_field(0u, EfbPeekKind::Color, 1u);
+        expect(fence != 0u, "async colour field submitted", fence != 0u, 1u);
+        if (fence != 0u) {
+            (void)galaxy::gx::gles::Context::get().wait(fence, UINT64_MAX);
+            const bool completed = renderer.try_complete_async_peek_field(0u);
+            expect(completed, "async colour field completed", completed ? 1u : 0u, 1u);
+            const std::uint8_t* rgba = renderer.async_peek_field_rgba(0u, 1u);
+            const auto pixel = [&](unsigned x, unsigned y) {
+                const std::uint8_t* p = rgba + (static_cast<std::size_t>(y) * kEfbWidth + x) * 4u;
+                return argb(p[3], p[0], p[1], p[2]);
+            };
+            if (rgba != nullptr) {
+                expect(pixel(10, 263) == argb(0xFF, 0xFF, 0, 0), "async field (10,263) red", pixel(10, 263),
+                       argb(0xFF, 0xFF, 0, 0));
+                expect(pixel(639, 0) == argb(0xFF, 0xFF, 0, 0), "async field (639,0) red", pixel(639, 0),
+                       argb(0xFF, 0xFF, 0, 0));
+                expect(pixel(11, 264) == argb(0xFF, 0, 0, 0xFF), "async field (11,264) blue", pixel(11, 264),
+                       argb(0xFF, 0, 0, 0xFF));
+                expect(pixel(639, 527) == argb(0xFF, 0, 0, 0xFF), "async field (639,527) blue", pixel(639, 527),
+                       argb(0xFF, 0, 0, 0xFF));
+            }
+        }
     }
 
     // The display copy and the present: red at the screen's top.

@@ -808,7 +808,7 @@ FifoParser::CachedDisplayList* FifoParser::find_cached_display_list(
             return nullptr;
         }
         if (cached.bytes.size() != bytes.size() ||
-            !std::equal(bytes.begin(), bytes.end(), cached.bytes.begin())) {
+            (!bytes.empty() && std::memcmp(bytes.data(), cached.bytes.data(), bytes.size()) != 0)) {
             invalidate_display_list_cache_index(index);
             return nullptr;
         }
@@ -2133,10 +2133,9 @@ void FifoParser::run_window(
                         cached.byte_size == byte_size) {
                         const bool bytes_match =
                             cached.bytes.size() == dl_window.size() &&
-                            std::equal(
-                                dl_window.begin(),
-                                dl_window.end(),
-                                cached.bytes.begin());
+                            (dl_window.empty() ||
+                             std::memcmp(dl_window.data(), cached.bytes.data(),
+                                         dl_window.size()) == 0);
                         if (bytes_match && display_list_dependencies_match(cached, state)) {
                             if (profile != nullptr) {
                                 ++profile->call_dl_cache_hits;

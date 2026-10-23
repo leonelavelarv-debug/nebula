@@ -172,13 +172,13 @@ bool RendererGles::initialize(int window_width, int window_height, unsigned efb_
         }
         // Ring sizes (GALAXY_GLES_RING_*_MB): Vulkan's defaults scaled to a handheld's memory; the peaks are logged.
         gpu::Device* const dev = context.device();
-        if (!vertex_ring_.initialize(dev, "vertex", env_megabytes("GALAXY_GLES_RING_VERTEX_MB", 32u << 20u),
+        if (!vertex_ring_.initialize(dev, "vertex", env_megabytes("GALAXY_GLES_RING_VERTEX_MB", 28u << 20u),
                                      kFramesInFlight) ||
             !index_ring_.initialize(dev, "index", env_megabytes("GALAXY_GLES_RING_INDEX_MB", 6u << 20u),
                                     kFramesInFlight) ||
             !constant_ring_.initialize(dev, "constant", env_megabytes("GALAXY_GLES_RING_CONSTANT_MB", 6u << 20u),
                                        kFramesInFlight) ||
-            !matrix_ring_.initialize(dev, "matrix", env_megabytes("GALAXY_GLES_RING_MATRIX_MB", 12u << 20u),
+            !matrix_ring_.initialize(dev, "matrix", env_megabytes("GALAXY_GLES_RING_MATRIX_MB", 8u << 20u),
                                      kFramesInFlight)) {
             std::cerr << "[Renderer] upload rings unavailable\n";
             shutdown();
@@ -648,13 +648,14 @@ void RendererGles::report_stats() {
     if (last_cpu != 0 && seconds > 0.0) {
         const double frames = 600.0;
         std::fprintf(stderr,
-                     "[gles] render thread %.1f ms/s (swap waits %.1f, frame-slot waits %.1f ms/s); a frame: %.0f draws, "
+                     "[gles] %.1f frames/s; render thread %.1f ms/s (swap waits %.1f, frame-slot waits %.1f ms/s, readbacks %.1f ms/s); a frame: %.0f draws, "
                      "%.1f copies, %.1f clears, %.1f peeks (%.2f waited, %.2f whole fields), %.0f program changes, %.1f "
                      "draws skipped; in draw() %.1f ms/s, waited peeks %.1f ms/s; GPU %.2f ms average, %.2f longest; "
                      "rings peak KiB v=%zu i=%zu c=%zu m=%zu; textures %llu KiB uploaded\n",
-                     static_cast<double>(cpu - last_cpu) / 1e6 / seconds,
+                     frames / seconds, static_cast<double>(cpu - last_cpu) / 1e6 / seconds,
                      static_cast<double>(window_stats_.present_wait_ns) / 1e6 / seconds,
                      static_cast<double>(window_stats_.frame_wait_ns) / 1e6 / seconds,
+                     static_cast<double>(window_stats_.readback_ns) / 1e6 / seconds,
                      static_cast<double>(window_stats_.draws) / frames, static_cast<double>(window_stats_.copies) / frames,
                      static_cast<double>(window_stats_.clears) / frames, static_cast<double>(window_stats_.peeks) / frames,
                      static_cast<double>(window_stats_.sync_peeks) / frames,
@@ -1320,7 +1321,7 @@ void RendererGles::create_first_use_resources() {
     }
 }
 
-void RendererGles::ensure_readback(Readback& readback, std::size_t bytes) {
+void RendererGles::ensure_readback(Readback& readback, std::size_t bytes, std::size_t data_bytes) {
     if (readback.buffer == 0u) {
         glGenBuffers(1, &readback.buffer);
     }
@@ -1330,7 +1331,7 @@ void RendererGles::ensure_readback(Readback& readback, std::size_t bytes) {
         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
         readback.bytes = bytes;
     }
-    readback.data.resize(bytes);
+    readback.data.resize(data_bytes);
 }
 
 void RendererGles::record_peek_field(gles::Texture& target, EfbPeekKind kind,
@@ -1340,12 +1341,28 @@ void RendererGles::record_peek_field(gles::Texture& target, EfbPeekKind kind,
     const GLuint framebuffer = framebuffer_for(target);
     EfbConversionShaderConstants physical = constants;
     to_physical(physical, true);
-    conversion_draw(framebuffer, width, height, kind == EfbPeekKind::Depth, physical);
-    ensure_readback(readback, static_cast<std::size_t>(width) * height * 4u);
+    // A whole field of a divided EFB repeats each physical texel divisor x divisor times. Convert one texel per
+    // physical texel instead and expand on the CPU: a quarter of the GPU work and of the uncached readback.
+    const bool field = constants.values[15] < 0.0f;
+    const unsigned divisor = field && efb_divisor_ > 1u && width % efb_divisor_ == 0u &&
+            height % efb_divisor_ == 0u ? efb_divisor_ : 1u;
+    if (divisor > 1u) {
+        physical.values[2] = constants.values[2];
+        physical.values[3] = constants.values[3];
+    }
+    const unsigned read_width = width / divisor;
+    const unsigned read_height = height / divisor;
+    readback.divisor = divisor;
+    readback.width = read_width;
+    readback.height = read_height;
+    conversion_draw(framebuffer, read_width, read_height, kind == EfbPeekKind::Depth, physical);
+    ensure_readback(readback, static_cast<std::size_t>(read_width) * read_height * 4u,
+                    static_cast<std::size_t>(width) * height * 4u);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, readback.buffer);
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
-    glReadPixels(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height), GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glReadPixels(0, 0, static_cast<GLsizei>(read_width), static_cast<GLsizei>(read_height), GL_RGBA,
+                 GL_UNSIGNED_BYTE, nullptr);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, efb_framebuffer_);
     bound_.framebuffer = efb_framebuffer_;
@@ -1355,15 +1372,46 @@ bool RendererGles::complete_readback(Readback& readback) {
     if (readback.buffer == 0u || readback.bytes == 0u) {
         return false;
     }
+    const std::int64_t start = monotonic_ns();
+    const std::size_t read_bytes = static_cast<std::size_t>(readback.width) * readback.height * 4u;
+    const bool expand = readback.divisor > 1u;
     glBindBuffer(GL_PIXEL_PACK_BUFFER, readback.buffer);
-    const void* mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, static_cast<GLsizeiptr>(readback.data.size()),
+    const void* mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, static_cast<GLsizeiptr>(read_bytes),
                                           GL_MAP_READ_BIT);
     if (mapped != nullptr) {
-        std::memcpy(readback.data.data(), mapped, readback.data.size());
+        if (expand) {
+            readback.staging.resize(read_bytes);
+            std::memcpy(readback.staging.data(), mapped, read_bytes);
+        } else {
+            std::memcpy(readback.data.data(), mapped, std::min(read_bytes, readback.data.size()));
+        }
         glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
     }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    if (mapped != nullptr && expand) {
+        const unsigned d = readback.divisor;
+        const std::size_t out_width = static_cast<std::size_t>(readback.width) * d;
+        const std::size_t out_row = out_width * 4u;
+        const std::size_t out_rows = readback.data.size() / out_row;
+        for (std::size_t y = 0; y < out_rows; ++y) {
+            std::uint8_t* out = readback.data.data() + y * out_row;
+            if (y % d != 0u) {
+                std::memcpy(out, out - out_row, out_row);
+                continue;
+            }
+            const std::uint8_t* in = readback.staging.data() + (y / d) * readback.width * 4u;
+            for (unsigned x = 0; x < readback.width; ++x) {
+                std::uint32_t texel;
+                std::memcpy(&texel, in + x * 4u, 4u);
+                for (unsigned i = 0; i < d; ++i) {
+                    std::memcpy(out + (static_cast<std::size_t>(x) * d + i) * 4u, &texel, 4u);
+                }
+            }
+        }
+    }
     readback.fence = 0u;
+    window_stats_.readback_ns += monotonic_ns() - start;
+    ++window_stats_.readbacks;
     return mapped != nullptr;
 }
 

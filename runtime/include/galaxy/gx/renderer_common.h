@@ -18,7 +18,13 @@
 
 namespace galaxy::gx {
 
+#if defined(NEBULA_GPU_GLES)
+// A tiler GPU (Mali) runs a frame's passes well after they are recorded: a third frame keeps the render thread
+// recording while the GPU still finishes the one before.
+inline constexpr unsigned kFramesInFlight = 3;
+#else
 inline constexpr unsigned kFramesInFlight = 2;
+#endif
 // Matrix-ring segments in temporal mode (see RendererD3D12::begin_frame):
 // two more than the frames in flight.
 inline constexpr unsigned kRingSegments = kFramesInFlight + 2u;

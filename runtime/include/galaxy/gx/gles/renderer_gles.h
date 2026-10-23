@@ -307,7 +307,13 @@ private:
         GLuint buffer = 0;
         std::size_t bytes = 0;
         std::uint64_t fence = 0;
-        std::vector<std::uint8_t> data;  // what the mapping held
+        std::vector<std::uint8_t> data;  // what the mapping held (a field: always 640x528)
+        // A field read at the divided EFB size: the mapping holds width x height texels, copied to staging (the
+        // mapping is uncached, so it is read once in bulk) and expanded into data by divisor.
+        unsigned divisor = 1;
+        unsigned width = 0;
+        unsigned height = 0;
+        std::vector<std::uint8_t> staging;
     };
     struct AsyncField {
         gpu::TextureRef target;
@@ -352,7 +358,7 @@ private:
     void record_peek_field(gles::Texture& target, EfbPeekKind kind, const EfbConversionShaderConstants& constants,
                            unsigned width, unsigned height, Readback& readback);
     bool complete_readback(Readback& readback);
-    void ensure_readback(Readback& readback, std::size_t bytes);
+    void ensure_readback(Readback& readback, std::size_t bytes, std::size_t data_bytes);
     void report_stats();
 
     WindowOwner window_owner_;
@@ -470,6 +476,8 @@ private:
         std::int64_t sync_peek_ns = 0;
         std::int64_t present_wait_ns = 0;
         std::int64_t frame_wait_ns = 0;
+        std::int64_t readback_ns = 0;
+        std::uint64_t readbacks = 0;
         double gpu_ms = 0.0;
         double gpu_max_ms = 0.0;
         unsigned gpu_frames = 0;

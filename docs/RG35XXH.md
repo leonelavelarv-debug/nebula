@@ -224,8 +224,11 @@ sobrecoste de punto flotante medido arriba.
 - Misma interfaz que `RendererVk` (GxBackend no cambia salvo `gx_backend.h`, que elige el backend, y la decodificación de
   texturas en hilos, apagada en GLES porque GL sube los bytes en cuanto TextureCache registra la subida).
 - `gpu::Address` como en Vulkan: los bits altos nombran un buffer GL persistente (`EXT_buffer_storage`, coherente), los
-  bajos el byte. Los anillos de vértices/índices/constantes/matrices son esos buffers (32/6/6/12 MiB por frame, dos
-  frames; `GALAXY_GLES_RING_*_MB`).
+  bajos el byte. Los anillos de vértices/índices/constantes/matrices son esos buffers (28/6/6/8 MiB por frame, tres
+  frames en vuelo en GLES —la Mali termina un frame mucho después de grabarlo—; `GALAXY_GLES_RING_*_MB`).
+- Campos de peek enteros con el EFB dividido: se convierte un texel por texel físico (320x264) y la CPU lo expande a
+  640x528; el mapeo del PBO no tiene caché, así que se copia una sola vez en bloque (antes: 1.35 MB por campo, ~20 % del
+  hilo de render en el aparato).
 - El EFB es RGBA8 + profundidad `D32F` (exacta para el z24 invertido de GX: los peeks devuelven el valor escrito). Se dibuja
   con la fila superior de D3D primero (el vertex shader niega y), así copias, texturas y peeks conservan la orientación de
   D3D y solo la presentación voltea (`glBlitFramebuffer`).
