@@ -161,6 +161,10 @@ int main() {
     for (int y = 0; y < h; y += h / 16) {
         std::printf("  row %4d: %08x\n", y, at(w / 2, y));
     }
+    // The red/blue edge up close (the display copy's upscale and sharpen).
+    for (int y = h / 2 - 5; y <= h / 2 + 5; ++y) {
+        std::printf("  edge row %4d: %08x\n", y, at(w / 2, y));
+    }
     renderer.end_frame(true);
     renderer.begin_frame(true);
 

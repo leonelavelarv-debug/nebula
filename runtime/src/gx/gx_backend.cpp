@@ -17445,6 +17445,11 @@ void GxBackend::on_efb_copy(std::uint32_t exec_command) {
             }
             end_side_layer();
             mirror_opened_scene_ = false;
+#if defined(NEBULA_GPU_GLES)
+            if (frameskip_skipping_) {
+                renderer_.repeat_next_display_copy();
+            }
+#endif
             renderer_.copy_efb_to_xfb(params, *xfb);
             frameskip_after_display_copy();
             // The display copy ends the 2D layer: later work and the next

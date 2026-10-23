@@ -260,6 +260,9 @@ void RendererGles::shutdown() {
         if (read_framebuffer_ != 0u) glDeleteFramebuffers(1, &read_framebuffer_);
         if (palette_texture_ != 0u) glDeleteTextures(1, &palette_texture_);
         if (conversion_program_ != 0u) glDeleteProgram(conversion_program_);
+        if (xfb_program_ != 0u) glDeleteProgram(xfb_program_);
+        xfb_program_ = 0u;
+        last_xfb_.reset();
         if (glDeleteQueries != nullptr) {
             if (gpu_part_ != kGpuNone) {
                 glEndQuery(GL_TIME_ELAPSED_EXT);
@@ -422,6 +425,39 @@ GLuint RendererGles::build_utility_program(std::string_view vs_hlsl, std::string
 bool RendererGles::create_utility_programs() {
     conversion_program_ =
         build_utility_program(blit_vertex_shader_source(), efb_conversion_shader_source(), "EFB conversion");
+    // A divided EFB reaches the display copy at a fraction of its size: that copy's upscale (bilinear) gets a
+    // contrast-adaptive sharpen in the same pass (GALAXY_GLES_SHARPEN, 0 off; four more bilinear taps a pixel,
+    // clamped to their range so edges get no halos).
+    xfb_program_ = 0u;
+    const char* sharpen_env = std::getenv("GALAXY_GLES_SHARPEN");
+    const float sharpen = std::clamp(sharpen_env != nullptr ? static_cast<float>(std::atof(sharpen_env)) : 0.5f,
+                                     0.0f, 2.0f);
+    if (conversion_program_ != 0u && efb_divisor_ > 1u && sharpen > 0.0f) {
+        std::string source(efb_conversion_shader_source());
+        const std::string tap = "tex_sample = srctex.SampleLevel(s_lin, sample_pos * inv, 0);";
+        const std::size_t at = source.find(tap);
+        if (at != std::string::npos) {
+            char strength[32];
+            std::snprintf(strength, sizeof(strength), "%.3f", static_cast<double>(sharpen));
+            const std::string sharpened = tap + R"HLSL(
+        {
+            const float4 a = srctex.SampleLevel(s_lin, (sample_pos + float2(-0.5, -0.5)) * inv, 0);
+            const float4 b = srctex.SampleLevel(s_lin, (sample_pos + float2( 0.5, -0.5)) * inv, 0);
+            const float4 c = srctex.SampleLevel(s_lin, (sample_pos + float2(-0.5,  0.5)) * inv, 0);
+            const float4 d = srctex.SampleLevel(s_lin, (sample_pos + float2( 0.5,  0.5)) * inv, 0);
+            const float3 lo = min(min(min(a.rgb, b.rgb), min(c.rgb, d.rgb)), tex_sample.rgb);
+            const float3 hi = max(max(max(a.rgb, b.rgb), max(c.rgb, d.rgb)), tex_sample.rgb);
+            const float3 blur = (a.rgb + b.rgb + c.rgb + d.rgb) * 0.25;
+            tex_sample.rgb = clamp(tex_sample.rgb + )HLSL" + std::string(strength) +
+                R"HLSL( * (tex_sample.rgb - blur), lo, hi);
+        })HLSL";
+            source.replace(at, tap.size(), sharpened);
+            xfb_program_ = build_utility_program(blit_vertex_shader_source(), source, "display copy (sharpened)");
+            if (xfb_program_ != 0u) {
+                std::fprintf(stderr, "[gles] display copy sharpened (strength %.2f)\n", static_cast<double>(sharpen));
+            }
+        }
+    }
     return conversion_program_ != 0u;
 }
 
@@ -702,7 +738,7 @@ void RendererGles::report_stats() {
         std::fprintf(stderr,
                      "[gles] %.1f frames/s; render thread %.1f ms/s (swap waits %.1f, frame-slot waits %.1f ms/s, readbacks %.1f ms/s); a frame: %.0f draws, "
                      "%.1f copies, %.1f clears, %.1f peeks (%.2f waited, %.2f whole fields), %.0f program changes, %.1f "
-                     "draws skipped, %.0f vertices, %.2f depth discards; in draw() %.1f ms/s, waited peeks %.1f ms/s; GPU %.2f ms "
+                     "draws skipped, %.0f vertices, %.2f depth discards, %.2f repeated display copies; in draw() %.1f ms/s, waited peeks %.1f ms/s; GPU %.2f ms "
                      "average (scene %.2f, copies %.2f, xfb %.2f, peeks %.2f, present %.2f), %.2f longest; "
                      "rings peak KiB v=%zu i=%zu c=%zu m=%zu; textures %llu KiB uploaded\n",
                      frames / seconds, static_cast<double>(cpu - last_cpu) / 1e6 / seconds,
@@ -717,6 +753,7 @@ void RendererGles::report_stats() {
                      static_cast<double>(window_stats_.skipped_draws) / frames,
                      static_cast<double>(window_stats_.vertices) / frames,
                      static_cast<double>(window_stats_.depth_discards) / frames,
+                     static_cast<double>(window_stats_.xfb_repeats) / frames,
                      static_cast<double>(window_stats_.draw_ns) / 1e6 / seconds,
                      static_cast<double>(window_stats_.sync_peek_ns) / 1e6 / seconds,
                      window_stats_.gpu_frames != 0u ? window_stats_.gpu_ms / window_stats_.gpu_frames : 0.0,
@@ -1174,7 +1211,7 @@ void RendererGles::conversion_draw(GLuint framebuffer, unsigned dest_w, unsigned
     glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, &attachment);
     glViewport(0, 0, static_cast<GLsizei>(dest_w), static_cast<GLsizei>(dest_h));
     utility_state();
-    glUseProgram(conversion_program_);
+    glUseProgram(conversion_override_ != 0u ? conversion_override_ : conversion_program_);
     bind_utility_constants(constants.values.data(), sizeof(constants.values));
     const GLuint source = depth ? efb_depth_->name : efb_color_->name;
     // t0 with s0 (linear; point for depth, which OpenGL ES does not filter) at unit 0, with s1 (point) at unit 1.
@@ -1226,10 +1263,45 @@ void RendererGles::copy_efb_to_xfb(const EfbCopyParams& params, XfbTexture& dest
         ++window_stats_.depth_discards;
     }
     gpu_part(kGpuXfb);
-    const EfbCopySamplingGeometry sampling = compute_xfb_sampling_geometry(params, dest.width, dest.height,
-                                                                           efb_scale_);
-    record_conversion_blit(*dest.texture, dest.width, dest.height, params, false, false, true, 15u, sampling.src_x,
-                           sampling.src_y, sampling.step_x, sampling.step_y, sampling.filter_row_offset);
+    // A skipped frame's display copy converts the same EFB with the same parameters again: copy the last result.
+    XfbKey key{};
+    key.src_x = params.src_x;
+    key.src_y = params.src_y;
+    key.src_width = params.src_width;
+    key.src_height = params.src_height;
+    key.y_scale_raw = params.y_scale_raw;
+    key.filter0_raw = params.filter0_raw;
+    key.filter1_raw = params.filter1_raw;
+    key.flags = static_cast<std::uint32_t>(params.gamma) | (params.scale_y ? 0x100u : 0u) |
+        (params.clamp_top ? 0x200u : 0u) | (params.clamp_bottom ? 0x400u : 0u) | (params.yuv ? 0x800u : 0u);
+    key.width = dest.width;
+    key.height = dest.height;
+    const bool repeat = xfb_repeat_ && last_xfb_ && std::memcmp(&key, &last_xfb_key_, sizeof(key)) == 0;
+    xfb_repeat_ = false;
+    if (repeat) {
+        ++window_stats_.xfb_repeats;
+        if (last_xfb_.get() != dest.texture.get()) {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer_for(*last_xfb_));
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer_for(*dest.texture));
+            glDisable(GL_SCISSOR_TEST);
+            bound_.scissor_valid = false;
+            const GLint w = static_cast<GLint>(dest.width);
+            const GLint h = static_cast<GLint>(dest.height);
+            glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            glBindFramebuffer(GL_FRAMEBUFFER, efb_framebuffer_);
+            bound_.framebuffer = efb_framebuffer_;
+        }
+    } else {
+        const EfbCopySamplingGeometry sampling = compute_xfb_sampling_geometry(params, dest.width, dest.height,
+                                                                               efb_scale_);
+        conversion_override_ = xfb_program_;
+        record_conversion_blit(*dest.texture, dest.width, dest.height, params, false, false, true, 15u,
+                               sampling.src_x, sampling.src_y, sampling.step_x, sampling.step_y,
+                               sampling.filter_row_offset);
+        conversion_override_ = 0u;
+    }
+    last_xfb_ = dest.texture;
+    last_xfb_key_ = key;
     gpu_part(kGpuScene);
 }
 

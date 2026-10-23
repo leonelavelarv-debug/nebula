@@ -274,6 +274,10 @@ ninja -C build-aarch64
   el último campo asíncrono, o como un EFB sin tocar (profundidad lejana, negro) si aún no hay ninguno; nunca vacían el
   FIFO ni esperan a la GPU. `sync` es el comportamiento exacto; `off` no lee el EFB nunca (como Galaxy-Android, que
   contesta siempre lejano/negro).
+- **Nitidez** (`GALAXY_GLES_SHARPEN`, 0.8 en el lanzador): con el EFB dividido, la copia a pantalla (que ya amplía
+  320x264 a 640x528 con bilineal) lleva un realce de contraste adaptativo en la misma pasada: cuatro muestras
+  bilineales más, en diagonal a medio texel, y el resultado se limita a su rango (sin halos). Los frames saltados no
+  convierten otra vez: copian la última copia a pantalla con `glBlitFramebuffer`.
 - Cachés más pequeñas: display lists 192 MiB, copias EFB 64 MiB, pool de texturas 128 MiB, prefetch de disco 2 MiB.
 - CPU, GPU y memoria en `performance` mientras se juega (`NEBULA_PERF=1`), restaurados al salir.
 - `memoria:` en log.txt cada 60 s (RSS de nebula y memoria libre).

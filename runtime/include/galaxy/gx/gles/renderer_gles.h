@@ -210,6 +210,8 @@ public:
     // The display copy about to run is followed by a clear of the whole EFB depth: a tiled GPU need not store
     // the depth it leaves behind.
     void discard_efb_depth_at_next_copy() noexcept { discard_depth_at_copy_ = true; }
+    // The display copy about to run belongs to a skipped frame: the EFB has not changed since the last one.
+    void repeat_next_display_copy() noexcept { xfb_repeat_ = true; }
     [[nodiscard]] bool scene_temporal_begin(float&, float&) noexcept { return false; }
     [[nodiscard]] bool begin_motion_scene() noexcept { return false; }
     void record_motion_debug_view() noexcept {}
@@ -383,6 +385,17 @@ private:
 
     // The renderer's own programs and objects.
     GLuint conversion_program_ = 0;
+    GLuint xfb_program_ = 0;           // the display copy's conversion, sharpened (divided EFB), or 0
+    GLuint conversion_override_ = 0;   // the program conversion_draw uses instead, while set
+    // The last display copy, which a skipped frame's copy repeats (same EFB, same parameters).
+    struct XfbKey {
+        std::uint32_t src_x = 0, src_y = 0, src_width = 0, src_height = 0;
+        std::uint32_t y_scale_raw = 0, filter0_raw = 0, filter1_raw = 0, flags = 0;
+        std::uint32_t width = 0, height = 0;
+    };
+    gpu::TextureRef last_xfb_;
+    XfbKey last_xfb_key_{};
+    bool xfb_repeat_ = false;
     GLuint clear_program_ = 0;        // colour (masked by glColorMask) and depth clears as draws
     GLuint vao_ = 0;                  // the GX vertex layout (GxVertexOut) at binding 0
     GLuint empty_vao_ = 0;            // the renderer's attribute-less draws
@@ -487,6 +500,7 @@ private:
         std::array<double, 5> gpu_part_ms{};  // GpuPart order
         std::uint64_t vertices = 0;
         std::uint64_t depth_discards = 0;
+        std::uint64_t xfb_repeats = 0;
     } window_stats_;
     // GPU time by part of the frame: one GL_TIME_ELAPSED query per stretch of commands of one part (a frame's
     // queries sum to its time), read when the frame slot comes round.
