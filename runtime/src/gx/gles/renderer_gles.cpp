@@ -1354,10 +1354,21 @@ bool RendererGles::copy_efb_to_texture(const EfbCopyParams& params, TextureCache
         is_effect_copy(policy, params, is_depth_copy, dw_unscaled, dh_unscaled);
     const ScaledEfbCopyExtent extent = compute_scaled_efb_copy_extent(
         static_cast<std::uint16_t>(dw_unscaled), static_cast<std::uint16_t>(dh_unscaled), native ? 1u : efb_scale_);
-    const unsigned w = extent.width;
-    const unsigned h = extent.height;
+    unsigned w = extent.width;
+    unsigned h = extent.height;
     if (w == 0u || h == 0u) {
         return false;
+    }
+    // A divided EFB's copies at its own resolution (GALAXY_GLES_WII_SIZE_COPIES=1 keeps the Wii's sizes): every
+    // destination texel is one EFB texel, a fraction of the pixels to convert; the game samples the copy normalized,
+    // so its size is free (as a scaled EFB's larger copies are).
+    static const bool wii_size_copies = [] {
+        const char* value = std::getenv("GALAXY_GLES_WII_SIZE_COPIES");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (efb_divided() && !native && !wii_size_copies) {
+        w = std::max(1u, (w * efb_num_ + efb_den_ - 1u) / efb_den_);
+        h = std::max(1u, (h * efb_num_ + efb_den_ - 1u) / efb_den_);
     }
     const std::uint64_t dest_key = static_cast<std::uint64_t>(params.dest_addr) |
         (static_cast<std::uint64_t>(params.target_format) << 32u) | (is_depth_copy ? (1ull << 40u) : 0ull) |
@@ -1418,6 +1429,7 @@ bool RendererGles::copy_efb_to_texture(const EfbCopyParams& params, TextureCache
         bound_.framebuffer = efb_framebuffer_;
         reset_gx_bindings();
         bind_efb(nullptr);
+        last_efb_copy_ = current.texture;
         return textures.register_efb_copy(params.dest_addr, params, current.texture);
     }
     const EfbCopySamplingGeometry sampling = compute_efb_copy_sampling_geometry(params, w, h, efb_scale_);
@@ -1426,6 +1438,7 @@ bool RendererGles::copy_efb_to_texture(const EfbCopyParams& params, TextureCache
     record_conversion_blit(texture, w, h, params, is_depth_copy, params.intensity, keep_alpha, params.target_format,
                            sampling.src_x, sampling.src_y, sampling.step_x, sampling.step_y,
                            sampling.filter_row_offset);
+    last_efb_copy_ = current.texture;
     return textures.register_efb_copy(params.dest_addr, params, current.texture);
 }
 
