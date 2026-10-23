@@ -8,7 +8,7 @@ enum Str {
   S_CHANGE_LATER, S_INSTALL, S_BACK, S_CONVERTING, S_CANCELLING, S_READING, S_LEFT, S_DONT_TURN_OFF, S_CANCEL,
   S_DONE, S_PAK_CREATED, S_IN, S_DISC_DELETED, S_BLOOMED, S_STARTS_IN, S_PLAY_NOW, S_OUCH, S_COULD_NOT,
   S_ERR_RUN, S_ERR_EXIT, S_ERR_SPACE, S_ERR_SPACE_SHORT, S_ERR_FAT32, S_ERR_INCOMPLETE, S_ERR_DOL, S_ERR_CANCELLED,
-  S_COUNT
+  S_ERR_PATCH, S_COUNT
 };
 
 enum UiLanguage { UI_ES, UI_EN, UI_FR, UI_PT, UI_IT, UI_DE, UI_COUNT };
@@ -30,6 +30,7 @@ inline const char* const kText[UI_COUNT][S_COUNT] = {
         "La tarjeta está en FAT32, que no admite archivos de más de 4 GB: usa exFAT o ext4.",
         "La imagen del disco está incompleta o dañada: vuelve a copiarla.",
         "main.dol no es el original: la imagen puede estar dañada.", "Conversión cancelada.",
+        "Este disco no es el que espera el parche PT-BR: hace falta el Super Mario Galaxy USA original, sin modificar.",
     },
     {  // English
         "Choose your disc:", "No disc found",
@@ -44,6 +45,7 @@ inline const char* const kText[UI_COUNT][S_COUNT] = {
         "The card is FAT32, which cannot hold files over 4 GB: use exFAT or ext4.",
         "The disc image is incomplete or damaged: copy it again.",
         "main.dol is not the original one: the image may be damaged.", "Conversion cancelled.",
+        "This disc is not the one the PT-BR patch expects: it needs the original, unmodified USA Super Mario Galaxy.",
     },
     {  // Français
         "Choisis ton disque :", "Aucun disque trouvé",
@@ -58,6 +60,7 @@ inline const char* const kText[UI_COUNT][S_COUNT] = {
         "La carte est en FAT32, qui n'accepte pas les fichiers de plus de 4 Go : utilise exFAT ou ext4.",
         "L'image du disque est incomplète ou abîmée : recopie-la.",
         "main.dol n'est pas l'original : l'image est peut-être abîmée.", "Conversion annulée.",
+        "Ce disque n'est pas celui qu'attend le patch PT-BR : il faut le Super Mario Galaxy USA original, non modifié.",
     },
     {  // Português
         "Escolha seu disco:", "Nenhum disco encontrado",
@@ -72,6 +75,7 @@ inline const char* const kText[UI_COUNT][S_COUNT] = {
         "O cartão está em FAT32, que não aceita arquivos de mais de 4 GB: use exFAT ou ext4.",
         "A imagem do disco está incompleta ou danificada: copie de novo.",
         "main.dol não é o original: a imagem pode estar danificada.", "Conversão cancelada.",
+        "Este disco não é o que o patch PT-BR espera: é preciso o Super Mario Galaxy USA original, sem modificações.",
     },
     {  // Italiano
         "Scegli il disco:", "Nessun disco trovato",
@@ -86,6 +90,7 @@ inline const char* const kText[UI_COUNT][S_COUNT] = {
         "La scheda è in FAT32, che non accetta file oltre 4 GB: usa exFAT o ext4.",
         "L'immagine del disco è incompleta o danneggiata: ricopiala.",
         "main.dol non è l'originale: l'immagine potrebbe essere danneggiata.", "Conversione annullata.",
+        "Questo disco non è quello che si aspetta la patch PT-BR: serve il Super Mario Galaxy USA originale, non modificato.",
     },
     {  // Deutsch
         "Wähle deine Disc:", "Keine Disc gefunden",
@@ -100,5 +105,6 @@ inline const char* const kText[UI_COUNT][S_COUNT] = {
         "Die Karte ist FAT32 und kann keine Dateien über 4 GB speichern: nimm exFAT oder ext4.",
         "Das Disc-Abbild ist unvollständig oder beschädigt: kopiere es neu.",
         "main.dol ist nicht das Original: das Abbild ist vielleicht beschädigt.", "Umwandlung abgebrochen.",
+        "Diese Disc passt nicht zum PT-BR-Patch: nötig ist das unveränderte Original von Super Mario Galaxy (USA).",
     },
 };

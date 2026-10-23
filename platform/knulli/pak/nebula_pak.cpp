@@ -4,6 +4,13 @@
 // at its own offsets, sparse elsewhere, written to a sibling temporary file and renamed when complete.
 //
 //   nebula-pak <imagen del disco> <game.pak>
+//   nebula-pak --patch <parche.xdelta> <imagen del disco> <game.pak>   con un parche xdelta del ISO (una traducción)
+//   nebula-pak --identify <imagen> | --patch-info <parche.xdelta>
+//
+// --patch: the xdelta3 patch (VCDIFF) is applied on the way, to the disc's raw bytes as an ISO has them: only the
+// windows it changes are built (for WIA/RVZ by re-encrypting those few MiB, hashes and exceptions included); the
+// untouched rest of the game is read as always. A window whose Adler-32 differs (a scrubbed image) is accepted
+// when every patched cluster the game uses passes its H0 hashes.
 //
 // Reads ISO, WBFS (also split .wbf1...), CISO, GCZ, WIA and RVZ. The WIA/RVZ reading follows Dolphin's DiscIO
 // (WIABlob.cpp, WIACompression.cpp, LaggedFibonacciGenerator.cpp; GPL-2.0-or-later, the generator CC0) and its format
@@ -245,6 +252,55 @@ class Aes128Decrypt {
 };
 [[maybe_unused]] bool Aes128Decrypt::use_hardware = false;
 
+class Aes128Encrypt {
+ public:
+  explicit Aes128Encrypt(const u8 key[16]) {
+    memcpy(rk_, key, 16);
+    u8 rcon = 1;
+    for (int i = 16; i < 176; i += 4) {
+      u8 t[4] = {rk_[i - 4], rk_[i - 3], rk_[i - 2], rk_[i - 1]};
+      if (i % 16 == 0) {
+        const u8 first = t[0];
+        t[0] = u8(kSbox[t[1]] ^ rcon); t[1] = kSbox[t[2]]; t[2] = kSbox[t[3]]; t[3] = kSbox[first];
+        rcon = gf_mul(rcon, 2);
+      }
+      for (int j = 0; j < 4; ++j) rk_[i + j] = rk_[i - 16 + j] ^ t[j];
+    }
+  }
+  void cbc(const u8 iv_in[16], const u8* in, u8* out, size_t size) const {
+    u8 iv[16];
+    memcpy(iv, iv_in, 16);
+    for (size_t at = 0; at < size; at += 16) {
+      u8 b[16];
+      for (int i = 0; i < 16; ++i) b[i] = in[at + i] ^ iv[i];
+      block(b);
+      memcpy(out + at, b, 16);
+      memcpy(iv, b, 16);
+    }
+  }
+
+ private:
+  void block(u8 s[16]) const {
+    for (int i = 0; i < 16; ++i) s[i] ^= rk_[i];
+    for (int r = 1; r <= 10; ++r) {
+      u8 t[16];
+      for (int c = 0; c < 4; ++c)
+        for (int row = 0; row < 4; ++row) t[c * 4 + row] = kSbox[s[((c + row) & 3) * 4 + row]];
+      if (r < 10) {
+        for (int c = 0; c < 4; ++c) {
+          const u8 a0 = t[c * 4], a1 = t[c * 4 + 1], a2 = t[c * 4 + 2], a3 = t[c * 4 + 3];
+          t[c * 4] = gf_mul(a0, 2) ^ gf_mul(a1, 3) ^ a2 ^ a3;
+          t[c * 4 + 1] = a0 ^ gf_mul(a1, 2) ^ gf_mul(a2, 3) ^ a3;
+          t[c * 4 + 2] = a0 ^ a1 ^ gf_mul(a2, 2) ^ gf_mul(a3, 3);
+          t[c * 4 + 3] = gf_mul(a0, 3) ^ a1 ^ a2 ^ gf_mul(a3, 2);
+        }
+      }
+      for (int i = 0; i < 16; ++i) s[i] = t[i] ^ rk_[16 * r + i];
+    }
+  }
+  u8 rk_[176];
+};
+
 void aes_init() {
   aes_tables();
   // FIPS-197 C.1: the tables must decrypt it before anything else trusts them.
@@ -256,6 +312,8 @@ void aes_init() {
   Aes128Decrypt aes(key);
   aes.cbc(zero, cipher, out, 16);
   if (memcmp(out, plain, 16) != 0) fail("AES interno defectuoso");
+  Aes128Encrypt(key).cbc(zero, plain, out, 16);
+  if (memcmp(out, cipher, 16) != 0) fail("AES interno defectuoso (cifrado)");
 #if defined(__aarch64__)
   if ((getauxval(AT_HWCAP) & (1UL << 3)) && getenv("NEBULA_PAK_NO_AES_HW") == nullptr) {  // HWCAP_AES
     Aes128Decrypt::use_hardware = true;
@@ -318,6 +376,9 @@ class Disc {
   virtual ~Disc() = default;
   virtual const char* format() const = 0;
   virtual void read(u64 offset, size_t size, u8* out) = 0;
+  // The disc's bytes exactly as on the real disc, partitions encrypted (what an xdelta patch for the ISO applies to).
+  // WIA and RVZ rebuild them: hashes, their stored exceptions and the encryption.
+  virtual void read_raw(u64 offset, size_t size, u8* out) { read(offset, size, out); }
 };
 
 class PartitionData {
@@ -686,12 +747,18 @@ class WiaDisc final : public Disc {
     cached_group_ = ~u64(0);
     if (size == 0) {
       cached_.assign(length, 0);
+      cached_exceptions_.clear();
     } else {
       cached_ = decode(u64(g.offset4) << 2, size, length, compression, exception_lists, g.packed, data_offset);
+      cached_exceptions_ = last_exceptions_;
     }
     cached_group_ = index;
     return cached_;
   }
+  // The hash exception lists of the group group() last returned (u16 count, then 22-byte entries, per list).
+  const std::vector<u8>& group_exceptions() const { return cached_exceptions_; }
+
+  void read_raw(u64 offset, size_t size, u8* out) override;
 
  private:
   struct RawData {
@@ -704,11 +771,14 @@ class WiaDisc final : public Disc {
 
   // Skips `lists` hash exception lists at data[*at] (each a u16 count and 22-byte entries); after the last one,
   // uncompressed data is aligned to 4 bytes.
-  void skip_exceptions(const std::vector<u8>& data, size_t* at, u32 lists, bool align) const {
+  void skip_exceptions(const std::vector<u8>& data, size_t* at, u32 lists, bool align) {
+    const size_t start = *at;
     for (u32 i = 0; i < lists; ++i) {
       if (*at + 2 > data.size()) fail("el %s esta danado (lista de excepciones)", format());
       *at += 2 + size_t(be16(data.data() + *at)) * 22;
     }
+    if (*at > data.size()) fail("el %s esta danado (lista de excepciones)", format());
+    last_exceptions_.assign(data.begin() + long(start), data.begin() + long(*at));
     if (lists > 0 && align) *at = size_t(align_up(*at, 4));
     if (*at > data.size()) fail("el %s esta danado (lista de excepciones)", format());
   }
@@ -864,8 +934,12 @@ class WiaDisc final : public Disc {
   std::vector<Partition> partitions_;
   std::vector<RawData> raw_;
   std::vector<Group> groups_;
-  std::vector<u8> cached_;
+  std::vector<u8> cached_, cached_exceptions_, last_exceptions_;
   u64 cached_group_ = ~u64(0);
+  // read_raw's last rebuilt 2 MiB of encrypted partition (64 clusters).
+  std::vector<u8> raw_group_;
+  u64 raw_group_start_ = ~u64(0);
+  void rebuild_group(const Partition& partition, u64 big, u8* out);
 
   friend class WiaPartitionData;
 };
@@ -910,6 +984,102 @@ std::unique_ptr<PartitionData> WiaDisc::partition_data(u64 data_start) {
   return nullptr;
 }
 
+// 2 MiB of a WIA/RVZ partition as on the disc: the hash tree recomputed from the data (H0 per KiB, H1 per cluster,
+// H2 per 8 clusters), the stored hash exceptions applied over it, then encrypted with the title key (Dolphin's
+// VolumeWii::EncryptGroups and WIARVZFileReader::ApplyHashExceptions).
+void WiaDisc::rebuild_group(const Partition& p, u64 big, u8* out) {
+  const u32 first = p.data[0].first_sector;
+  const u64 total = p.data[1].sectors ? u64(p.data[1].first_sector - first) + p.data[1].sectors : p.data[0].sectors;
+  const u64 c0 = big * 64;
+  if (c0 >= total) fail("lectura fuera de la particion del %s", format());
+  const u64 count = std::min<u64>(64, total - c0);
+  std::vector<u8> plain(64 * 0x7C00, 0);
+  WiaPartitionData data(*this, p);
+  data.read(c0 * 0x7C00, size_t(count * 0x7C00), plain.data());
+  std::vector<u8> hashes(64 * 0x400, 0);
+  for (int c = 0; c < 64; ++c) {
+    for (int i = 0; i < 31; ++i) {
+      Sha1 h; h.update(plain.data() + c * 0x7C00 + i * 0x400, 0x400); h.finish(hashes.data() + c * 0x400 + i * 20);
+    }
+  }
+  u8 h2[0xA0];
+  for (int sg = 0; sg < 8; ++sg) {
+    u8 h1[0xA0];
+    for (int k = 0; k < 8; ++k) { Sha1 h; h.update(hashes.data() + (sg * 8 + k) * 0x400, 0x26C); h.finish(h1 + k * 20); }
+    for (int k = 0; k < 8; ++k) memcpy(hashes.data() + (sg * 8 + k) * 0x400 + 0x280, h1, 0xA0);
+    Sha1 h; h.update(h1, 0xA0); h.finish(h2 + sg * 20);
+  }
+  for (int c = 0; c < 64; ++c) memcpy(hashes.data() + c * 0x400 + 0x340, h2, 0xA0);
+  // The exceptions of the chunks over these 2 MiB.
+  const u64 chunk = u64(chunk_size_) * 0x7C00 / 0x8000;
+  const u32 lists = std::max<u32>(1, u32(chunk / 0x1F0000));
+  const u64 g_start = big * 0x1F0000, g_end = g_start + 0x1F0000;
+  for (const DataPart& d : p.data) {
+    if (d.sectors == 0) continue;
+    const u64 entry_start = u64(d.first_sector - first) * 0x7C00, entry_size = u64(d.sectors) * 0x7C00;
+    for (u64 i = 0; i < d.groups; ++i) {
+      const u64 chunk_start = entry_start + i * chunk;
+      if (chunk_start >= entry_start + entry_size) break;
+      const u64 length = std::min<u64>(chunk, entry_size - i * chunk);
+      if (chunk_start + length <= g_start || chunk_start >= g_end) continue;
+      group(d.group_index + i, length, lists, i * chunk);
+      const std::vector<u8>& ex = group_exceptions();
+      u64 list = 0, additional = 0;
+      if (chunk >= 0x1F0000) list = (g_start - chunk_start) / 0x1F0000;
+      else additional = chunk_start % 0x1F0000 / 0x7C00 * 0x400;
+      size_t at = 0;
+      for (u64 l = 0; l < lists && at + 2 <= ex.size(); ++l) {
+        const u16 n = be16(ex.data() + at);
+        at += 2;
+        for (u16 e = 0; e < n && at + 22 <= ex.size(); ++e, at += 22) {
+          if (l != list) continue;
+          const u64 offset = be16(ex.data() + at) + additional;
+          if (offset / 0x400 >= 64 || offset % 0x400 + 20 > 0x400) fail("el %s esta danado (excepcion de hash)", format());
+          memcpy(hashes.data() + offset, ex.data() + at + 2, 20);
+        }
+      }
+    }
+  }
+  const Aes128Encrypt aes(p.key);
+  const u8 zero[16] = {};
+  for (u64 c = 0; c < count; ++c) {
+    u8* cluster = out + c * 0x8000;
+    aes.cbc(zero, hashes.data() + c * 0x400, cluster, 0x400);
+    aes.cbc(cluster + 0x3D0, plain.data() + c * 0x7C00, cluster + 0x400, 0x7C00);
+  }
+}
+
+void WiaDisc::read_raw(u64 offset, size_t size, u8* out) {
+  while (size > 0) {
+    const Partition* inside = nullptr;
+    u64 start = 0, end = 0, next = ~u64(0);
+    for (const Partition& p : partitions_) {
+      const u32 first = p.data[0].first_sector;
+      const u64 total = p.data[1].sectors ? u64(p.data[1].first_sector - first) + p.data[1].sectors : p.data[0].sectors;
+      const u64 s = u64(first) * 0x8000, e = s + total * 0x8000;
+      if (offset >= s && offset < e) { inside = &p; start = s; end = e; }
+      else if (s > offset) next = std::min(next, s);
+    }
+    if (inside == nullptr) {
+      const size_t take = size_t(std::min<u64>(size, next - offset));
+      read(offset, take, out);
+      offset += take; out += take; size -= take;
+      continue;
+    }
+    const u64 group = (offset - start) / 0x200000;
+    const u64 group_start = start + group * 0x200000;
+    if (raw_group_start_ != group_start) {
+      raw_group_.assign(0x200000, 0);
+      raw_group_start_ = ~u64(0);
+      rebuild_group(*inside, group, raw_group_.data());
+      raw_group_start_ = group_start;
+    }
+    const size_t take = size_t(std::min<u64>({size, group_start + 0x200000 - offset, end - offset}));
+    memcpy(out, raw_group_.data() + (offset - group_start), take);
+    offset += take; out += take; size -= take;
+  }
+}
+
 // The decrypted data of a partition on a disc that keeps it encrypted: 0x8000-byte clusters, 0x400 of hashes and
 // 0x7C00 of data, each decrypted with the title key and the IV stored in its hash block. Read 64 clusters at a time.
 class EncryptedPartitionData final : public PartitionData {
@@ -949,6 +1119,283 @@ class EncryptedPartitionData final : public PartitionData {
   Aes128Decrypt aes_;
   std::vector<u8> raw_, plain_;
   u64 batch_ = ~u64(0), loaded_ = 0;
+};
+
+// An xdelta3 patch for the ISO (VCDIFF, RFC 3284: default code table, no secondary compression, xdelta3's per-window
+// Adler-32). Windows that only copy the same bytes of the source are told apart: the patched disc reads those from
+// the source as they are.
+class XdeltaPatch {
+ public:
+  struct Window {
+    u64 target, source_pos, source_len;
+    u32 length;
+    size_t adds, inst, addr;  // offsets into bytes_
+    size_t adds_len, inst_len, addr_len;
+    bool has_adler, identity;
+    u32 adler;
+  };
+
+  explicit XdeltaPatch(const std::string& path) : path_(path) {
+    InputFile f(path);
+    if (f.size() > (512u << 20)) fail("el parche %s es demasiado grande", path.c_str());
+    bytes_.resize(size_t(f.size()));
+    f.read(0, bytes_.data(), bytes_.size());
+    if (bytes_.size() < 5 || bytes_[0] != 0xD6 || bytes_[1] != 0xC3 || bytes_[2] != 0xC4) {
+      fail("%s no es un parche xdelta (VCDIFF)", path.c_str());
+    }
+    size_t at = 4;
+    const u8 header = byte(at);
+    if (header & 1) fail("el parche usa compresion secundaria (no soportada): rehazlo con xdelta3 -S none");
+    if (header & 2) fail("el parche usa una tabla de codigos propia (no soportada)");
+    if (header & 4) { const u64 n = varint(at); at += size_t(n); }
+    u64 target = 0;
+    while (at < bytes_.size()) {
+      Window w{};
+      const u8 indicator = byte(at);
+      if (indicator & 2) fail("el parche copia del destino entre ventanas (VCD_TARGET, no soportado)");
+      if (indicator & 1) { w.source_len = varint(at); w.source_pos = varint(at); }
+      varint(at);  // delta encoding length
+      w.length = u32(varint(at));
+      const u8 delta = byte(at);
+      if (delta != 0) fail("el parche comprime sus secciones (no soportado): rehazlo con xdelta3 -S none");
+      w.adds_len = size_t(varint(at)); w.inst_len = size_t(varint(at)); w.addr_len = size_t(varint(at));
+      w.has_adler = indicator & 4;
+      if (w.has_adler) { if (at + 4 > bytes_.size()) bad(); w.adler = be32(bytes_.data() + at); at += 4; }
+      w.adds = at; w.inst = w.adds + w.adds_len; w.addr = w.inst + w.inst_len;
+      at = w.addr + w.addr_len;
+      if (at > bytes_.size()) bad();
+      w.target = target;
+      target += w.length;
+      w.identity = false;
+      if ((indicator & 1) && w.source_pos == w.target && w.adds_len == 0) {
+        // One COPY of the whole window from its start: the same bytes as the source.
+        std::vector<Op> ops;
+        decode_ops(w, &ops, 2);
+        w.identity = ops.size() == 1 && ops[0].kind == 3 && ops[0].size == w.length && ops[0].address == 0;
+      }
+      windows_.push_back(w);
+    }
+    target_size_ = target;
+  }
+
+  u64 target_size() const { return target_size_; }
+  const std::vector<Window>& windows() const { return windows_; }
+  size_t modified_windows() const {
+    return size_t(std::count_if(windows_.begin(), windows_.end(), [](const Window& w) { return !w.identity; }));
+  }
+  const Window* window_at(u64 offset) const {
+    auto it = std::upper_bound(windows_.begin(), windows_.end(), offset, [](u64 o, const Window& w) { return o < w.target; });
+    if (it == windows_.begin()) return nullptr;
+    --it;
+    return offset < it->target + it->length ? &*it : nullptr;
+  }
+  bool modifies(u64 offset, u64 size) const {
+    for (u64 at = offset; at < offset + size;) {
+      const Window* w = window_at(at);
+      if (w == nullptr) return true;
+      if (!w->identity) return true;
+      at = w->target + w->length;
+    }
+    return false;
+  }
+
+  // The window's target bytes from the source disc's raw bytes.
+  // False when the window's Adler-32 differs: the source is not byte for byte the patch's (often a scrubbed image,
+  // whose unused clusters are zeros); the patched game data is then checked by its own hashes as it is read.
+  bool build(const Window& w, Disc& source, std::vector<u8>* out) const {
+    std::vector<u8> src(size_t(w.source_len));
+    if (!src.empty()) source.read_raw(w.source_pos, src.size(), src.data());
+    out->assign(w.length, 0);
+    std::vector<Op> ops;
+    decode_ops(w, &ops, ~size_t(0));
+    for (const Op& op : ops) {
+      if (op.here + op.size > w.length) bad();
+      u8* dst = out->data() + op.here;
+      if (op.kind == 1) memcpy(dst, bytes_.data() + w.adds + op.data, size_t(op.size));
+      else if (op.kind == 2) memset(dst, bytes_[w.adds + op.data], size_t(op.size));
+      else if (op.address + op.size <= w.source_len) memcpy(dst, src.data() + op.address, size_t(op.size));
+      else {
+        for (u64 i = 0; i < op.size; ++i) {  // from the target window itself, overlapping allowed
+          const u64 a = op.address + i;
+          (*out)[size_t(op.here + i)] = a < w.source_len ? src[size_t(a)] : (*out)[size_t(a - w.source_len)];
+        }
+      }
+    }
+    return !w.has_adler || adler32(adler32(0, nullptr, 0), out->data(), uInt(out->size())) == w.adler;
+  }
+
+ private:
+  struct Op {
+    int kind;  // 1 ADD, 2 RUN, 3 COPY
+    u64 here, size, address;
+    size_t data;  // ADD/RUN: offset in the window's data section
+  };
+  [[noreturn]] void bad() const { fail("el parche %s esta danado", path_.c_str()); }
+  u8 byte(size_t& at) const { if (at >= bytes_.size()) bad(); return bytes_[at++]; }
+  u64 varint(size_t& at) const {
+    u64 v = 0;
+    for (int i = 0; i < 10; ++i) {
+      const u8 b = byte(at);
+      v = v << 7 | (b & 0x7F);
+      if (!(b & 0x80)) return v;
+    }
+    bad();
+  }
+  struct Code { u8 type1, size1, mode1, type2, size2, mode2; };
+  static const std::vector<Code>& table() {
+    static const std::vector<Code> t = [] {
+      std::vector<Code> c;
+      c.push_back({2, 0, 0, 0, 0, 0});
+      for (u8 s = 0; s < 18; ++s) c.push_back({1, s, 0, 0, 0, 0});
+      for (u8 m = 0; m < 9; ++m) {
+        c.push_back({3, 0, m, 0, 0, 0});
+        for (u8 s = 4; s < 19; ++s) c.push_back({3, s, m, 0, 0, 0});
+      }
+      for (u8 m = 0; m < 6; ++m)
+        for (u8 a = 1; a < 5; ++a)
+          for (u8 k = 4; k < 7; ++k) c.push_back({1, a, 0, 3, k, m});
+      for (u8 m = 6; m < 9; ++m)
+        for (u8 a = 1; a < 5; ++a) c.push_back({1, a, 0, 3, 4, m});
+      for (u8 m = 0; m < 9; ++m) c.push_back({3, 4, m, 1, 1, 0});
+      return c;
+    }();
+    return t;
+  }
+  void decode_ops(const Window& w, std::vector<Op>* ops, size_t limit) const {
+    u64 near[4] = {}, same[3 * 256] = {};
+    int near_next = 0;
+    size_t ip = w.inst, ap = w.addr, dp = 0;
+    const size_t inst_end = w.inst + w.inst_len, addr_end = w.addr + w.addr_len;
+    u64 here = 0;
+    while (ip < inst_end && ops->size() < limit) {
+      const Code& code = table()[byte(ip)];
+      for (int half = 0; half < 2; ++half) {
+        const u8 type = half ? code.type2 : code.type1;
+        if (type == 0) continue;
+        u64 size = half ? code.size2 : code.size1;
+        const u8 mode = half ? code.mode2 : code.mode1;
+        if (size == 0) { size = varint(ip); if (ip > inst_end) bad(); }
+        Op op{type, here, size, 0, 0};
+        if (type == 1) { op.data = dp; dp += size_t(size); if (dp > w.adds_len) bad(); }
+        else if (type == 2) { op.data = dp; dp += 1; if (dp > w.adds_len) bad(); }
+        else {
+          const u64 current = w.source_len + here;
+          u64 address;
+          if (mode == 0) address = varint(ap);
+          else if (mode == 1) address = current - varint(ap);
+          else if (mode < 6) address = near[mode - 2] + varint(ap);
+          else address = same[(mode - 6) * 256 + byte(ap)];
+          if (ap > addr_end) bad();
+          near[near_next] = address; near_next = (near_next + 1) % 4;
+          same[address % (3 * 256)] = address;
+          op.address = address;
+        }
+        ops->push_back(op);
+        here += size;
+      }
+    }
+  }
+  std::string path_;
+  std::vector<u8> bytes_;
+  std::vector<Window> windows_;
+  u64 target_size_ = 0;
+};
+
+// The source disc with the patch applied: patched windows are built when read (the last two kept).
+class PatchedDisc final : public Disc {
+ public:
+  PatchedDisc(Disc& source, const XdeltaPatch& patch) : source_(source), patch_(patch) {}
+  const char* format() const override { return source_.format(); }
+  void read(u64 offset, size_t size, u8* out) override { read_raw(offset, size, out); }
+  void read_raw(u64 offset, size_t size, u8* out) override {
+    while (size > 0) {
+      const XdeltaPatch::Window* w = patch_.window_at(offset);
+      if (w == nullptr) fail("lectura fuera del disco parcheado");
+      const size_t take = size_t(std::min<u64>(size, w->target + w->length - offset));
+      if (w->identity) {
+        source_.read_raw(offset, take, out);
+      } else {
+        const std::vector<u8>& data = built(*w);
+        memcpy(out, data.data() + (offset - w->target), take);
+      }
+      offset += take; out += take; size -= take;
+    }
+  }
+  const XdeltaPatch& patch() const { return patch_; }
+
+ private:
+  const std::vector<u8>& built(const XdeltaPatch::Window& w) {
+    for (auto& slot : cache_) if (slot.first == w.target && !slot.second.empty()) return slot.second;
+    auto& slot = cache_[next_];
+    next_ ^= 1;
+    slot.first = ~u64(0);
+    if (!patch_.build(w, source_, &slot.second) && !warned_) {
+      warned_ = true;
+      printf("Aviso: tu disco no es identico byte a byte al que espera el parche (en %llu MiB; suele ser una imagen "
+             "recortada): se comprueba cada bloque del juego con sus hashes\n", (unsigned long long)(w.target >> 20));
+      fflush(stdout);
+    }
+    slot.first = w.target;
+    return slot.second;
+  }
+  bool warned_ = false;
+  Disc& source_;
+  const XdeltaPatch& patch_;
+  std::pair<u64, std::vector<u8>> cache_[2] = {{~u64(0), {}}, {~u64(0), {}}};
+  int next_ = 0;
+};
+
+// The patched game partition: clusters the patch touches decrypted from the patched disc, the rest straight from the
+// source (for WIA/RVZ without encrypting anything).
+class PatchedPartitionData final : public PartitionData {
+ public:
+  PatchedPartitionData(PartitionData& source, PatchedDisc& disc, u64 data_start, u64 data_size, const u8 key[16])
+      : source_(source), disc_(disc), start_(data_start), clusters_(data_size / 0x8000), aes_(key) {}
+  void read(u64 offset, size_t size, u8* out) override {
+    while (size > 0) {
+      const u64 cluster = offset / 0x7C00, within = offset % 0x7C00;
+      if (cluster >= clusters_) fail("lectura fuera de la particion del juego");
+      // Runs of untouched clusters go to the source in one read.
+      u64 end = cluster;
+      while (end < clusters_ && !touched(end) && (end - cluster) * 0x7C00 < within + size) ++end;
+      if (end > cluster) {
+        const size_t take = size_t(std::min<u64>(size, (end - cluster) * 0x7C00 - within));
+        source_.read(offset, take, out);
+        offset += take; out += take; size -= take;
+        continue;
+      }
+      if (cluster != cached_) {
+        u8 raw[0x8000], hashes[0x400];
+        cached_ = ~u64(0);
+        disc_.read_raw(start_ + cluster * 0x8000, sizeof(raw), raw);
+        aes_.cbc(raw + 0x3D0, raw + 0x400, plain_, 0x7C00);
+        const u8 zero[16] = {};
+        aes_.cbc(zero, raw, hashes, 0x400);
+        for (int i = 0; i < 31; ++i) {  // H0: each KiB of the patched data against its hash
+          u8 digest[20];
+          Sha1 h; h.update(plain_ + i * 0x400, 0x400); h.finish(digest);
+          if (memcmp(digest, hashes + i * 20, 20) != 0) {
+            fail("el parche no corresponde a este disco: el bloque %llu del juego parcheado no cuadra con sus hashes "
+                 "(¿otra version del juego o una imagen danada?)", (unsigned long long)cluster);
+          }
+        }
+        cached_ = cluster;
+      }
+      const size_t take = size_t(std::min<u64>(size, 0x7C00 - within));
+      memcpy(out, plain_ + within, take);
+      offset += take; out += take; size -= take;
+    }
+  }
+  bool touched(u64 cluster) const { return disc_.patch().modifies(start_ + cluster * 0x8000, 0x8000); }
+  u64 clusters() const { return clusters_; }
+
+ private:
+  PartitionData& source_;
+  PatchedDisc& disc_;
+  u64 start_, clusters_;
+  Aes128Decrypt aes_;
+  u8 plain_[0x7C00];
+  u64 cached_ = ~u64(0);
 };
 
 std::unique_ptr<Disc> open_disc(const std::string& path) {
@@ -1170,6 +1617,72 @@ void make_parents(const std::string& path) {
   }
 }
 
+struct GamePartition {
+  u64 offset = 0, data_offset = 0, data_size = 0;
+  u8 header[0x2C0] = {};
+  std::vector<u8> tmd;
+  u8 key[16] = {};
+};
+
+// The game partition (type 0) from the partition table, its header, TMD and title key.
+GamePartition locate_partition(Disc& disc) {
+  GamePartition gp;
+  u8 groups[32];
+  disc.read(0x40000, sizeof(groups), groups);
+  for (int g = 0; g < 4 && gp.offset == 0; ++g) {
+    const u32 count = be32(groups + 8 * g);
+    const u64 table = u64(be32(groups + 8 * g + 4)) << 2;
+    if (count == 0 || count > 64) continue;
+    std::vector<u8> entries(size_t(count) * 8);
+    disc.read(table, entries.size(), entries.data());
+    for (u32 i = 0; i < count; ++i) {
+      if (be32(entries.data() + 8 * i + 4) == 0) { gp.offset = u64(be32(entries.data() + 8 * i)) << 2; break; }
+    }
+  }
+  if (gp.offset == 0) fail("el disco no tiene particion de juego");
+  disc.read(gp.offset, sizeof(gp.header), gp.header);
+  const u32 tmd_size = be32(gp.header + 0x2A4);
+  const u64 tmd_offset = u64(be32(gp.header + 0x2A8)) << 2;
+  gp.data_offset = u64(be32(gp.header + 0x2B8)) << 2;
+  gp.data_size = u64(be32(gp.header + 0x2BC)) << 2;
+  if (tmd_size == 0 || tmd_size > 0x10000) fail("la particion del juego no tiene metadatos validos");
+  gp.tmd.resize(tmd_size);
+  disc.read(gp.offset + tmd_offset, gp.tmd.size(), gp.tmd.data());
+  if (gp.header[0x1F1] == 0) {
+    u8 iv[16] = {};
+    memcpy(iv, gp.header + 0x1DC, 8);
+    Aes128Decrypt(kCommonKey).cbc(iv, gp.header + 0x1BF, gp.key, 16);
+  }
+  return gp;
+}
+
+std::unique_ptr<PartitionData> open_partition_data(Disc& disc, const GamePartition& gp) {
+  if (auto* wia = dynamic_cast<WiaDisc*>(&disc)) {
+    std::unique_ptr<PartitionData> data = wia->partition_data(gp.offset + gp.data_offset);
+    if (!data) fail("el %s no guarda la particion del juego descifrada", disc.format());
+    return data;
+  }
+  if (gp.header[0x1F1] != 0) fail("la particion del juego usa una clave comun que no es la de Wii (indice %u)", gp.header[0x1F1]);
+  return std::make_unique<EncryptedPartitionData>(disc, gp.offset + gp.data_offset, gp.data_size, gp.key);
+}
+
+std::vector<u8> read_dol(PartitionData& data) {
+  u8 boot[0x440];
+  data.read(0, sizeof(boot), boot);
+  const u64 offset = u64(be32(boot + 0x420)) << 2;
+  u8 header[0x100];
+  data.read(offset, sizeof(header), header);
+  u64 size = 0x100;
+  for (int i = 0; i < 18; ++i) {
+    const u32 o = be32(header + 4 * i), n = be32(header + 0x90 + 4 * i);
+    if (n != 0) size = std::max<u64>(size, u64(o) + n);
+  }
+  if (size > (64u << 20)) fail("main.dol tiene un tamano inesperado");
+  std::vector<u8> dol(size);
+  data.read(offset, dol.size(), dol.data());
+  return dol;
+}
+
 // SIGTERM/SIGINT (Cactus Galaxy Wrapper's "Cancelar"): stop between blocks, removing the unfinished file.
 std::atomic<bool> g_cancel{false};
 void on_cancel(int) { g_cancel.store(true); }
@@ -1187,7 +1700,7 @@ int identify(const std::string& image) {
   return wii && game_id == kGameId ? 0 : 1;
 }
 
-int run(const std::string& image, const std::string& output) {
+int run(const std::string& image, const std::string& output, const std::string& patch_path) {
   aes_init();
   std::unique_ptr<Disc> disc = open_disc(image);
   u8 header[0x60];
@@ -1205,43 +1718,36 @@ int run(const std::string& image, const std::string& output) {
   printf("Super Mario Galaxy (%s), %s\n", game_id.c_str(), disc->format());
   fflush(stdout);
 
-  // The game partition (type 0) from the partition table.
-  u8 groups[32];
-  disc->read(0x40000, sizeof(groups), groups);
-  u64 partition = 0;
-  for (int g = 0; g < 4 && partition == 0; ++g) {
-    const u32 count = be32(groups + 8 * g);
-    const u64 table = u64(be32(groups + 8 * g + 4)) << 2;
-    if (count == 0 || count > 64) continue;
-    std::vector<u8> entries(size_t(count) * 8);
-    disc->read(table, entries.size(), entries.data());
-    for (u32 i = 0; i < count; ++i) {
-      if (be32(entries.data() + 8 * i + 4) == 0) { partition = u64(be32(entries.data() + 8 * i)) << 2; break; }
+  GamePartition source_partition = locate_partition(*disc);
+  std::unique_ptr<PartitionData> source_data = open_partition_data(*disc, source_partition);
+  PartitionData* data = source_data.get();
+  GamePartition gp = source_partition;
+  std::unique_ptr<XdeltaPatch> patch;
+  std::unique_ptr<PatchedDisc> patched;
+  std::unique_ptr<PatchedPartitionData> patched_data;
+  if (!patch_path.empty()) {
+    // The patch is for the original disc: check that first (main.dol), then read the game through the patch.
+    const std::string original = Sha1::hex(read_dol(*source_data).data(), read_dol(*source_data).size());
+    const char* expected_original = getenv("NEBULA_PAK_DOL_SHA1");
+    if (original != (expected_original ? expected_original : kDolSha1)) {
+      fail("main.dol no es el de Super Mario Galaxy (SHA-1 %s): la imagen puede estar danada", original.c_str());
     }
+    patch = std::make_unique<XdeltaPatch>(patch_path);
+    printf("Parche: %s (%zu de %zu ventanas cambian el disco)\n", patch_path.c_str(), patch->modified_windows(),
+           patch->windows().size());
+    fflush(stdout);
+    patched = std::make_unique<PatchedDisc>(*disc, *patch);
+    gp = locate_partition(*patched);
+    if (gp.offset != source_partition.offset || gp.data_offset != source_partition.data_offset ||
+        gp.data_size != source_partition.data_size) {
+      fail("el parche mueve la particion del juego (no soportado)");
+    }
+    patched_data = std::make_unique<PatchedPartitionData>(*source_data, *patched, gp.offset + gp.data_offset, gp.data_size,
+                                                          gp.key);
+    data = patched_data.get();
   }
-  if (partition == 0) fail("el disco no tiene particion de juego");
-  u8 part_header[0x2C0];
-  disc->read(partition, sizeof(part_header), part_header);
-  const u32 tmd_size = be32(part_header + 0x2A4);
-  const u64 tmd_offset = u64(be32(part_header + 0x2A8)) << 2;
-  const u64 data_offset = u64(be32(part_header + 0x2B8)) << 2;
-  const u64 data_size = u64(be32(part_header + 0x2BC)) << 2;
-  if (tmd_size == 0 || tmd_size > 0x10000) fail("la particion del juego no tiene metadatos validos");
-  std::vector<u8> tmd(tmd_size);
-  disc->read(partition + tmd_offset, tmd.size(), tmd.data());
-
-  std::unique_ptr<PartitionData> data;
-  if (auto* wia = dynamic_cast<WiaDisc*>(disc.get())) {
-    data = wia->partition_data(partition + data_offset);
-    if (!data) fail("el %s no guarda la particion del juego descifrada", disc->format());
-  } else {
-    if (part_header[0x1F1] != 0) fail("la particion del juego usa una clave comun que no es la de Wii (indice %u)", part_header[0x1F1]);
-    u8 iv[16] = {};
-    memcpy(iv, part_header + 0x1DC, 8);
-    u8 title_key[16];
-    Aes128Decrypt(kCommonKey).cbc(iv, part_header + 0x1BF, title_key, 16);
-    data = std::make_unique<EncryptedPartitionData>(*disc, partition + data_offset, data_size, title_key);
-  }
+  const std::vector<u8>& tmd = gp.tmd;
+  const u64 data_size = gp.data_size;
 
   auto read_vec = [&](u64 offset, size_t size) {
     std::vector<u8> v(size);
@@ -1275,7 +1781,8 @@ int run(const std::string& image, const std::string& output) {
   const char* expected = getenv("NEBULA_PAK_DOL_SHA1");  // tests with synthetic discs only
   const std::string dol_sha1 = Sha1::hex(dol.data(), dol.size());
   if (dol_sha1 != (expected ? expected : kDolSha1)) {
-    fail("main.dol no es el de Super Mario Galaxy (SHA-1 %s): la imagen puede estar danada", dol_sha1.c_str());
+    if (!patch) fail("main.dol no es el de Super Mario Galaxy (SHA-1 %s): la imagen puede estar danada", dol_sha1.c_str());
+    printf("El parche cambia main.dol (SHA-1 %s)\n", dol_sha1.c_str());
   }
   const std::vector<u8> fst = read_vec(fst_offset, size_t(fst_size));
   validate_tmd(tmd);
@@ -1346,6 +1853,39 @@ int run(const std::string& image, const std::string& output) {
     fail("no se puede reemplazar %s: %s", output.c_str(), strerror(error));
   }
   printf("\ngame.pak listo: %llu MiB de datos\n", (unsigned long long)(logical_size >> 20));
+  if (patched_data) {
+    // What the patch changed: the files over clusters that differ from the original, and the game language whose
+    // files those are (UsEnglish, UsSpanish, UsFrench), for the launcher.
+    std::vector<std::pair<u64, u64>> changed;  // data ranges
+    std::vector<u8> a(0x7C00), b(0x7C00);
+    for (u64 c = 0; c < patched_data->clusters(); ++c) {
+      if (!patched_data->touched(c)) continue;
+      try {
+        patched_data->read(c * 0x7C00, a.size(), a.data());
+        source_data->read(c * 0x7C00, b.size(), b.data());
+      } catch (const std::exception&) {
+        continue;  // a cluster no file uses (scrubbed source): not the patch's business
+      }
+      if (a == b) continue;
+      if (!changed.empty() && changed.back().second == c * 0x7C00) changed.back().second += 0x7C00;
+      else changed.push_back({c * 0x7C00, (c + 1) * 0x7C00});
+    }
+    int english = 0, spanish = 0, french = 0, listed = 0;
+    for (const FileEntry& f : files) {
+      bool hit = false;
+      for (const auto& r : changed) if (f.length && f.offset < r.second && f.offset + f.length > r.first) hit = true;
+      if (!hit) continue;
+      if (listed++ < 64) printf("PATCHED\t%s\n", f.name.c_str());
+      const std::string l = [&] { std::string x = f.name; for (char& ch : x) ch = char(tolower((unsigned char)ch)); return x; }();
+      english += l.find("usenglish") != std::string::npos;
+      spanish += l.find("usspanish") != std::string::npos;
+      french += l.find("usfrench") != std::string::npos;
+    }
+    const char* language = english >= spanish && english >= french ? (english ? "english" : nullptr)
+                                                                     : (spanish >= french ? "spanish" : "french");
+    printf("Parche aplicado: %d ficheros cambiados\n", listed);
+    if (language) printf("PATCH_LANGUAGE\t%s\n", language);
+  }
   return 0;
 }
 
@@ -1354,8 +1894,45 @@ int run(const std::string& image, const std::string& output) {
 int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   const bool identify_only = argc == 3 && strcmp(argv[1], "--identify") == 0;
+  std::string patch_path;
+  if (argc == 5 && strcmp(argv[1], "--patch") == 0) {
+    patch_path = argv[2];
+    argv += 2;
+    argc -= 2;
+  }
+  if (argc == 3 && strcmp(argv[1], "--patch-info") == 0) {  // what an xdelta patch changes
+    try {
+      XdeltaPatch patch(argv[2]);
+      printf("ventanas %zu, cambian %zu, disco de %llu bytes\n", patch.windows().size(), patch.modified_windows(),
+             (unsigned long long)patch.target_size());
+      for (const auto& w : patch.windows()) {
+        if (!w.identity) printf("  %#llx +%#x (%zu bytes nuevos)\n", (unsigned long long)w.target, w.length, w.adds_len);
+      }
+      return 0;
+    } catch (const std::exception& error) {
+      fprintf(stderr, "Error: %s\n", error.what());
+      return 1;
+    }
+  }
+  if (argc == 6 && strcmp(argv[1], "--dump-raw") == 0) {  // tests: the disc's raw (encrypted) bytes
+    try {
+      aes_init();
+      std::unique_ptr<Disc> disc = open_disc(argv[2]);
+      const u64 offset = strtoull(argv[3], nullptr, 0), size = strtoull(argv[4], nullptr, 0);
+      std::vector<u8> buf(size);
+      disc->read_raw(offset, buf.size(), buf.data());
+      FILE* f = fopen(argv[5], "wb");
+      if (!f || fwrite(buf.data(), 1, buf.size(), f) != buf.size()) return 1;
+      fclose(f);
+      return 0;
+    } catch (const std::exception& error) {
+      fprintf(stderr, "Error: %s\n", error.what());
+      return 1;
+    }
+  }
   if (argc != 3) {
     fprintf(stderr, "uso: nebula-pak <imagen del disco> <game.pak>\n"
+                    "     nebula-pak --patch <parche.xdelta> <imagen del disco> <game.pak>\n"
                     "     nebula-pak --identify <imagen del disco>\n"
                     "  imagen: ISO, RVZ, WIA, WBFS, GCZ o CISO de Super Mario Galaxy (USA, RMGE01)\n");
     return 2;
@@ -1364,7 +1941,7 @@ int main(int argc, char** argv) {
   signal(SIGINT, on_cancel);
   try {
     if (identify_only) return identify(argv[2]);
-    return run(argv[1], argv[2]);
+    return run(argv[1], argv[2], patch_path);
   } catch (const std::exception& error) {
     fflush(stdout);
     fprintf(stderr, "\nError: %s\n", error.what());

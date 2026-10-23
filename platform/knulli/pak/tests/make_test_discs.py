@@ -103,8 +103,9 @@ def build_partition():
 
     # Files: random, zeros, text-like; laid out with gaps (padding junk on a real disc).
     names = ["AudioRes/Seqs.arc", "ObjectData/Kuribo.arc", "StageData/Big.arc", "Zero.bin", "Empty.bin",
-             "LayoutData/Text.arc", "tiny.txt"]
-    sizes = [0x123457, 0x4321, 0x6A0001, 0x300000, 0, 0x2000, 3]
+             "LayoutData/Text.arc", "tiny.txt", "LocalizeData/UsEnglish/MessageData/Message.arc",
+             "LocalizeData/UsSpanish/MessageData/Message.arc"]
+    sizes = [0x123457, 0x4321, 0x6A0001, 0x300000, 0, 0x2000, 3, 0x9876, 0x9876]
     fst_offset = 0x8000
     layout = []
     at = 0x20000
@@ -204,37 +205,51 @@ def build_partition():
     pak = bytearray(end)
     for o, b in pak_parts:
         pak[o:o + len(b)] = b
-    return bytes(data), bytes(pak), junk, dol
+    return bytes(data), bytes(pak), junk, dol, {name: (off, length) for name, off, length in layout}
 
 
-def encrypt_partition(data, key):
-    """Clusters with H0/H1/H2 hashes, encrypted; and the H3 table."""
+def encrypt_partition(data, key, flaws=True):
+    """Clusters with H0/H1/H2 hashes, encrypted; the H3 table; and the hash blocks as stored. With `flaws`, like
+    real discs sometimes: non-zero padding in some hash blocks and one wrong H0 (the H1 above it made from it)."""
     out = bytearray(CLUSTERS * 0x8000)
     h3 = bytearray(0x18000)
+    blocks = []
     for group in range(CLUSTERS // 64):
         h0s, h1s = [], []
         for c in range(64):
             cl = group * 64 + c
             d = data[cl * 0x7C00:(cl + 1) * 0x7C00]
-            h0s.append(b"".join(hashlib.sha1(d[i * 0x400:(i + 1) * 0x400]).digest() for i in range(31)))
+            h0 = b"".join(hashlib.sha1(d[i * 0x400:(i + 1) * 0x400]).digest() for i in range(31))
+            if flaws and cl == 400:  # an unused cluster (real discs verify the used ones)
+                h0 = h0[:40] + b"\x13" * 20 + h0[60:]
+            h0s.append(h0)
         for sg in range(8):
             h1s.append(b"".join(hashlib.sha1(h0s[sg * 8 + i]).digest() for i in range(8)))
         h2 = b"".join(hashlib.sha1(h1).digest() for h1 in h1s)
         h3[group * 20:group * 20 + 20] = hashlib.sha1(h2).digest()
         for c in range(64):
             cl = group * 64 + c
-            hb = h0s[c] + bytes(0x14) + h1s[c // 8] + bytes(0x20) + h2 + bytes(0x20)
+            hb = bytearray(h0s[c] + bytes(0x14) + h1s[c // 8] + bytes(0x20) + h2 + bytes(0x20))
+            if flaws and cl % 37 == 5:
+                hb[0x26C:0x280] = b"\xAA" * 20
+            if flaws and cl % 53 == 7:
+                hb[0x3E0:0x400] = b"\x55" * 32
+            hb = bytes(hb)
+            blocks.append(hb)
             assert len(hb) == 0x400
             ehb = aes_cbc(key, bytes(16), hb)
             d = data[cl * 0x7C00:(cl + 1) * 0x7C00]
             out[cl * 0x8000:cl * 0x8000 + 0x400] = ehb
             out[cl * 0x8000 + 0x400:(cl + 1) * 0x8000] = aes_cbc(key, ehb[0x3D0:0x3E0], d)
-    return bytes(out), bytes(h3)
+    return bytes(out), bytes(h3), blocks
 
 
-def build_disc(out_dir):
-    data, pak, junk, dol = build_partition()
-    title_key = rand(16)
+SLOTS = [i * 20 for i in range(31)] + [0x26C] + [0x280 + 20 * k for k in range(8)] + [0x320, 0x32C] + \
+        [0x340 + 20 * k for k in range(8)] + [0x3E0, 0x3EC]
+
+
+def build_disc(out_dir, built, title_key, name="smg.iso", pak_name="expected.pak", trucha=False):
+    data, pak, junk, dol, layout = built
     title_id = bytes.fromhex("00010000524d4745")
 
     ticket = bytearray(0x2A4)
@@ -244,9 +259,12 @@ def build_disc(out_dir):
     ticket[0x1BF:0x1CF] = aes_cbc(COMMON_KEY, title_id + bytes(8), title_key)
     ticket[0x1F1] = 0
 
-    enc, h3 = encrypt_partition(data, title_key)
+    enc, h3, blocks = encrypt_partition(data, title_key)
+    _, _, proper = encrypt_partition(data, title_key, flaws=False)
     tmd = bytearray(0x208)
     struct.pack_into(">I", tmd, 0, 0x00010001)
+    if not trucha:
+        tmd[4:0x104] = bytes(range(256))  # a signature stand-in (a patched disc has it zeroed)
     tmd[0x18C:0x194] = title_id
     struct.pack_into(">H", tmd, 0x1DE, 1)
     struct.pack_into(">IHHQ", tmd, 0x1E4, 0, 0, 3, 0xFF7C0000)
@@ -259,11 +277,11 @@ def build_disc(out_dir):
     part = bytearray(DATA_OFFSET)
     part[0:0x2C0] = header
     part[0x2C0:0x2C0 + 0x208] = tmd
-    part[0x4C0:0x4C0 + 0x400] = rand(0x400)  # certificate chain stand-in
+    part[0x4C0:0x4C0 + 0x400] = bytes((i * 7) & 255 for i in range(0x400))  # certificate chain stand-in
     part[0x8000:0x8000 + len(h3)] = h3
 
     disc_size = PART_OFFSET + DATA_OFFSET + len(enc)
-    iso = os.path.join(out_dir, "smg.iso")
+    iso = os.path.join(out_dir, name)
     with open(iso, "wb") as f:
         f.truncate(disc_size)
         head = bytearray(0x100)
@@ -279,11 +297,11 @@ def build_disc(out_dir):
         f.seek(PART_OFFSET)
         f.write(part)
         f.write(enc)
-    with open(os.path.join(out_dir, "expected.pak"), "wb") as f:
+    with open(os.path.join(out_dir, pak_name), "wb") as f:
         f.write(pak)
     with open(os.path.join(out_dir, "dol.sha1"), "w") as f:
         f.write(hashlib.sha1(dol).hexdigest())
-    return iso, data, junk, title_key, part
+    return iso, data, junk, title_key, (blocks, proper)
 
 
 def write_gcz(iso, out):
@@ -315,7 +333,7 @@ def zstd(tool, blob):
                           check=True).stdout
 
 
-def write_rvz(iso, data, junk, title_key, out, tool, chunk=0x20000):
+def write_rvz(iso, data, junk, title_key, hashes, out, tool, chunk=0x20000):
     """RVZ as Dolphin writes it (docs/WiaAndRvz.md): raw data + one partition in two data entries, Zstandard,
     RVZ packing of the padding, some groups stored uncompressed, some hash exception lists."""
     with open(iso, "rb") as f:
@@ -387,9 +405,14 @@ def write_rvz(iso, data, junk, title_key, out, tool, chunk=0x20000):
         for g in range(0, length, chunk_d):
             a, b = start + g, start + min(length, g + chunk_d)
             gi = len(groups)
+            # Hash exceptions: where the stored hash blocks differ from those made from the data (Dolphin's writer,
+            # padding included), relative to the chunk's first cluster.
             exceptions = []
-            if gi % 3 == 0:
-                exceptions = [(rng.randrange(0, 0x400 * (chunk // 0x8000) - 20), rand(20)) for _ in range(gi % 5 + 1)]
+            stored, proper = hashes
+            for cl in range(a // 0x7C00, (b + 0x7BFF) // 0x7C00):
+                for slot in SLOTS:
+                    if stored[cl][slot:slot + 20] != proper[cl][slot:slot + 20]:
+                        exceptions.append(((cl - a // 0x7C00) * 0x400 + slot, stored[cl][slot:slot + 20]))
             compress = gi % 4 != 1
             if any(js < b and js + junk_at[js][0] > a for js in junk_starts):
                 packed = pack(a, b, start)
@@ -447,10 +470,21 @@ def write_rvz(iso, data, junk, title_key, out, tool, chunk=0x20000):
 def main():
     out_dir, tool = sys.argv[1], sys.argv[2]
     os.makedirs(out_dir, exist_ok=True)
-    iso, data, junk, key, part = build_disc(out_dir)
+    built = build_partition()
+    key = rand(16)
+    iso, data, junk, key, hashes = build_disc(out_dir, built, key)
     write_gcz(iso, os.path.join(out_dir, "smg.gcz"))
-    write_rvz(iso, data, junk, key, os.path.join(out_dir, "smg.rvz"), tool)
-    write_rvz(iso, data, junk, key, os.path.join(out_dir, "smg-2m.rvz"), tool, chunk=0x200000)
+    write_rvz(iso, data, junk, key, hashes, os.path.join(out_dir, "smg.rvz"), tool)
+    write_rvz(iso, data, junk, key, hashes, os.path.join(out_dir, "smg-2m.rvz"), tool, chunk=0x200000)
+    # A translation-like patched disc: the English messages replaced, the TMD "trucha" signed; the patch is made
+    # from it by run_tests.sh with xdelta3.
+    data, pak, junk2, dol, layout = built
+    off, length = layout["LocalizeData/UsEnglish/MessageData/Message.arc"]
+    blob = (("Olá, Mario! Estrela ").encode("latin-1") * (length // 20 + 1))[:length]
+    data2 = bytearray(data); data2[off:off + length] = blob
+    pak2 = bytearray(pak); pak2[off:off + length] = blob
+    build_disc(out_dir, (bytes(data2), bytes(pak2), junk2, dol, layout), key, "smg-ptbr.iso", "expected-ptbr.pak",
+               trucha=True)
     print("discos de prueba en", out_dir, "(%d tramos de relleno)" % len(junk))
 
 

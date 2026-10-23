@@ -10,6 +10,12 @@ terminar. La conversión la hace `nebula-pak` (`platform/knulli/pak`) como proce
 - Idioma del juego: al convertir pregunta Español, English o Français (lo que trae el disco USA) y lo guarda en
   `smg/idioma.txt`, que el lanzador del juego pasa como `GALAXY_LANGUAGE`. En el menú, ◄► lo cambia en cualquier
   momento, también con el `game.pak` ya hecho.
+- Português do Brasil: con un .xdelta de la traducción en `smg/patches/` (nombre con PT-BR/ptbr/portugues), el
+  idioma "Português" aparece al instalar; elegido, `nebula-pak --patch` aplica el parche al disco mientras hace
+  game.pak (ISO, RVZ, WIA, WBFS, GCZ o CISO; sin ISO intermedio). nebula-pak dice qué idioma del juego sustituye la
+  traducción (`PATCH_LANGUAGE`: los ficheros cambiados en UsEnglish/UsSpanish/UsFrench); `smg/idioma.txt` queda
+  como `english ptbr` y `gamedata/game.pak.idioma` como `ptbr english`. En el menú, ◄► ofrece entonces Português y
+  los otros dos idiomas.
 - Idioma de la interfaz: el de KNULLI (`system.language` de `/userdata/system/batocera.conf`; si no, el de
   EmulationStation o `LANG`): español, English, français, português, italiano o Deutsch; si no se encuentra, español.
   `CACTUS_LANG=xx` o `--lang xx` lo fijan. Los errores habituales de nebula-pak (espacio, FAT32, imagen dañada,

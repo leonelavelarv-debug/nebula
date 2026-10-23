@@ -607,6 +607,7 @@ std::string translate_error(const std::string& e) {
   if (at != std::string::npos && sscanf(e.c_str() + at, "hacen falta %llu MiB libres y hay %llu MiB", &need, &have) == 2) {
     return format(T(S_ERR_SPACE), mib_text(double(need)).c_str(), mib_text(double(have)).c_str());
   }
+  if (e.find("el parche no corresponde") != std::string::npos) return T(S_ERR_PATCH);
   if (e.find("no queda espacio") != std::string::npos) return T(S_ERR_SPACE_SHORT);
   if (e.find("FAT32") != std::string::npos) return T(S_ERR_FAT32);
   if (e.find("main.dol") != std::string::npos) return T(S_ERR_DOL);
@@ -732,6 +733,7 @@ struct Job {
   double percent = 0, done_mib = 0, total_mib = 0;
   std::string error, last_line;
   double started = 0;
+  int language = 0, patch_slot = -1;
 };
 
 double now_seconds() {
@@ -745,7 +747,8 @@ double now_seconds() {
 
 enum class Screen { Menu, Language, Converting, Done, Failed };
 
-// The languages of the USA disc, as GALAXY_LANGUAGE names them (the launcher reads smg/idioma.txt).
+// The languages of the USA disc, as GALAXY_LANGUAGE names them (the launcher reads smg/idioma.txt), and Brazilian
+// Portuguese: the disc patched on the way with a translation's xdelta (smg/patches/), into one of those three slots.
 struct Language {
   const char* key;
   const char* name;
@@ -755,8 +758,9 @@ const Language kLanguages[] = {
     {"spanish", "Español", "textos y menús"},
     {"english", "English", "texts and menus"},
     {"french", "Français", "textes et menus"},
+    {"ptbr", "Português", "Brasil · tradução"},
 };
-constexpr int kLanguageCount = 3;
+constexpr int kPtBr = 3;
 
 struct App {
   std::string smg, gamedata, tool, output;
@@ -775,36 +779,83 @@ struct App {
   bool quit = false;
   int result = 1;
   int language = 0, language_choice = 0;
-  std::string language_file;
+  std::string language_file, patch_file, pak_language_file;
+  int pak_patched_slot = -1;  // the game.pak was made with the PT-BR patch, its text in this slot (0-2)
   Image pending;  // the disc waiting for its language
 
-  void load_language() {
-    // Not chosen yet: the menu's language for a new install (spanish, english, french), Spanish if game.pak is
-    // already there (what the launcher uses without smg/idioma.txt).
-    language = have_pak ? 0 : (g_ui == UI_ES ? 0 : g_ui == UI_FR ? 2 : 1);
-    if (FILE* f = fopen(language_file.c_str(), "r")) {
-      char word[32] = {};
-      if (fscanf(f, "%31s", word) == 1) {
-        for (int i = 0; i < kLanguageCount; ++i) if (lower(word) == kLanguages[i].key) language = i;
-      }
+  static std::vector<std::string> words(const std::string& path) {
+    std::vector<std::string> out;
+    if (FILE* f = fopen(path.c_str(), "r")) {
+      char word[32];
+      while (out.size() < 4 && fscanf(f, "%31s", word) == 1) out.push_back(lower(word));
       fclose(f);
     }
+    return out;
+  }
+  static int slot_of(const std::string& key) {
+    for (int i = 0; i < 3; ++i) if (key == kLanguages[i].key) return i;
+    return -1;
+  }
+  void load_language() {
+    // Not chosen yet: the menu's language for a new install (spanish, english, french; Portuguese when the patch is
+    // there), Spanish if game.pak is already there (what the launcher uses without smg/idioma.txt).
+    language = have_pak ? 0 : (g_ui == UI_ES ? 0 : g_ui == UI_FR ? 2 : (g_ui == UI_PT && !patch_file.empty()) ? kPtBr : 1);
+    const std::vector<std::string> pak = words(pak_language_file);  // "ptbr english"
+    pak_patched_slot = pak.size() >= 2 && pak[0] == "ptbr" && have_pak ? slot_of(pak[1]) : -1;
+    const std::vector<std::string> chosen = words(language_file);   // "english" or "english ptbr"
+    if (!chosen.empty() && slot_of(chosen[0]) >= 0) language = slot_of(chosen[0]);
+    if (chosen.size() >= 2 && chosen[1] == "ptbr" && pak_patched_slot >= 0) language = kPtBr;
   }
   void save_language(int which) {
     language = which;
+    const int slot = which == kPtBr ? std::max(0, pak_patched_slot) : which;
     const std::string temporary = language_file + ".tmp";
     if (FILE* f = fopen(temporary.c_str(), "w")) {
-      fprintf(f, "%s\n", kLanguages[which].key);
+      fprintf(f, "%s%s\n", kLanguages[slot].key, which == kPtBr ? " ptbr" : "");
       fclose(f);
       rename(temporary.c_str(), language_file.c_str());
     }
-    printf("[cactus] idioma del juego: %s\n", kLanguages[which].key);
+    printf("[cactus] idioma del juego: %s%s\n", kLanguages[slot].key, which == kPtBr ? " (PT-BR)" : "");
     fflush(stdout);
+  }
+  // The languages the menu's left/right cycle through: those this game.pak has (a PT-BR one replaced a slot).
+  std::vector<int> menu_languages() const {
+    std::vector<int> out;
+    if (pak_patched_slot >= 0) out.push_back(kPtBr);
+    for (int i = 0; i < 3; ++i) if (i != pak_patched_slot) out.push_back(i);
+    return out;
+  }
+  // The languages a new install can have.
+  std::vector<int> install_languages() const {
+    std::vector<int> out = {0, 1, 2};
+    if (!patch_file.empty()) out.push_back(kPtBr);
+    return out;
+  }
+  static int step(const std::vector<int>& list, int current, int delta) {
+    auto it = std::find(list.begin(), list.end(), current);
+    const int at = it == list.end() ? 0 : int(it - list.begin());
+    return list[size_t((at + delta + int(list.size())) % int(list.size()))];
   }
   void ask_language(const Image& im) {
     pending = im;
-    language_choice = language;
+    const std::vector<int> list = install_languages();
+    language_choice = std::find(list.begin(), list.end(), language) != list.end() ? language : list[0];
     screen = Screen::Language;
+  }
+  void find_patch() {
+    for (const std::string& dir : {smg + "/patches", gamedata, smg}) {
+      DIR* d = opendir(dir.c_str());
+      if (d == nullptr) continue;
+      while (dirent* e = readdir(d)) {
+        const std::string name = lower(e->d_name);
+        const bool xdelta = name.size() > 7 && name.compare(name.size() - 7, 7, ".xdelta") == 0;
+        const bool pt = name.find("pt-br") != std::string::npos || name.find("ptbr") != std::string::npos ||
+                        name.find("pt_br") != std::string::npos || name.find("portug") != std::string::npos;
+        if (xdelta && pt && patch_file.empty()) patch_file = dir + "/" + e->d_name;
+      }
+      closedir(d);
+    }
+    if (!patch_file.empty()) printf("[cactus] parche PT-BR: %s\n", patch_file.c_str());
   }
 
   void refresh_disk() {
@@ -845,15 +896,20 @@ struct App {
     });
   }
 
-  void start_conversion(const Image& im) {
+  void start_conversion(const Image& im, int chosen) {
     job = std::make_unique<Job>();
+    job->language = chosen;
     job->started = now_seconds();
     converted_name = im.name;
     speed = 0; speed_mib = 0; speed_at = job->started;
     cancelling = false;
     Job* j = job.get();
     int fd = -1;
-    j->pid = spawn({tool, im.path, output}, &fd);
+    std::vector<std::string> args = {tool};
+    if (chosen == kPtBr) { args.push_back("--patch"); args.push_back(patch_file); }
+    args.push_back(im.path);
+    args.push_back(output);
+    j->pid = spawn(args, &fd);
     if (j->pid < 0) { error = T(S_ERR_RUN); screen = Screen::Failed; return; }
     screen = Screen::Converting;
     printf("[cactus] convirtiendo %s -> %s\n", im.path.c_str(), output.c_str());
@@ -872,6 +928,8 @@ struct App {
           j->percent = percent; j->done_mib = double(done); j->total_mib = double(total);
         } else if (l.rfind("Error: ", 0) == 0) {
           j->error = l.substr(7);
+        } else if (l.rfind("PATCH_LANGUAGE\t", 0) == 0) {
+          j->patch_slot = slot_of(l.substr(15));
         }
       });
       std::lock_guard<std::mutex> lock(j->mutex);
@@ -890,6 +948,18 @@ struct App {
       screen = Screen::Done;
       result = 0;
       done_at = now_seconds();
+      // The language goes with the game.pak just made; a PT-BR one remembers which slot holds the Portuguese.
+      if (job->language == kPtBr) {
+        pak_patched_slot = job->patch_slot >= 0 ? job->patch_slot : 1;
+        if (FILE* f = fopen(pak_language_file.c_str(), "w")) {
+          fprintf(f, "ptbr %s\n", kLanguages[pak_patched_slot].key);
+          fclose(f);
+        }
+      } else {
+        pak_patched_slot = -1;
+        unlink(pak_language_file.c_str());
+      }
+      save_language(job->language);
     } else {
       error = job->error.empty() ? (cancelling ? std::string(T(S_ERR_CANCELLED)) : job->last_line) : translate_error(job->error);
       if (error.empty()) error = format(T(S_ERR_EXIT), job->exit_code);
@@ -909,16 +979,16 @@ struct App {
         if (key == kToggle) delete_after = !delete_after;
         if (key == kBack) quit = true;
         if (key == kPrev || key == kNext) {  // the game's language, even with game.pak already made
-          save_language((language + (key == kNext ? 1 : kLanguageCount - 1)) % kLanguageCount);
+          save_language(step(menu_languages(), language, key == kNext ? 1 : -1));
         }
         if (key == kConfirm && selected < int(images.size()) && images[selected].status == 0) ask_language(images[selected]);
         break;
       }
       case Screen::Language:
-        if (key == kUp || key == kPrev) language_choice = (language_choice + kLanguageCount - 1) % kLanguageCount;
-        if (key == kDown || key == kNext) language_choice = (language_choice + 1) % kLanguageCount;
+        if (key == kUp || key == kPrev) language_choice = step(install_languages(), language_choice, -1);
+        if (key == kDown || key == kNext) language_choice = step(install_languages(), language_choice, 1);
         if (key == kBack) screen = Screen::Menu;
-        if (key == kConfirm) { save_language(language_choice); start_conversion(pending); }
+        if (key == kConfirm) start_conversion(pending, language_choice);
         break;
       case Screen::Converting:
         if (key == kBack && job && !cancelling) { cancelling = true; kill(job->pid, SIGTERM); }
@@ -1036,16 +1106,19 @@ struct App {
   void draw_language(Canvas& cv, float time) {
     text_center(cv, kCenter, 128, T(S_GAME_LANGUAGE), 2, kGold);
     text_center(cv, kCenter, 150, T(S_GAME_LANGUAGE_SUB), 2, kMuted);
-    for (int i = 0; i < kLanguageCount; ++i) {
-      const int y = 184 + i * 58;
+    const std::vector<int> list = install_languages();
+    const int spacing = list.size() > 3 ? 46 : 58, box = list.size() > 3 ? 44 : 50;
+    for (size_t row = 0; row < list.size(); ++row) {
+      const int i = list[row];
+      const int y = (list.size() > 3 ? 178 : 184) + int(row) * spacing;
       const bool sel = i == language_choice;
       if (sel) {
-        cv.rrect(kLeft + 10, y - 6, kPanelW - 52, 50, 10, 0x2f7d3e, 0.55f);
-        cv.rrect_outline(kLeft + 10, y - 6, kPanelW - 52, 50, 10, 2, 0x7fd88a, 0.9f);
-        cv.star(float(kLeft + 30), float(y + 18), 9.0f, 0xffe066, 1.0f, time * 2.0f);
+        cv.rrect(kLeft + 10, y - 5, kPanelW - 52, box, 10, 0x2f7d3e, 0.55f);
+        cv.rrect_outline(kLeft + 10, y - 5, kPanelW - 52, box, 10, 2, 0x7fd88a, 0.9f);
+        cv.star(float(kLeft + 30), float(y + 16), 9.0f, 0xffe066, 1.0f, time * 2.0f);
       }
       text(cv, kLeft + 50, y, kLanguages[i].name, 3, sel ? kWhite : kMuted);
-      text(cv, kLeft + 50, y + 26, kLanguages[i].note, 2, sel ? kGreen : 0x8f82a8);
+      text(cv, kLeft + 50, y + 24, kLanguages[i].note, 2, sel ? kGreen : 0x8f82a8);
     }
     text_center(cv, kCenter, 364, fit(pending.name, 22), 2, kMuted);
     text_center(cv, kCenter, 384, fit(T(S_CHANGE_LATER), 22), 2, 0x8f82a8);
@@ -1065,7 +1138,8 @@ struct App {
       speed = speed <= 0 ? sp : speed * 0.6 + sp * 0.4;
       speed_mib = done; speed_at = t;
     }
-    text_center(cv, kCenter, 134, fit(cancelling ? T(S_CANCELLING) : T(S_CONVERTING), 22), 2, kGold);
+    const bool ptbr = job && job->language == kPtBr;
+    text_center(cv, kCenter, 134, fit(cancelling ? T(S_CANCELLING) : std::string(T(S_CONVERTING)) + (ptbr || demo_ptbr ? " · PT-BR" : ""), 22), 2, kGold);
     text_center(cv, kCenter, 156, fit(converted_name, 22), 2, kMuted);
     text_center(cv, kCenter, 188, format("%d%%", int(percent)), 6, kWhite);
     progress_bar(cv, kLeft + 4, 252, kPanelW - 40, 32, float(percent / 100.0), time);
@@ -1111,6 +1185,7 @@ struct App {
 
   // Demo values (--demo).
   double demo_percent = -1, demo_done = 0, demo_total = 0, demo_speed = 0;
+  bool demo_ptbr = false;
   float demo_growth = -1, demo_bloom = 0, demo_wilt = 0;
 };
 
@@ -1142,6 +1217,7 @@ int demo(const std::string& out) {
   Image c; c.name = "smg-copia.iso"; c.format = "ISO"; c.mib = 4482; c.status = -1;
   Image d; d.name = "notas.iso"; d.mib = 1; d.status = 3;
   app.images = {a, b, c, d};
+  app.patch_file = "patches/pt-br.xdelta";  // the demo shows the PT-BR option
   app.load_language();  // no smg/idioma.txt here: the game's language follows the interface's
   app.draw(cv, scene, 1.3f);
   save_png(cv, out + "/1-menu.png");
@@ -1150,6 +1226,9 @@ int demo(const std::string& out) {
   app.language_choice = app.language;
   app.draw(cv, scene, 1.8f);
   save_png(cv, out + "/1b-idioma.png");
+  app.language_choice = kPtBr;
+  app.draw(cv, scene, 2.0f);
+  save_png(cv, out + "/1c-idioma-ptbr.png");
   app.screen = Screen::Converting;
   app.converted_name = a.name;
   app.demo_percent = 37; app.demo_done = 1251; app.demo_total = 3381; app.demo_speed = 14.8;
@@ -1164,6 +1243,11 @@ int demo(const std::string& out) {
   app.demo_growth = 1.0f; app.demo_bloom = 1.0f;
   app.draw(cv, scene, 4.0f);
   save_png(cv, out + "/4-listo.png");
+  const int saved_language = app.language;
+  app.language = kPtBr;
+  app.draw(cv, scene, 4.2f);
+  save_png(cv, out + "/4b-listo-ptbr.png");
+  app.language = saved_language;
   app.screen = Screen::Failed;
   app.error = translate_error("no hay espacio para game.pak: hacen falta 3390 MiB libres y hay 2104 MiB");
   app.demo_growth = 0.45f; app.demo_bloom = 0; app.demo_wilt = 1.0f;
@@ -1307,6 +1391,8 @@ int main(int argc, char** argv) {
   mkdir(app.gamedata.c_str(), 0755);
   app.output = app.gamedata + "/game.pak";
   app.language_file = app.smg + "/idioma.txt";
+  app.pak_language_file = app.output + ".idioma";
+  app.find_patch();
   app.refresh_disk();
   app.load_language();
   app.tool = dir_of_exe() + "/nebula-pak";

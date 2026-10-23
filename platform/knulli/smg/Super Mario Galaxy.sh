@@ -130,7 +130,9 @@ export NEBULA_PAD_SCHEME="${NEBULA_PAD_SCHEME:-nintendo}"
 #                                         aqui vale el que se eligio al instalar con Cactus Galaxy Wrapper
 # El idioma elegido en Cactus Galaxy Wrapper (smg/idioma.txt; ◄► en su menu lo cambia), si no se fija aqui.
 if [ -z "${GALAXY_LANGUAGE:-}" ] && [ -f "$GAMEDIR/idioma.txt" ]; then
-  GALAXY_LANGUAGE=$(head -c 16 "$GAMEDIR/idioma.txt" | tr -cd 'a-z')
+  # "english" o "english ptbr" (el portugues del parche PT-BR va en ese idioma del juego)
+  read -r GALAXY_LANGUAGE game_variant < "$GAMEDIR/idioma.txt"
+  [ "${game_variant:-}" = ptbr ] && echo "idioma del juego: portugues de Brasil (parche PT-BR)"
 fi
 case "${GALAXY_LANGUAGE:-}" in spanish|english|french) ;; *) GALAXY_LANGUAGE=spanish ;; esac
 export GALAXY_LANGUAGE

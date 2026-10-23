@@ -19,12 +19,12 @@ jobs:
       - name: Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build g++-aarch64-linux-gnu zstd python3-cryptography
+          sudo apt-get install -y ninja-build g++-aarch64-linux-gnu zstd xdelta3 python3-cryptography
       - name: Tests (x86-64)
         run: |
           cmake -S platform/knulli/pak -B build-x64 -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build-x64
-          platform/knulli/pak/tests/run_tests.sh build-x64/nebula-pak "$RUNNER_TEMP/paktest" "$(command -v zstd)"
+          XDELTA3="$(command -v xdelta3)" platform/knulli/pak/tests/run_tests.sh build-x64/nebula-pak "$RUNNER_TEMP/paktest" "$(command -v zstd)"
       - name: Build (aarch64)
         run: |
           cmake -S platform/knulli/pak -B build-a64 -G Ninja -DCMAKE_BUILD_TYPE=Release \

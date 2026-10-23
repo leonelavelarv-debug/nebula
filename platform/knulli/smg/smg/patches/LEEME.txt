@@ -1,0 +1,8 @@
+Parches de traducción para Cactus Galaxy Wrapper (xdelta del ISO original de Super Mario Galaxy USA, RMGE01).
+
+- Português do Brasil: pon aquí el .xdelta de la traducción (un nombre con "PT-BR", "ptbr" o "portugues", por
+  ejemplo Super_Mario_Galaxy_PT-BR.xdelta). Cactus Galaxy Wrapper muestra entonces "Português" en los idiomas del
+  juego y, si lo eliges, aplica el parche al disco mientras hace game.pak (sirve con ISO, RVZ, WIA, WBFS, GCZ o
+  CISO; no hace falta un ISO parcheado ni espacio extra).
+
+El parche se comprueba contra tu disco: si no es el original sin modificar, la conversión se detiene con un aviso.

@@ -10,7 +10,8 @@ de Nebula y su renderer GX en OpenGL ES 3.2 (Mali-G31). Primera versión de prue
    con el avance en pantalla y un saguaro que crece hasta florecer. Tarda lo que la tarjeta en escribir ~4 GB (unos
    minutos); hacen falta ~3.4 GB libres (ext4) o ~4.3 GB (exFAT; FAT32 no sirve, no admite ficheros de más de 4 GB).
    Sale en el idioma de tu KNULLI (español, English, français, português, italiano o Deutsch). Antes de instalar
-   pregunta el idioma del juego (Español, English o Français); en el menú, ◄► lo cambia luego.
+   pregunta el idioma del juego (Español, English, Français y, con el parche de la traducción en `smg/patches/`,
+   Português do Brasil, que se aplica al disco al convertir); en el menú, ◄► lo cambia luego.
    Cruceta: elegir; A: convertir; B: salir o cancelar; X: borrar el disco al terminar. Solo vale el disco USA
    (RMGE01).
    - También se puede hacer fuera: `bash tools/cactus-galaxy-wrapper.sh <imagen> [carpeta smg]` en Termux, Linux o
