@@ -185,6 +185,7 @@ bool PipelineCacheGles::initialize(gpu::Device*, const gles::GxLayout* layout, c
     translate_options_.palette_storage_block = layout->palette_storage_block;
     generator_options_.scalar_byte_masks = true;  // Mali (device_quirks_vk.cpp)
     const gles::Capabilities& caps = gles::Context::get().caps();
+    translate_options_.glsl_version = gles::glsl_version_for(caps.version_major, caps.version_minor);
     driver_key_ = caps.renderer + " | " + caps.version;
     const std::uint64_t driver_hash = fnv1a64(driver_key_.data(), driver_key_.size());
     char folder[40];

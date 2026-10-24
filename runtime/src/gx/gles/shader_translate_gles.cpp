@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// HLSL to GLSL ES 3.20 (shader_translate_gles.h): glslang's HLSL front end, then SPIRV-Cross.
+// HLSL to GLSL ES 3.20 or 3.10 (shader_translate_gles.h): glslang's HLSL front end, then SPIRV-Cross.
 
 #include "galaxy/gx/gles/shader_translate_gles.h"
 
@@ -8,6 +8,7 @@
 #include <spirv_glsl.hpp>
 
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <vector>
@@ -126,6 +127,14 @@ constexpr vk::RegisterBinding kUtilityBindings[] = {
 
 }  // namespace
 
+int glsl_version_for(int major, int minor) noexcept {
+    if (const char* force = std::getenv("GALAXY_GLES_GLSL")) {
+        if (std::strcmp(force, "310") == 0) return 310;
+        if (std::strcmp(force, "320") == 0) return 320;
+    }
+    return major > 3 || (major == 3 && minor >= 2) ? 320 : 310;
+}
+
 std::string prepare_hlsl(std::string_view hlsl, ShaderKind kind, const TranslateOptions& options) {
     std::string text(hlsl);
     if (kind != ShaderKind::Gx) {
@@ -168,7 +177,7 @@ std::string translate(std::string_view hlsl, Stage stage, ShaderKind kind, const
     try {
         spirv_cross::CompilerGLSL glsl(std::move(spirv));
         spirv_cross::CompilerGLSL::Options common = glsl.get_common_options();
-        common.version = 320;
+        common.version = static_cast<std::uint32_t>(options.glsl_version == 310 ? 310 : 320);
         common.es = true;
         common.vertex.fixup_clipspace = stage == Stage::Vertex;
         common.vertex.flip_vert_y = stage == Stage::Vertex;

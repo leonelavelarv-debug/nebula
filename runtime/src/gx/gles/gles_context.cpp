@@ -186,12 +186,12 @@ bool Context::initialize(Loader loader) {
     ready_ = true;
     std::fprintf(stderr,
                  "[gles] \"%s\" by \"%s\", %s; palette from %s, UBO align %d, SSBO align %d, max UBO %d, "
-                 "framebuffer fetch %s, program binaries %s, timer queries %s\n",
+                 "framebuffer fetch %s, program binaries %s, timer queries %s, OpenGL ES %d.%d context\n",
                  caps_.renderer.c_str(), caps_.vendor.c_str(), caps_.version.c_str(),
                  caps_.vertex_storage_blocks ? "a storage buffer" : "a texture buffer", caps_.uniform_offset_alignment,
                  caps_.storage_offset_alignment, caps_.max_uniform_block_bytes,
                  caps_.framebuffer_fetch_arm ? "ARM" : caps_.framebuffer_fetch_ext ? "EXT" : "no",
-                 caps_.program_binary ? "yes" : "no", caps_.timer_query ? "yes" : "no");
+                 caps_.program_binary ? "yes" : "no", caps_.timer_query ? "yes" : "no", caps_.version_major, caps_.version_minor);
     return true;
 }
 

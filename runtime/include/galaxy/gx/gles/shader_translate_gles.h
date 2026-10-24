@@ -28,7 +28,13 @@ enum class ShaderKind {
 struct TranslateOptions {
     bool palette_storage_block = true;  // false: the palette as a texture buffer (unit 8)
     bool keep_names = true;             // readable GLSL (the dumps)
+    // GLSL ES 320 (OpenGL ES 3.2: Mali's own drivers), or 310 for OpenGL ES 3.1 drivers (Mesa's Panfrost on
+    // Bifrost, e.g. ROCKNIX on the RK3326): the same shaders, extensions declared where 3.1 needs them.
+    int glsl_version = 320;
 };
+
+// The GLSL ES version for a context of OpenGL ES major.minor (GALAXY_GLES_GLSL=310|320 forces one).
+[[nodiscard]] int glsl_version_for(int major, int minor) noexcept;
 
 // Texture unit of the palette's texture buffer.
 inline constexpr unsigned kPaletteTextureUnit = 8u;

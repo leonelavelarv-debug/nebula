@@ -433,6 +433,8 @@ void RendererGles::destroy_efb() noexcept {
 
 GLuint RendererGles::build_utility_program(std::string_view vs_hlsl, std::string_view ps_hlsl, const char* what) {
     gles::TranslateOptions options;
+    options.glsl_version = gles::glsl_version_for(gles::Context::get().caps().version_major,
+                                                  gles::Context::get().caps().version_minor);
     std::string error;
     const std::string vs = gles::translate(vs_hlsl, gles::Stage::Vertex, gles::ShaderKind::Utility, options, error);
     if (vs.empty()) {

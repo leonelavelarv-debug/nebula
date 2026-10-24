@@ -78,13 +78,16 @@ bool start_egl() {
             return false;
         }
     }
-    const EGLint context_attributes[] = {EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 2, EGL_NONE};
-    EGLContext context = create_context(display, config, EGL_NO_CONTEXT, context_attributes);
-    if (context == EGL_NO_CONTEXT || !make_current(display, EGL_NO_SURFACE, EGL_NO_SURFACE, context)) {
-        std::fprintf(stderr, "no surfaceless ES 3.2 context\n");
-        return false;
+    // 3.2, else 3.1 (an OpenGL ES 3.1 driver such as Panfrost: the shaders are then GLSL ES 3.10).
+    for (const EGLint minor : {2, 1}) {
+        const EGLint context_attributes[] = {EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, minor, EGL_NONE};
+        EGLContext context = create_context(display, config, EGL_NO_CONTEXT, context_attributes);
+        if (context != EGL_NO_CONTEXT && make_current(display, EGL_NO_SURFACE, EGL_NO_SURFACE, context)) {
+            return true;
+        }
     }
-    return true;
+    std::fprintf(stderr, "no surfaceless ES 3.1 or 3.2 context\n");
+    return false;
 }
 
 std::string g_dump;
@@ -198,7 +201,11 @@ int main() {
         g_dump = dump;
         std::filesystem::create_directories(g_dump);
     }
+    const int glsl = gles::glsl_version_for(gles::Context::get().caps().version_major,
+                                            gles::Context::get().caps().version_minor);
+    std::fprintf(stderr, "GLSL ES %d\n", glsl);
     gles::TranslateOptions utility{};
+    utility.glsl_version = glsl;
     check_pair(std::string(blit_vertex_shader_source()), std::string(efb_conversion_shader_source()),
                gles::ShaderKind::Utility, utility, "conversion");
     check_pair(std::string(blit_vertex_shader_source()), std::string(blit_pixel_shader_source()),
@@ -239,6 +246,7 @@ int main() {
     for (const bool storage : {true, false}) {
         gles::TranslateOptions options{};
         options.palette_storage_block = storage;
+        options.glsl_version = glsl;
         const char* form = storage ? "ssbo" : "texbuf";
         const std::string vs(uber_vs_source());
         for (unsigned variant = 0; variant < kUberPsVariants; ++variant) {
