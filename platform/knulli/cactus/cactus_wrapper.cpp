@@ -764,11 +764,11 @@ constexpr int kPtBr = 3;
 
 // The send-off before the game's very first start, in the game's language (Spanish, English, French, Brazilian
 // Portuguese); "Cabrones" stays as it is.
-const char* const kViva[4][2] = {
-    {"¡Viva México, Viva Sonora, Cabrones!", "En breve iniciará el juego."},
-    {"Long live Mexico, long live Sonora, Cabrones!", "The game will start shortly."},
-    {"Vive le Mexique, vive Sonora, Cabrones !", "Le jeu va bientôt commencer."},
-    {"Viva o México, viva Sonora, Cabrones!", "O jogo vai começar em breve."},
+const char* const kViva[4][3] = {
+    {"¡Viva México, Viva Sonora, Cabrones!", "En breve iniciará el juego.", "Jugar ya"},
+    {"Long live Mexico, long live Sonora, Cabrones!", "The game will start shortly.", "Play now"},
+    {"Vive le Mexique, vive Sonora, Cabrones !", "Le jeu va bientôt commencer.", "Jouer"},
+    {"Viva o México, viva Sonora, Cabrones!", "O jogo vai começar em breve.", "Jogar já"},
 };
 
 // Cool sunglasses and a grin on the full-grown saguaro (draw_cactus at growth 1).
@@ -1080,12 +1080,12 @@ struct App {
       case Screen::Converting:
         if (key == kBack && job && !cancelling) { cancelling = true; kill(job->pid, SIGTERM); }
         break;
-      case Screen::Done:
-        if ((key == kConfirm || key == kBack) && result == 0 && viva_pending()) show_viva();
-        else if (key == kConfirm || key == kBack) quit = true;
+      case Screen::Done:  // the game starts only on A
+        if (key == kConfirm && result == 0 && viva_pending()) show_viva();
+        else if (key == kConfirm) quit = true;
         break;
       case Screen::Viva:
-        if (key == kConfirm || key == kBack) quit = true;
+        if (key == kConfirm) quit = true;
         break;
       case Screen::Failed:
         if (key == kConfirm) {
@@ -1129,11 +1129,8 @@ struct App {
       auto_mode = false;  // only once
       if (valid == 1) ask_language(images[which]);  // straight to the language, then it installs
     }
-    if (screen == Screen::Done && result == 0 && done_at > 0 && auto_quit) {
-      if (viva_pending() && now_seconds() - done_at > 3.5) show_viva();
-      else if (!viva_pending() && now_seconds() - done_at > 6.0) quit = true;
-    }
-    if (screen == Screen::Viva && viva_at > 0 && now_seconds() - viva_at > 7.0) quit = true;
+    // Done hands over to the send-off; nothing starts the game but A.
+    if (screen == Screen::Done && result == 0 && done_at > 0 && viva_pending() && now_seconds() - done_at > 3.5) show_viva();
   }
   bool auto_quit = false;
   std::string viva_file;  // there once the send-off was shown (only before the game's first start)
@@ -1334,11 +1331,7 @@ struct App {
     text_center(cv, kCenter, 278, fit(std::string(T(S_LANGUAGE)) + kLanguages[language].name, 22), 2, kWhite);
     if (deleted) text_center(cv, kCenter, 298, fit(T(S_DISC_DELETED), 22), 2, kMuted);
     text_center(cv, kCenter, 330, fit(T(S_BLOOMED), 22), 2, kPink);
-    if (auto_quit && viva_pending() && demo_percent < 0) {
-      hints(cv, 430, {{"A", T(S_PLAY_NOW)}});
-    } else if (auto_quit) {
-      const int left = std::max(0, 6 - int(now_seconds() - done_at));
-      text_center(cv, kCenter, 370, fit(format(T(S_STARTS_IN), demo_percent >= 0 ? 5 : left), 22), 2, kGold);
+    if (auto_quit) {
       hints(cv, 430, {{"A", T(S_PLAY_NOW)}});
     } else {
       hints(cv, 430, {{"A", T(S_EXIT)}});
@@ -1353,13 +1346,7 @@ struct App {
     for (size_t i = 0; i < lines.size() && i < 5; ++i) { text_center(cv, kCenter, y, lines[i], 3, flag[i % 3]); y += 32; }
     y += 14;
     for (const std::string& l : wrap(kViva[g][1], 22)) { text_center(cv, kCenter, y, l, 2, kGold); y += 22; }
-    if (demo_percent < 0) {
-      const int left = std::max(0, 7 - int(now_seconds() - viva_at));
-      text_center(cv, kCenter, 380, std::to_string(left), 3, kPink);
-    } else {
-      text_center(cv, kCenter, 380, "5", 3, kPink);
-    }
-    hints(cv, 430, {{"A", T(S_PLAY_NOW)}});
+    hints(cv, 430, {{"A", kViva[g][2]}});  // in the game's language too; only A starts the game
   }
 
   void draw_failed(Canvas& cv) {
@@ -1555,7 +1542,7 @@ int run_ui(App& app) {
         const int b = e.cbutton.button;
         if (b == SDL_CONTROLLER_BUTTON_GUIDE) guide = down;
         if (!down) continue;
-        if (b == SDL_CONTROLLER_BUTTON_START && guide) { app.quit = true; continue; }  // Function + Start
+        if (b == SDL_CONTROLLER_BUTTON_START && guide) { app.result = 1; app.quit = true; continue; }  // Function + Start: out, no game
         if (b == (swap ? SDL_CONTROLLER_BUTTON_A : SDL_CONTROLLER_BUTTON_B) || b == SDL_CONTROLLER_BUTTON_START) app.press(App::kConfirm);
         if (b == (swap ? SDL_CONTROLLER_BUTTON_B : SDL_CONTROLLER_BUTTON_A) || b == SDL_CONTROLLER_BUTTON_BACK) app.press(App::kBack);
         if (b == SDL_CONTROLLER_BUTTON_Y) app.press(App::kToggle);  // the RG35XX H's X (top) is SDL's Y

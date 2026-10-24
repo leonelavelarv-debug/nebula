@@ -21,7 +21,8 @@ terminar. La conversión la hace `nebula-pak` (`platform/knulli/pak`) como proce
   los otros dos idiomas.
 - Antes del primer arranque del juego (después de la primera conversión) saluda un cactus con lentes de sol:
   "¡Viva México, Viva Sonora, Cabrones! En breve iniciará el juego." en el idioma elegido para el juego (español,
-  inglés, francés o portugués; "Cabrones" no se traduce). Solo una vez: `smg/.primer-arranque` lo recuerda.
+  inglés, francés o portugués; "Cabrones" no se traduce), con "Jugar ya" también en ese idioma. El juego solo
+  empieza al pulsar A (aquí y en "¡LISTO!"). Solo una vez: `smg/.primer-arranque` lo recuerda.
 - Idioma de la interfaz: el de KNULLI (`system.language` de `/userdata/system/batocera.conf`; si no, el de
   EmulationStation o `LANG`): español, English, français, português, italiano o Deutsch; si no se encuentra, español.
   `CACTUS_LANG=xx` o `--lang xx` lo fijan. Los errores habituales de nebula-pak (espacio, FAT32, imagen dañada,
