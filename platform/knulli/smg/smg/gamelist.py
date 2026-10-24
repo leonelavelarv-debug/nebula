@@ -23,21 +23,96 @@ MEDIA = {  # fichero local: carpeta de libretro-thumbnails
     "screenshot.png": "Named_Snaps",
     "title.png": "Named_Titles",
 }
-INFO = {
+# The game's entry in the language the game was installed in (smg/idioma.txt, written by Cactus Galaxy Wrapper:
+# "spanish", "english", "french", or "<slot> ptbr" for the Brazilian Portuguese translation).
+COMMON = {
     "name": "Super Mario Galaxy",
-    "desc": ("Mario viaja por el espacio para rescatar a la princesa Peach de Bowser, que se la ha llevado al centro "
-             "del universo. Con la ayuda de Estela y los Destellos, salta entre planetoides con su propia gravedad, "
-             "recoge Superestrellas para devolver la energía al Observatorio y explora decenas de galaxias. "
-             "Port nativo para la RG35XX H: el código de Petari compilado para ARM64 con Nebula y gráficos OpenGL ES "
-             "en la Mali-G31; el juego sale de tu propio disco. Mantén SELECT al abrirlo para cambiar el idioma."),
-    "developer": "Nintendo EAD Tokio",
     "publisher": "Nintendo",
-    "genre": "Plataformas",
     "releasedate": "20071112T000000",
     "players": "1-2",
-    "lang": "es",
     "region": "us",
 }
+INFO_BY_LANGUAGE = {
+    "es": {
+        "desc": ("Mario viaja por el espacio para rescatar a la princesa Peach de Bowser, que se la ha llevado al "
+                 "centro del universo. Con la ayuda de Estela y los Destellos, salta entre planetoides con su propia "
+                 "gravedad, recoge Superestrellas para devolver la energía al Observatorio y explora decenas de "
+                 "galaxias. Port nativo: el código de Petari compilado para ARM64 con Nebula y gráficos OpenGL ES en "
+                 "la Mali-G31; el juego sale de tu propio disco. Mantén SELECT al abrirlo para cambiar el idioma."),
+        "developer": "Nintendo EAD Tokio",
+        "genre": "Plataformas",
+        "lang": "es",
+    },
+    "en": {
+        "desc": ("Mario travels through space to rescue Princess Peach from Bowser, who has taken her to the center of "
+                 "the universe. With the help of Rosalina and the Lumas, he leaps between planetoids with their own "
+                 "gravity, collects Power Stars to bring energy back to the Comet Observatory and explores dozens of "
+                 "galaxies. Native port: Petari's code compiled for ARM64 with Nebula and OpenGL ES graphics on the "
+                 "Mali-G31; the game comes from your own disc. Hold SELECT as it opens to change the language."),
+        "developer": "Nintendo EAD Tokyo",
+        "genre": "Platform",
+        "lang": "en",
+    },
+    "fr": {
+        "desc": ("Mario voyage dans l'espace pour sauver la princesse Peach, enlevée par Bowser au centre de "
+                 "l'univers. Avec l'aide d'Harmonie et des Lumas, il saute de planétoïde en planétoïde, chacun avec sa "
+                 "propre gravité, récupère des Grandes Étoiles pour rendre son énergie à l'Observatoire et explore des "
+                 "dizaines de galaxies. Port natif : le code de Petari compilé pour ARM64 avec Nebula et des graphismes "
+                 "OpenGL ES sur la Mali-G31 ; le jeu vient de ton propre disque. Maintiens SELECT au lancement pour "
+                 "changer de langue."),
+        "developer": "Nintendo EAD Tokyo",
+        "genre": "Plates-formes",
+        "lang": "fr",
+    },
+    "pt": {
+        "desc": ("Mario viaja pelo espaço para resgatar a Princesa Peach de Bowser, que a levou para o centro do "
+                 "universo. Com a ajuda de Rosalina e dos Lumas, ele salta entre planetoides com gravidade própria, "
+                 "coleta Superestrelas para devolver a energia ao Observatório e explora dezenas de galáxias. Port "
+                 "nativo: o código de Petari compilado para ARM64 com Nebula e gráficos OpenGL ES na Mali-G31; o jogo "
+                 "vem do seu próprio disco, aqui com a tradução para o português do Brasil. Segure SELECT ao abrir "
+                 "para mudar o idioma."),
+        "developer": "Nintendo EAD Tóquio",
+        "genre": "Plataforma",
+        "lang": "pt",
+    },
+}
+
+
+def game_language(smg):
+    """es, en, fr or pt: the language the game was installed in (Spanish when none was chosen yet)."""
+    try:
+        with open(os.path.join(smg, "idioma.txt"), encoding="utf-8", errors="replace") as f:
+            words = f.read().split()
+    except OSError:
+        return "es"
+    if len(words) >= 2 and words[1].lower() == "ptbr":
+        return "pt"
+    return {"spanish": "es", "english": "en", "french": "fr"}.get(words[0].lower() if words else "", "es")
+
+
+def game_info(smg):
+    info = dict(COMMON)
+    info.update(INFO_BY_LANGUAGE[game_language(smg)])
+    return info
+
+
+def write_gameinfo(smg, info):
+    """PortMaster's copy of the entry (smg/gameinfo.xml), in the same language."""
+    root = ET.Element("gameList")
+    game = ET.SubElement(root, "game")
+    for tag, value in [("path", GAME_SCRIPT)] + [(k, info[k]) for k in ("name", "desc", "releasedate", "developer",
+                                                                          "publisher", "genre", "players")]:
+        ET.SubElement(game, tag).text = value
+    ET.SubElement(game, "image").text = "./smg/cover.png"
+    tree = ET.ElementTree(root)
+    if hasattr(ET, "indent"):
+        ET.indent(tree, space="\t")
+    target = os.path.join(smg, "gameinfo.xml")
+    try:
+        tree.write(target + ".tmp", encoding="utf-8", xml_declaration=True)
+        os.replace(target + ".tmp", target)
+    except OSError:
+        pass
 
 
 def log(text):
@@ -157,7 +232,10 @@ def main():
     # The entry, with absolute paths (EmulationStation stores them relative to Ports).
     entry = ET.Element("game")
     set_text(entry, "path", os.path.join(ports, GAME_SCRIPT[2:]))
-    for tag, value in INFO.items():
+    info = game_info(smg)
+    log("ficha en %s (idioma del juego)" % info["lang"])
+    write_gameinfo(smg, info)
+    for tag, value in info.items():
         set_text(entry, tag, value)
     if have["cover.png"]:
         for tag in ("image", "thumbnail", "boxart"):

@@ -1,9 +1,9 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version='1.0' encoding='utf-8'?>
 <gameList>
 	<game>
 		<path>./Super Mario Galaxy.sh</path>
 		<name>Super Mario Galaxy</name>
-		<desc>Mario viaja por el espacio para rescatar a la princesa Peach de Bowser, que se la ha llevado al centro del universo. Con la ayuda de Estela y los Destellos, salta entre planetoides con su propia gravedad, recoge Superestrellas para devolver la energía al Observatorio y explora decenas de galaxias. Port nativo para la RG35XX H: el código de Petari compilado para ARM64 con Nebula y gráficos OpenGL ES en la Mali-G31; el juego sale de tu propio disco.</desc>
+		<desc>Mario viaja por el espacio para rescatar a la princesa Peach de Bowser, que se la ha llevado al centro del universo. Con la ayuda de Estela y los Destellos, salta entre planetoides con su propia gravedad, recoge Superestrellas para devolver la energía al Observatorio y explora decenas de galaxias. Port nativo: el código de Petari compilado para ARM64 con Nebula y gráficos OpenGL ES en la Mali-G31; el juego sale de tu propio disco. Mantén SELECT al abrirlo para cambiar el idioma.</desc>
 		<releasedate>20071112T000000</releasedate>
 		<developer>Nintendo EAD Tokio</developer>
 		<publisher>Nintendo</publisher>
