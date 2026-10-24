@@ -20,7 +20,8 @@ echo "nebula: $(md5sum "$GAMEDIR/nebula" | cut -c1-12) del $(date -r "$GAMEDIR/n
 # Cactus Galaxy Wrapper (smg/cactus-galaxy-wrapper, dentro del port) se abre la primera vez: sin game.pak pide el
 # disco (ISO, RVZ, WIA, WBFS, GCZ o CISO en smg/gamedata/ o roms/wii/; lo detecta en cuanto se copia), pregunta el
 # idioma y lo convierte con smg/nebula-pak (nativo: sin Termux ni otro equipo); con game.pak, ofrece los idiomas del
-# juego. Despues arranca el juego directamente; manteniendo SELECT (o L1) al abrirlo vuelven las opciones.
+# juego. La primera vez, antes de jugar, el cactus con lentes saluda en el idioma elegido. Despues arranca el juego
+# directamente; manteniendo SELECT (o L1) al abrirlo vuelven las opciones.
 # NEBULA_PAK_DELETE_IMAGE=1 borra la imagen al terminar de convertir.
 screen_message() {
   echo "$1"
@@ -29,6 +30,9 @@ screen_message() {
   fi
 }
 for tool in nebula-pak cactus-galaxy-wrapper; do [ -f "$GAMEDIR/$tool" ] && chmod +x "$GAMEDIR/$tool"; done
+# Instalaciones anteriores con el juego ya hecho: el saludo de la primera vez (smg/.primer-arranque) no se repite.
+[ -f "$GAMEDIR/gamedata/game.pak" ] && [ -f "$GAMEDIR/idioma.txt" ] && [ ! -f "$GAMEDIR/.primer-arranque" ] &&
+  echo 1 > "$GAMEDIR/.primer-arranque"
 # El wrapper ya no tiene entrada propia en Ports: se quita la de versiones anteriores.
 rm -f "/$directory/ports/Cactus Galaxy Wrapper.sh" "$GAMEDIR/cactus.png"
 cactus=0

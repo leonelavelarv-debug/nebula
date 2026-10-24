@@ -745,7 +745,7 @@ double now_seconds() {
 // ---------------------------------------------------------------------------------------------------------------
 // The app.
 
-enum class Screen { NeedDisc, Menu, Language, Converting, Done, Failed };
+enum class Screen { NeedDisc, Menu, Language, Converting, Done, Viva, Failed };
 
 // The languages of the USA disc, as GALAXY_LANGUAGE names them (the launcher reads smg/idioma.txt), and Brazilian
 // Portuguese: the disc patched on the way with a translation's xdelta (smg/patches/), into one of those three slots.
@@ -761,6 +761,42 @@ const Language kLanguages[] = {
     {"ptbr", "Português", "Brasil · tradução"},
 };
 constexpr int kPtBr = 3;
+
+// The send-off before the game's very first start, in the game's language (Spanish, English, French, Brazilian
+// Portuguese); "Cabrones" stays as it is.
+const char* const kViva[4][2] = {
+    {"¡Viva México, Viva Sonora, Cabrones!", "En breve iniciará el juego."},
+    {"Long live Mexico, long live Sonora, Cabrones!", "The game will start shortly."},
+    {"Vive le Mexique, vive Sonora, Cabrones !", "Le jeu va bientôt commencer."},
+    {"Viva o México, viva Sonora, Cabrones!", "O jogo vai começar em breve."},
+};
+
+// Cool sunglasses and a grin on the full-grown saguaro (draw_cactus at growth 1).
+void draw_shades(Canvas& cv, float base_x, float time) {
+  const float ground = dune_front(int(base_x)) + 6.0f;
+  const float top = ground - (70.0f + 185.0f * 1.0f);
+  const int x = int(base_x), y = int(top + 14.0f);
+  cv.rect(x - 19, y + 2, 4, 2, 0x0d0b14);  // temples
+  cv.rect(x + 15, y + 2, 4, 2, 0x0d0b14);
+  cv.rrect(x - 16, y, 14, 10, 3, 0x0d0b14);  // lenses
+  cv.rrect(x + 2, y, 14, 10, 3, 0x0d0b14);
+  cv.rect(x - 2, y + 2, 4, 2, 0x0d0b14);  // bridge
+  for (int k = 0; k < 4; ++k) {  // glints
+    cv.blend(x - 13 + k, y + 2 + k, 0xffffff, 0.75f);
+    cv.blend(x + 5 + k, y + 2 + k, 0xffffff, 0.75f);
+  }
+  cv.blend(x - 12, y + 7, 0x6fb8ff, 0.5f);
+  cv.blend(x + 6, y + 7, 0x6fb8ff, 0.5f);
+  for (int dx = -7; dx <= 7; ++dx) {  // the grin (corners up)
+    const int gy = y + 21 - dx * dx / 10;
+    cv.blend(x + dx, gy, 0x173f20, 1.0f);
+    cv.blend(x + dx, gy + 1, 0x173f20, 0.6f);
+  }
+  cv.blend(x - 8, y + 15, 0x173f20, 0.8f);  // dimples
+  cv.blend(x + 8, y + 15, 0x173f20, 0.8f);
+  const float pulse = 0.5f + 0.5f * std::sin(time * 4.0f);  // a shine on the lens
+  cv.star(float(x + 14), float(y), 3.5f + pulse * 1.5f, 0xffffff, 0.4f + 0.6f * pulse, time * 2.0f);
+}
 
 struct App {
   std::string smg, gamedata, tool, output;
@@ -1045,6 +1081,10 @@ struct App {
         if (key == kBack && job && !cancelling) { cancelling = true; kill(job->pid, SIGTERM); }
         break;
       case Screen::Done:
+        if ((key == kConfirm || key == kBack) && result == 0 && viva_pending()) show_viva();
+        else if (key == kConfirm || key == kBack) quit = true;
+        break;
+      case Screen::Viva:
         if (key == kConfirm || key == kBack) quit = true;
         break;
       case Screen::Failed:
@@ -1089,9 +1129,21 @@ struct App {
       auto_mode = false;  // only once
       if (valid == 1) ask_language(images[which]);  // straight to the language, then it installs
     }
-    if (screen == Screen::Done && result == 0 && done_at > 0 && auto_quit && now_seconds() - done_at > 6.0) quit = true;
+    if (screen == Screen::Done && result == 0 && done_at > 0 && auto_quit) {
+      if (viva_pending() && now_seconds() - done_at > 3.5) show_viva();
+      else if (!viva_pending() && now_seconds() - done_at > 6.0) quit = true;
+    }
+    if (screen == Screen::Viva && viva_at > 0 && now_seconds() - viva_at > 7.0) quit = true;
   }
   bool auto_quit = false;
+  std::string viva_file;  // there once the send-off was shown (only before the game's first start)
+  double viva_at = 0;
+  bool viva_pending() const { return auto_quit && !viva_file.empty() && access(viva_file.c_str(), F_OK) != 0; }
+  void show_viva() {
+    screen = Screen::Viva;
+    viva_at = now_seconds();
+    if (FILE* f = fopen(viva_file.c_str(), "w")) { fputs("1\n", f); fclose(f); }
+  }
 
   // ------------------------------------------------------------------------------------------------------------
   void draw(Canvas& cv, const Scene& scene, float time) {
@@ -1102,9 +1154,19 @@ struct App {
       growth = 0.08f + 0.92f * float(job->percent) / 100.0f;
     }
     if (screen == Screen::Done) { growth = 1.0f; bloom = std::clamp(float(now_seconds() - done_at) * 1.5f, 0.0f, 1.0f); }
+    if (screen == Screen::Viva) { growth = 1.0f; bloom = 1.0f; }
     if (screen == Screen::Failed) { growth = 0.45f; wilt = 1.0f; }
     if (demo_growth >= 0) { growth = demo_growth; bloom = demo_bloom; wilt = demo_wilt; }
     draw_cactus(cv, 120.0f, growth, bloom, wilt, time);
+    if (screen == Screen::Viva) {
+      draw_shades(cv, 120.0f, time);
+      for (int i = 0; i < 46; ++i) {  // confetti in the flag's colours
+        const float fx = std::fmod(float(i) * 97.3f + 18.0f * std::sin(time * 1.3f + float(i)), float(W));
+        const float fy = std::fmod(time * (45.0f + float(i % 7) * 9.0f) + float(i) * 53.0f, float(H));
+        const u32 c = i % 3 == 0 ? 0x2fbf5a : (i % 3 == 1 ? 0xffffff : 0xff4d4d);
+        cv.rect(int(fx), int(fy), 3 + i % 2, 5, c, 0.85f);
+      }
+    }
     if (screen == Screen::Converting) {  // a star circling the cactus
       const float ang = time * 1.6f;
       const float top = dune_front(120) + 6.0f - (70.0f + 185.0f * growth);
@@ -1116,6 +1178,7 @@ struct App {
       case Screen::Language: draw_language(cv, time); break;
       case Screen::Converting: draw_converting(cv, time); break;
       case Screen::Done: draw_done(cv); break;
+      case Screen::Viva: draw_viva(cv); break;
       case Screen::Failed: draw_failed(cv); break;
     }
   }
@@ -1271,13 +1334,32 @@ struct App {
     text_center(cv, kCenter, 278, fit(std::string(T(S_LANGUAGE)) + kLanguages[language].name, 22), 2, kWhite);
     if (deleted) text_center(cv, kCenter, 298, fit(T(S_DISC_DELETED), 22), 2, kMuted);
     text_center(cv, kCenter, 330, fit(T(S_BLOOMED), 22), 2, kPink);
-    if (auto_quit) {
+    if (auto_quit && viva_pending() && demo_percent < 0) {
+      hints(cv, 430, {{"A", T(S_PLAY_NOW)}});
+    } else if (auto_quit) {
       const int left = std::max(0, 6 - int(now_seconds() - done_at));
       text_center(cv, kCenter, 370, fit(format(T(S_STARTS_IN), demo_percent >= 0 ? 5 : left), 22), 2, kGold);
       hints(cv, 430, {{"A", T(S_PLAY_NOW)}});
     } else {
       hints(cv, 430, {{"A", T(S_EXIT)}});
     }
+  }
+
+  void draw_viva(Canvas& cv) {
+    const int g = std::clamp(language, 0, 3);
+    const u32 flag[3] = {0x3fd36a, 0xffffff, 0xff5a5a};
+    const std::vector<std::string> lines = wrap(kViva[g][0], 14);
+    int y = 132 + (lines.size() <= 3 ? 14 : 0);
+    for (size_t i = 0; i < lines.size() && i < 5; ++i) { text_center(cv, kCenter, y, lines[i], 3, flag[i % 3]); y += 32; }
+    y += 14;
+    for (const std::string& l : wrap(kViva[g][1], 22)) { text_center(cv, kCenter, y, l, 2, kGold); y += 22; }
+    if (demo_percent < 0) {
+      const int left = std::max(0, 7 - int(now_seconds() - viva_at));
+      text_center(cv, kCenter, 380, std::to_string(left), 3, kPink);
+    } else {
+      text_center(cv, kCenter, 380, "5", 3, kPink);
+    }
+    hints(cv, 430, {{"A", T(S_PLAY_NOW)}});
   }
 
   void draw_failed(Canvas& cv) {
@@ -1368,6 +1450,14 @@ int demo(const std::string& out) {
   app.language = kPtBr;
   app.draw(cv, scene, 4.2f);
   save_png(cv, out + "/4b-listo-ptbr.png");
+  app.screen = Screen::Viva;
+  app.demo_bloom = 1.0f;
+  for (int g = 0; g < 4; ++g) {
+    app.language = g;
+    app.draw(cv, scene, 4.6f + float(g) * 0.3f);
+    save_png(cv, out + "/7-viva-" + std::string(kLanguages[g].key) + ".png");
+  }
+  app.screen = Screen::Done;
   app.language = saved_language;
   app.screen = Screen::Failed;
   app.error = translate_error("no hay espacio para game.pak: hacen falta 3390 MiB libres y hay 2104 MiB");
@@ -1538,6 +1628,13 @@ int main(int argc, char** argv) {
   app.output = app.gamedata + "/game.pak";
   app.language_file = app.smg + "/idioma.txt";
   app.pak_language_file = app.output + ".idioma";
+  app.viva_file = app.smg + "/.primer-arranque";
+  {  // a game.pak made before this version: the game has started already, no send-off
+    struct stat st;
+    if (stat(app.output.c_str(), &st) == 0 && st.st_size > 0 && access(app.viva_file.c_str(), F_OK) != 0) {
+      if (FILE* f = fopen(app.viva_file.c_str(), "w")) { fputs("1\n", f); fclose(f); }
+    }
+  }
   app.find_patch();
   app.refresh_disk();
   app.load_language();
