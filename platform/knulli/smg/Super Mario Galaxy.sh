@@ -54,7 +54,7 @@ for tool in nebula-pak cactus-galaxy-wrapper; do [ -f "$GAMEDIR/$tool" ] && chmo
 [ -f "$GAMEDIR/gamedata/game.pak" ] && [ -f "$GAMEDIR/idioma.txt" ] && [ ! -f "$GAMEDIR/.primer-arranque" ] &&
   echo 1 > "$GAMEDIR/.primer-arranque"
 # El wrapper ya no tiene entrada propia en Ports: se quita la de versiones anteriores.
-rm -f "/$directory/ports/Cactus Galaxy Wrapper.sh" "$GAMEDIR/cactus.png"
+rm -f "/$directory/ports/Cactus Galaxy Wrapper.sh" "$GAMEDIR/cactus.png" "$GAMEDIR/cactus-galaxy-wrapper.sh"
 cactus=0
 if [ -x "$GAMEDIR/cactus-galaxy-wrapper" ]; then
   wrapper=0
@@ -74,7 +74,7 @@ if [ -x "$GAMEDIR/cactus-galaxy-wrapper" ]; then
   fi
 fi
 # Sin pantalla para la interfaz (salida 3) o sin ella: la version de texto, con el avance en la consola.
-if [ ! -f "$GAMEDIR/gamedata/game.pak" ] && { [ "$cactus" = 3 ] || [ ! -x "$GAMEDIR/cactus-galaxy-wrapper" ]; } && [ -x "$GAMEDIR/nebula-pak" ] && [ -f "$GAMEDIR/cactus-galaxy-wrapper.sh" ]; then
+if [ ! -f "$GAMEDIR/gamedata/game.pak" ] && { [ "$cactus" = 3 ] || [ ! -x "$GAMEDIR/cactus-galaxy-wrapper" ]; } && [ -x "$GAMEDIR/nebula-pak" ] && [ -f "$GAMEDIR/cactus-galaxy-wrapper-texto.txt" ]; then
   image=$(find "$GAMEDIR/gamedata" -maxdepth 1 -type f \( -iname '*.iso' -o -iname '*.rvz' -o -iname '*.wia' \
     -o -iname '*.wbfs' -o -iname '*.gcz' -o -iname '*.ciso' \) 2>/dev/null | head -1)
   if [ -n "$image" ]; then
@@ -82,7 +82,7 @@ if [ ! -f "$GAMEDIR/gamedata/game.pak" ] && { [ "$cactus" = 3 ] || [ ! -x "$GAME
     screen_message "Cactus Galaxy Wrapper: preparando game.pak desde $name (solo la primera vez, unos minutos)..."
     shown=-1
     rm -f /tmp/smg-pak-error
-    bash "$GAMEDIR/cactus-galaxy-wrapper.sh" "$image" "$GAMEDIR" 2>&1 | while IFS= read -r line; do
+    bash "$GAMEDIR/cactus-galaxy-wrapper-texto.txt" "$image" "$GAMEDIR" 2>&1 | while IFS= read -r line; do
       echo "$line"
       case "$line" in
         *%*MiB*)  # "37% (1234 / 3300 MiB)": la pantalla cada 2 %

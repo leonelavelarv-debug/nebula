@@ -3,7 +3,24 @@
 Super Mario Galaxy con gráficos en la consola: el código descompilado de Petari compilado nativo para ARM64, el host
 de Nebula y su renderer GX en OpenGL ES 3.2 (Mali-G31). Primera versión de prueba.
 
-1. Copia `Super Mario Galaxy.sh` y la carpeta `smg/` a `ports` (el zip ya viene así: se descomprime dentro de `ports`).
+1. Instálalo (hace falta PortMaster en la consola). Cada firmware guarda los ports en un sitio: el lanzador
+   `Super Mario Galaxy.sh` donde el menú lo lista y la carpeta `smg/` en la carpeta de datos de PortMaster.
+   - **Instalador** (`Instalar Super Mario Galaxy.sh`): cópialo a la carpeta de ports del menú y ábrelo desde Ports.
+     Detecta el firmware, pone cada cosa en su sitio, da la ficha al menú y se borra. Si reinstalas, se conserva lo que
+     ya tengas en `smg/` (game.pak, idioma, partidas).
+   - **PortMaster** (`smg.zip`, su formato): déjalo en `autoinstall/` (en la carpeta de ports o en la de PortMaster) y
+     abre PortMaster, que lo instala en las mismas rutas.
+
+   | Firmware | Dónde copiar el instalador | Lanzador | Carpeta del juego |
+   |---|---|---|---|
+   | KNULLI, Batocera | `/userdata/roms/ports/` (`roms/ports` en la SD) | `/userdata/roms/ports/` | `/userdata/roms/ports/smg/` |
+   | muOS | `/mnt/mmc/ROMS/Ports/` (o `/mnt/sdcard/ROMS/Ports/` en la SD 2) | `.../ROMS/Ports/` | `/mnt/mmc/ports/smg/` (o `/mnt/sdcard/ports/smg/`) |
+   | ArkOS, dArkOS | `/roms/ports/` (`ports` en EASYROMS; `/roms2/ports/` con dos SD) | `/roms/ports/` | `/roms/ports/smg/` |
+   | ROCKNIX, AmberELEC | `/storage/roms/ports/` (`roms/ports` en la SD) | `/storage/roms/ports/` | `/storage/roms/ports/smg/` |
+
+   En ArkOS y dArkOS, EmulationStation se reinicia solo al terminar para que aparezca el juego. A mano también vale:
+   en KNULLI, ArkOS, dArkOS y ROCKNIX se descomprime `smg.zip` dentro de `ports`; en muOS va `smg/` a `ports/` y
+   `Super Mario Galaxy.sh` a `ROMS/Ports/`.
 2. Ejecuta **Super Mario Galaxy** desde Ports. La primera vez se abre **Cactus Galaxy Wrapper** (va dentro del port):
    - Sin el juego, te pide el disco: copia tu ISO o RVZ (también WIA, WBFS, GCZ o CISO) de Super Mario Galaxy USA
      (RMGE01) a `smg/gamedata/` (o a `roms/wii/`) y aparece solo. Eliges el idioma del juego (Español, English,

@@ -1,0 +1,29 @@
+{
+    "version": 4,
+    "name": "smg.zip",
+    "items": [
+        "Super Mario Galaxy.sh",
+        "smg/"
+    ],
+    "items_opt": null,
+    "attr": {
+        "title": "Super Mario Galaxy",
+        "porter": [
+            "leonelavelarv-debug"
+        ],
+        "desc": "Native port of Super Mario Galaxy (Petari decompilation compiled for ARM64 with Nebula, OpenGL ES graphics). For Anbernic RG handhelds with the Allwinner H700 (KNULLI, muOS, ROCKNIX) and the R36S with the Rockchip RK3326 (ArkOS, dArkOS, ROCKNIX).",
+        "inst": "Needs your own Super Mario Galaxy USA disc (RMGE01: ISO, RVZ, WIA, WBFS, GCZ or CISO). Put it in ports/smg/gamedata/ or roms/wii/ and open the game: Cactus Galaxy Wrapper converts it on the console the first time and asks for the game language (Spanish, English, French or Brazilian Portuguese).",
+        "genres": [
+            "platformer"
+        ],
+        "image": {},
+        "rtr": false,
+        "exp": true,
+        "runtime": [],
+        "reqs": [],
+        "arch": [
+            "aarch64"
+        ],
+        "min_glibc": "2.27"
+    }
+}

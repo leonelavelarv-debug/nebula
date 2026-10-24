@@ -5,10 +5,10 @@
 # ("Cactus Galaxy Wrapper" en Ports); este script es su version de texto; en Termux (Android), Linux o macOS usa nebula-pak
 # (crates/nebula-import) y lo compila si hace falta.
 #
-#   bash cactus-galaxy-wrapper.sh                         busca la imagen en Descargas (Termux) y en la carpeta actual
-#   bash cactus-galaxy-wrapper.sh juego.rvz               esa imagen; game.pak queda a su lado
-#   bash cactus-galaxy-wrapper.sh juego.iso /ruta/smg     game.pak directo en /ruta/smg/gamedata/ (la carpeta del port, en la SD)
-#   bash cactus-galaxy-wrapper.sh juego.iso salida.pak    con ese nombre
+#   bash cactus-galaxy-wrapper-texto.txt                   busca la imagen en Descargas (Termux) y en la carpeta actual
+#   bash cactus-galaxy-wrapper-texto.txt juego.rvz               esa imagen; game.pak queda a su lado
+#   bash cactus-galaxy-wrapper-texto.txt juego.iso /ruta/smg     game.pak directo en /ruta/smg/gamedata/ (la carpeta del port, en la SD)
+#   bash cactus-galaxy-wrapper-texto.txt juego.iso salida.pak    con ese nombre
 #
 # Solo vale el Super Mario Galaxy americano (RMGE01): nebula-pak lo comprueba (y main.dol por su SHA-1).
 set -euo pipefail
