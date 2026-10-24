@@ -6,3 +6,7 @@ Parches de traducción para Cactus Galaxy Wrapper (xdelta del ISO original de Su
   CISO; no hace falta un ISO parcheado ni espacio extra).
 
 El parche se comprueba contra tu disco: si no es el original sin modificar, la conversión se detiene con un aviso.
+
+Traducción al portugués de Brasil (v1.0, 2012): Brazilian Warriors y Nintendo BR. Autores: Ray, xujozer, Joelson Kamppello, Angel Forgotten y ERT_Ganon.
+Publicada en João13 Traduções: https://joao13traducoes.com/2018/01/wii-super-mario-galaxy-brazilian-warriors-e-nintendo-br/
+El mérito de la traducción es de sus autores; Cactus Galaxy Wrapper solo aplica su parche al convertir.

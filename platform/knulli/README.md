@@ -212,8 +212,9 @@ El workflow [`nebula-pak (consola ARM64)`](../../.github/workflows/nebula-pak-co
 * glslang (BSD/Apache-2.0), SPIRV-Cross y SPIRV-Tools (Apache-2.0), zlib, liblzma (0BSD), zstd (BSD), bzip2 y
   font8x8 (dominio público). Sus licencias van en `smg/licenses/` y en
   [`THIRD-PARTY-NOTICES.md`](../../THIRD-PARTY-NOTICES.md).
-* La traducción al portugués de Brasil es de sus autores. El paquete trae el parche xdelta, pero no está en el
-  repositorio.
+* **Traducción al portugués de Brasil** (v1.0, 2012): de **Brazilian Warriors** y **Nintendo BR**. Autores: Ray, xujozer, Joelson Kamppello, Angel Forgotten y ERT_Ganon.
+  Se distribuye en [João13 Traduções](https://joao13traducoes.com/2018/01/wii-super-mario-galaxy-brazilian-warriors-e-nintendo-br/). El paquete trae el parche en formato xdelta, pero no está en el
+  repositorio; todo el mérito de la traducción es de sus autores.
 * Port, wrapper e instalador hechos con agentes de IA (Claude, de Anthropic), dirigidos y probados por
   [leonelavelarv-debug](https://github.com/leonelavelarv-debug), igual que Nebula. La lógica del juego es la original:
   la de la descompilación.

@@ -72,5 +72,8 @@ Si en tu firmware A y B salen cambiados, pon `NEBULA_FACE_LAYOUT=labels` al prin
 
 Para diagnóstico manda `smg/log.txt`, `smg/crashes/` y alguna captura de `smg/shots/` (cada 30 s, formato PPM).
 
+Traducción al portugués de Brasil: Brazilian Warriors y Nintendo BR (Ray, xujozer, Joelson Kamppello, Angel Forgotten y ERT_Ganon); en João13 Traduções:
+https://joao13traducoes.com/2018/01/wii-super-mario-galaxy-brazilian-warriors-e-nintendo-br/
+
 Contiene código de Nebula (GPL-3.0), Petari (CC0), glslang (BSD/Apache-2.0), SPIRV-Cross (Apache-2.0) y
 SPIRV-Tools (Apache-2.0); ningún dato de Nintendo: el juego viene de tu disco.

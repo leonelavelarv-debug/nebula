@@ -13,7 +13,7 @@ terminar. La conversión la hace `nebula-pak` (`platform/knulli/pak`) como proce
 - Idioma del juego: al convertir pregunta Español, English o Français (lo que trae el disco USA) y lo guarda en
   `smg/idioma.txt`, que el lanzador del juego pasa como `GALAXY_LANGUAGE`. En el menú, ◄► lo cambia en cualquier
   momento, también con el `game.pak` ya hecho.
-- Português do Brasil: con un .xdelta de la traducción en `smg/patches/` (nombre con PT-BR/ptbr/portugues), el
+- Português do Brasil (traducción de Brazilian Warriors y Nintendo BR, en [João13 Traduções](https://joao13traducoes.com/2018/01/wii-super-mario-galaxy-brazilian-warriors-e-nintendo-br/)): con un .xdelta de la traducción en `smg/patches/` (nombre con PT-BR/ptbr/portugues), el
   idioma "Português" aparece al instalar; elegido, `nebula-pak --patch` aplica el parche al disco mientras hace
   game.pak (ISO, RVZ, WIA, WBFS, GCZ o CISO; sin ISO intermedio). nebula-pak dice qué idioma del juego sustituye la
   traducción (`PATCH_LANGUAGE`: los ficheros cambiados en UsEnglish/UsSpanish/UsFrench); `smg/idioma.txt` queda
