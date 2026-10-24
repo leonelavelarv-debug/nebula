@@ -112,9 +112,12 @@ if [ ! -f "$GAMEDIR/gamedata/game.pak" ]; then
   pm_finish; exit 1
 fi
 mkdir -p "$GAMEDIR/nand" "$GAMEDIR/data" "$GAMEDIR/crashes"
-# Portada y ficha en Ports (la primera vez con red; luego no hace nada): en segundo plano, el juego no espera.
+# Portada y ficha en Ports, en el idioma del juego y donde la lee cada firmware (EmulationStation de KNULLI, ROCKNIX,
+# ArkOS, dArkOS...; el catalogo de muOS): en segundo plano, el juego no espera. Detalles en smg/gamelist.py.
+GAMELIST_PID=""
 if command -v python3 >/dev/null 2>&1 && [ -f "$GAMEDIR/gamelist.py" ]; then
-  python3 "$GAMEDIR/gamelist.py" "$GAMEDIR" &
+  python3 "$GAMEDIR/gamelist.py" "$GAMEDIR" --cfw "${CFW_NAME:-}" &
+  GAMELIST_PID=$!
 fi
 
 # Ajustes (se pueden cambiar aqui):
@@ -255,3 +258,25 @@ pkill -P "$MEMLOG_PID" 2>/dev/null; kill "$MEMLOG_PID" 2>/dev/null
 echo "terminado: status $status"
 perf_restore
 pm_finish
+# EmulationStation sin API (ArkOS, dArkOS, AmberELEC): guarda al cerrarse su copia de la entrada del juego y pisaria la
+# ficha nueva (primera vez o idioma cambiado: smg/.ficha-pendiente). Se reinicia una vez, fuera de este proceso:
+# se para, se escribe la ficha y vuelve a arrancar ya con ella.
+gamelist_done=1
+if [ -n "$GAMELIST_PID" ]; then  # si aun baja imagenes, se le dan 30 s; si no acaba, queda para la proxima vez
+  for i in $(seq 30); do kill -0 "$GAMELIST_PID" 2>/dev/null || break; sleep 1; done
+  kill -0 "$GAMELIST_PID" 2>/dev/null && gamelist_done=0
+fi
+if [ -f "$GAMEDIR/.ficha-pendiente" ] && [ "$gamelist_done" = 1 ]; then
+  es_unit=""
+  for unit in emulationstation emustation; do
+    systemctl is-active --quiet "$unit" 2>/dev/null && { es_unit=$unit; break; }
+  done
+  if [ -n "$es_unit" ] && command -v systemd-run >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    echo "ficha: se reinicia $es_unit para que cargue la ficha nueva"
+    $ESUDO systemd-run --quiet --no-block --collect --unit="smg-ficha-$$" /bin/sh -c \
+      'sleep 3; systemctl stop "$1"; "$2" "$3/gamelist.py" "$3" --tras-cerrar-es >> "$3/log.txt" 2>&1; systemctl start "$1"' \
+      smg-ficha "$es_unit" "$(command -v python3)" "$GAMEDIR"
+  else
+    echo "ficha: escrita en ports/gamelist.xml; si no sale, START > Ajustes de juegos > Actualizar listas de juegos"
+  fi
+fi

@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Super Mario Galaxy en Ports: portada y ficha en la lista de juegos de EmulationStation (KNULLI).
+# Super Mario Galaxy en Ports: portada y ficha en la lista de juegos del firmware, en el idioma del juego.
 #
 # La portada, la captura y la pantalla de titulo vienen de libretro-thumbnails (las que usa RetroArch) y se bajan
-# una vez a esta carpeta; la ficha (nombre, descripcion, desarrollador...) se escribe en ../gamelist.xml, la de
-# Ports a traves de la API local de EmulationStation (la carga en memoria y la guarda el); si no contesta, en
-# ../gamelist.xml directamente, sin tocar las demas entradas. Uso: gamelist.py <carpeta smg>
+# una vez a esta carpeta. La ficha (nombre, descripcion, desarrollador...) va donde la lee cada firmware:
+#   KNULLI, Batocera, ROCKNIX: la API local de EmulationStation (127.0.0.1:1234) la carga en memoria y la guarda el
+#     en ports/gamelist.xml.
+#   ArkOS, dArkOS, AmberELEC (EmulationStation sin API): ports/gamelist.xml. EmulationStation guarda al cerrarse su
+#     copia en memoria de la entrada del juego (la tiene sucia por las partidas) y pisaria la nueva, asi que queda
+#     smg/.ficha-pendiente y, al salir del juego, el .sh lo reinicia una vez escribiendo la ficha mientras esta parado
+#     (gamelist.py <smg> --tras-cerrar-es).
+#   muOS (no usa gamelist.xml): MUOS/info/catalogue/<catalogo de Ports>/text|box|preview/Super Mario Galaxy.*
+# Ademas smg/gameinfo.xml (la copia de PortMaster) en el mismo idioma.
+# Uso: gamelist.py <carpeta smg> [--cfw <CFW_NAME>] [--tras-cerrar-es]
 import os
 import shutil
 import subprocess
@@ -220,21 +227,33 @@ def set_text(game, tag, value):
 
 
 def main():
-    smg = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(__file__))
+    args = sys.argv[1:]
+    after_es = "--tras-cerrar-es" in args
+    cfw = os.environ.get("CFW_NAME", "")
+    if "--cfw" in args and args.index("--cfw") + 1 < len(args):
+        cfw = args[args.index("--cfw") + 1]
+    paths = [a for i, a in enumerate(args) if not a.startswith("--") and (i == 0 or args[i - 1] != "--cfw")]
+    smg = os.path.abspath(paths[0] if paths else os.path.dirname(__file__))
     ports = os.path.dirname(smg)
     result = 0
-    have = {f: fetch(d, os.path.join(smg, f)) for f, d in MEDIA.items()}
-    if not have["cover.png"] and own_shot(smg, os.path.join(smg, "captura.png")):
+    if after_es:  # EmulationStation is stopped: no downloads, only the entry
+        have = {f: os.path.isfile(os.path.join(smg, f)) for f in MEDIA}
+    else:
+        have = {f: fetch(d, os.path.join(smg, f)) for f, d in MEDIA.items()}
+    if not have["cover.png"] and not after_es and own_shot(smg, os.path.join(smg, "captura.png")):
         os.replace(os.path.join(smg, "captura.png"), os.path.join(smg, "cover.png"))
         open(os.path.join(smg, "cover.png.captura"), "w").close()
         have["cover.png"] = True
 
+    info = game_info(smg)
+    log("ficha en %s (idioma del juego), firmware %s" % (info["lang"], cfw or "?"))
+    write_gameinfo(smg, info)
+    if is_muos(cfw):
+        return give_muos(smg, info, have)
+
     # The entry, with absolute paths (EmulationStation stores them relative to Ports).
     entry = ET.Element("game")
     set_text(entry, "path", os.path.join(ports, GAME_SCRIPT[2:]))
-    info = game_info(smg)
-    log("ficha en %s (idioma del juego)" % info["lang"])
-    write_gameinfo(smg, info)
     for tag, value in info.items():
         set_text(entry, tag, value)
     if have["cover.png"]:
@@ -244,24 +263,114 @@ def main():
         set_text(entry, "titleshot", os.path.join(smg, "title.png"))
     if have["screenshot.png"]:
         set_text(entry, "fanart", os.path.join(smg, "screenshot.png"))
-    return result | give(entry, GAME_SCRIPT, smg, ports)
+    return result | give(entry, GAME_SCRIPT, smg, ports, after_es)
 
 
-def give(entry, script, smg, ports):
+def is_muos(cfw):
+    return "muos" in cfw.lower() or os.path.isdir("/opt/muos")
+
+
+def muos_catalogue():
+    """MUOS/info/catalogue/<the catalogue muOS gives the Ports folder> ("External - Ports" unless reassigned)."""
+    for base in ("/run/muos/storage/info/catalogue", "/mnt/mmc/MUOS/info/catalogue", "/mnt/sdcard/MUOS/info/catalogue"):
+        if os.path.isdir(base):
+            break
+    else:
+        return None
+    name = "External - Ports"
+    content = "/opt/muos/share/info/content"
+    try:
+        for folder in os.listdir(content):
+            if folder.lower() == "ports":
+                with open(os.path.join(content, folder, "core.cfg"), encoding="utf-8", errors="replace") as f:
+                    lines = f.read().splitlines()
+                if len(lines) >= 3 and lines[2].strip():  # line 3: the catalogue
+                    name = lines[2].strip()
+                break
+    except OSError:
+        pass
+    return os.path.join(base, name)
+
+
+def resized_copy(source, target):
+    """source as a PNG of at most 320x240 (what PortMaster gives muOS), resized if the firmware has a tool for it."""
+    partial = target + ".part.png"
+    shutil.copyfile(source, partial)
+    size = "320x240>"
+    for tool in (["mogrify", "-resize", size, partial],
+                 ["/opt/graphicsmagick/bin/gm", "mogrify", "-resize", size, partial],
+                 ["gm", "mogrify", "-resize", size, partial],
+                 ["magick", "mogrify", "-resize", size, partial]):
+        try:
+            if subprocess.run(tool, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                break
+        except OSError:
+            continue
+    os.replace(partial, target)  # resized, or as it came if there is no tool (newer muOS scales it itself)
+
+
+def give_muos(smg, info, have):
+    """The entry where muOS reads it: text/<script>.txt (one line), box/ and preview/<script>.png."""
+    catalogue = muos_catalogue()
+    if catalogue is None:
+        log("muOS sin carpeta info/catalogue; no se escribe la ficha")
+        return 1
+    program = GAME_SCRIPT[2:-3]  # the script's name without .sh: "Super Mario Galaxy"
+    changed = []
+    try:
+        for kind in ("text", "box", "preview"):
+            os.makedirs(os.path.join(catalogue, kind), exist_ok=True)
+        text = os.path.join(catalogue, "text", program + ".txt")
+        desc = info["desc"].strip().split("\n", 1)[0].strip() + "\n"
+        try:
+            with open(text, encoding="utf-8") as f:
+                current = f.read()
+        except OSError:
+            current = None
+        if current != desc:
+            with open(text + ".part", "w", encoding="utf-8") as f:
+                f.write(desc)
+            os.replace(text + ".part", text)
+            changed.append("texto")
+        for kind, source in (("box", "cover.png"), ("preview", "screenshot.png")):
+            source = os.path.join(smg, source)
+            target = os.path.join(catalogue, kind, program + ".png")
+            if not os.path.isfile(source):
+                continue
+            if os.path.isfile(target) and os.path.getmtime(target) >= os.path.getmtime(source):
+                continue
+            resized_copy(source, target)
+            changed.append(kind)
+    except OSError as failure:
+        log("muOS: no se pudo escribir la ficha en %s (%s)" % (catalogue, failure))
+        return 1
+    if changed:
+        log("muOS: ficha en %s (%s)" % (catalogue, ", ".join(changed)))
+    else:
+        log("muOS: la ficha ya esta al dia")
+    return 0
+
+
+def give(entry, script, smg, ports, after_es=False):
     """The entry to EmulationStation (its API), or into ../gamelist.xml if it does not answer."""
     folder = os.path.basename(smg)
+    pending = os.path.join(smg, ".ficha-pendiente")
 
     # EmulationStation keeps the game list in memory and, after a game, saves its own copy of the game's entry over
     # the file: an entry only written to gamelist.xml is lost. Its local API (127.0.0.1:1234, what Batocera's
     # scrapers use) takes the entry into memory and saves the file itself.
     body = b"<?xml version=\"1.0\"?>\n<gameList>" + ET.tostring(entry, encoding="utf-8") + b"</gameList>"
     try:
+        if after_es:
+            raise RuntimeError("parado para escribir la ficha")
         request = urllib.request.Request("http://127.0.0.1:1234/addgames/ports", data=body, method="POST",
                                          headers={"Content-Type": "application/xml"})
         with urllib.request.urlopen(request, timeout=10) as reply:
             status = reply.status
         if 200 <= status < 300:
             log("%s: ficha y portada dadas a EmulationStation (%d); aparecen en Ports" % (script[2:-3], status))
+            if os.path.exists(pending):
+                os.remove(pending)
             return 0
         log("EmulationStation contesto %d; se escribe gamelist.xml" % status)
     except Exception as failure:
@@ -294,6 +403,8 @@ def give(entry, script, smg, ports):
         if value.startswith(smg + os.sep):
             value = "./%s/%s" % (folder, os.path.basename(value))
         changed |= set_text(game, child.tag, value)
+    if after_es and os.path.exists(pending):
+        os.remove(pending)
     if not changed:
         log("%s: la ficha de Ports ya esta al dia" % script[2:-3])
         return 0
@@ -304,8 +415,19 @@ def give(entry, script, smg, ports):
     temporary = gamelist + ".smg-tmp"
     tree.write(temporary, encoding="utf-8", xml_declaration=True)
     os.replace(temporary, gamelist)
-    log("ficha escrita en %s; en EmulationStation: START > Ajustes de juegos > Actualizar listas de juegos"
-        % gamelist)
+    if hasattr(os, "geteuid") and os.geteuid() == 0:  # written as root (--tras-cerrar-es): the owner of Ports keeps it
+        try:
+            owner = os.stat(ports)
+            os.chown(gamelist, owner.st_uid, owner.st_gid)
+        except OSError:
+            pass
+    if after_es:
+        log("ficha escrita en %s con EmulationStation parado" % gamelist)
+    else:
+        # EmulationStation would save its own copy of the entry over this one when it closes: the .sh restarts it once
+        # after the game, writing the entry while it is stopped.
+        open(pending, "w").close()
+        log("ficha escrita en %s; EmulationStation se reinicia al salir del juego para cargarla" % gamelist)
     return 0
 
 

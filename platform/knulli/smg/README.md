@@ -17,10 +17,20 @@ de Nebula y su renderer GX en OpenGL ES 3.2 (Mali-G31). Primera versión de prue
      macOS.
 3. MENU (Function) + START sale, como en el resto de KNULLI.
 4. Portada y ficha: el primer arranque con red baja la portada, la captura y la pantalla de título de
-   libretro-thumbnails a `smg/` y escribe la ficha (descripción, desarrollador, fecha...) en `ports/gamelist.xml`
-   (`smg/gamelist.py`; la primera vez guarda una copia en `gamelist.xml.antes-smg`). La ficha se da a EmulationStation por su API local (127.0.0.1:1234, la de los scrapers de Batocera) para que no
-   la pise al salir del juego; sin red, la portada es la última captura de `smg/shots/`. `smg/gameinfo.xml` es la
-   misma ficha para PortMaster.
+   libretro-thumbnails a `smg/` (sin red, la portada es la última captura de `smg/shots/`). La ficha (descripción,
+   género, desarrollador, fecha...) sale en el idioma del juego elegido en Cactus Galaxy Wrapper (español, inglés,
+   francés o portugués de Brasil) y `smg/gamelist.py` la pone donde la lee cada firmware:
+
+   | Firmware | Dónde va la ficha | Cuándo se ve |
+   |---|---|---|
+   | KNULLI, Batocera, ROCKNIX | API local de EmulationStation (127.0.0.1:1234), que la guarda en `ports/gamelist.xml` | Enseguida |
+   | ArkOS, dArkOS, AmberELEC | `ports/gamelist.xml` (EmulationStation sin API) | Al salir del juego: EmulationStation se reinicia una vez |
+   | muOS | `MUOS/info/catalogue/External - Ports/` (`text/`, `box/`, `preview/` con el nombre del .sh) | Al volver al menú |
+
+   En ArkOS y dArkOS, EmulationStation guarda al cerrarse su copia de la entrada y pisaría la ficha nueva; por eso,
+   solo la primera vez y cuando cambias de idioma, el .sh lo para al salir del juego, escribe la ficha y lo vuelve a
+   arrancar. La primera vez queda una copia en `ports/gamelist.xml.antes-smg`. `smg/gameinfo.xml` es la misma ficha
+   para PortMaster.
 
 La primera vez cada efecto nuevo compila su shader y el juego se detiene un momento (tirones); se guardan en
 `smg/data/shadercache` y la siguiente vez cargan rápido.
