@@ -32,16 +32,16 @@ START = +, SELECT = −. `NEBULA_PAD_SCHEME=xbox` en el lanzador cambia A y B de
 El lanzador adapta los controles al firmware y a la consola (lo que dice PortMaster; queda en la primera línea de
 `smg/log.txt`):
 
-| Firmware / consola | Salir | Sticks |
-|---|---|---|
-| KNULLI, muOS (RG35XX H, RG35XX Pro, RG40XX H...: Allwinner H700) | MENU + START | 2: como arriba |
-| ArkOS, dArkOS (R36S y clones: Rockchip RK3326) | SELECT + START | 2: como arriba |
-| ROCKNIX, AmberELEC y otros | MENU + START o SELECT + START | según la consola |
-| Sin sticks (RG35XX Plus/SP/2024, RG28XX, RG34XX) | la del firmware | 0: la cruceta mueve a Mario |
-| Un stick (RG40XX V, RG CubeXX) | la del firmware | 1: la cruceta mueve el puntero |
+Los controles son para consolas con dos sticks analógicos y cruceta.
 
-Si en tu firmware A y B salen cambiados, pon `NEBULA_FACE_LAYOUT=labels` al principio del lanzador. `NEBULA_STICKS`
-y `NEBULA_QUIT_COMBO=menu|select|both` fuerzan lo demás. Cactus Galaxy Wrapper usa el mismo perfil.
+| Firmware / consola | Salir |
+|---|---|
+| KNULLI, muOS (RG35XX H, RG35XX Pro, RG40XX H...: Allwinner H700) | MENU + START |
+| ArkOS, dArkOS (R36S y clones: Rockchip RK3326) | SELECT + START |
+| ROCKNIX, AmberELEC y otros | MENU + START o SELECT + START |
+
+Si en tu firmware A y B salen cambiados, pon `NEBULA_FACE_LAYOUT=labels` al principio del lanzador.
+`NEBULA_QUIT_COMBO=menu|select|both` fuerza la combinación para salir. Cactus Galaxy Wrapper usa el mismo perfil.
 
 Para diagnóstico manda `smg/log.txt`, `smg/crashes/` y alguna captura de `smg/shots/` (cada 30 s, formato PPM).
 

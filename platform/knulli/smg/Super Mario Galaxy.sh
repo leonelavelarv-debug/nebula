@@ -15,10 +15,10 @@ get_controls
 
 # El perfil de controles segun el firmware y la consola (PortMaster da CFW_NAME, DEVICE_NAME y ANALOG_STICKS):
 #   KNULLI y muOS (Anbernic RG con Allwinner H700): salir con MENU + START; ArkOS y dArkOS (R36S, Rockchip RK3326):
-#   SELECT + START; ROCKNIX, AmberELEC y el resto: cualquiera de los dos. Sin sticks (RG35XX Plus/SP, RG28XX,
-#   RG34XX...) la cruceta mueve a Mario; con uno (RG40XX V, RG CubeXX), la cruceta mueve el puntero.
+#   SELECT + START; ROCKNIX, AmberELEC y el resto: cualquiera de los dos. Los controles son para consolas con dos
+#   sticks analogicos y cruceta.
 #   NEBULA_FACE_LAYOUT=positions|labels  labels si en tu firmware A y B salen al reves (A deberia ser el de la derecha)
-#   NEBULA_STICKS=2|1|0  NEBULA_QUIT_COMBO=menu|select|both  fuerzan el resto
+#   NEBULA_QUIT_COMBO=menu|select|both   fuerza la combinacion para salir
 cfw=$(printf '%s' "${CFW_NAME:-}" | tr '[:upper:]' '[:lower:]')
 soc=$(tr '\0' '\n' < /proc/device-tree/compatible 2>/dev/null | grep -Eo 'h700|h616|rk3326|rk3566' | head -1)
 case "$cfw" in
@@ -27,8 +27,6 @@ case "$cfw" in
   *) quit_combo=both ;;
 esac
 export NEBULA_QUIT_COMBO="${NEBULA_QUIT_COMBO:-$quit_combo}"
-case "${ANALOG_STICKS:-}" in 0|1|2) sticks=$ANALOG_STICKS ;; *) sticks=2 ;; esac
-export NEBULA_STICKS="${NEBULA_STICKS:-$sticks}"
 export NEBULA_FACE_LAYOUT="${NEBULA_FACE_LAYOUT:-positions}"
 # La base de mandos de PortMaster, por si el firmware no trae el mapeo de este mando.
 [ -f "$controlfolder/gamecontrollerdb.txt" ] && export NEBULA_GAMECONTROLLERDB="$controlfolder/gamecontrollerdb.txt"
@@ -36,7 +34,8 @@ GAMEDIR="/$directory/ports/smg"
 cd "$GAMEDIR" || exit 1
 exec > >(tee "$GAMEDIR/log.txt") 2>&1
 $ESUDO chmod +x "$GAMEDIR/nebula" 2>/dev/null || chmod +x "$GAMEDIR/nebula"
-echo "firmware: ${CFW_NAME:-?} | consola: ${DEVICE_NAME:-?} (${soc:-soc ?}) | sticks: $NEBULA_STICKS | salir: $NEBULA_QUIT_COMBO + START | botones: $NEBULA_FACE_LAYOUT"
+echo "firmware: ${CFW_NAME:-?} | consola: ${DEVICE_NAME:-?} (${soc:-soc ?}) | salir: $NEBULA_QUIT_COMBO + START | botones: $NEBULA_FACE_LAYOUT"
+case "${ANALOG_STICKS:-2}" in 0|1) echo "aviso: esta consola tiene ${ANALOG_STICKS} stick(s); el juego necesita dos sticks y cruceta" ;; esac
 echo "nebula: $(md5sum "$GAMEDIR/nebula" | cut -c1-12) del $(date -r "$GAMEDIR/nebula" '+%F %T' 2>/dev/null)"
 # Cactus Galaxy Wrapper (smg/cactus-galaxy-wrapper, dentro del port) se abre la primera vez: sin game.pak pide el
 # disco (ISO, RVZ, WIA, WBFS, GCZ o CISO en smg/gamedata/ o roms/wii/; lo detecta en cuanto se copia), pregunta el

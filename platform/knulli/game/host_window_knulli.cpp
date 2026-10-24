@@ -100,12 +100,10 @@ galaxy::input::ControlScheme pad_scheme() noexcept {
 
 // The handheld's control profile, from the launcher (which reads the custom firmware and the device from
 // PortMaster): NEBULA_FACE_LAYOUT=labels when the firmware's SDL mapping names the face buttons by their labels
-// (SDL A = the right button) instead of their positions; NEBULA_STICKS=2|1|0, the analog sticks the device has
-// (1: the D-pad points; 0: the D-pad moves Mario and nothing points); NEBULA_QUIT_COMBO=menu|select|both, the
-// firmware's quit chord with Start (MENU/Function, SELECT).
+// (SDL A = the right button) instead of their positions; NEBULA_QUIT_COMBO=menu|select|both, the firmware's quit
+// chord with Start (MENU/Function, SELECT). The controls are for handhelds with two analog sticks and a D-pad.
 struct PadProfile {
     bool labels = false;
-    int sticks = 2;
     bool quit_menu = true;
     bool quit_select = false;
 };
@@ -114,15 +112,12 @@ const PadProfile& pad_profile() noexcept {
         PadProfile p;
         const char* face = std::getenv("NEBULA_FACE_LAYOUT");
         p.labels = face != nullptr && std::strcmp(face, "labels") == 0;
-        if (const char* sticks = std::getenv("NEBULA_STICKS"); sticks != nullptr && sticks[0] >= '0' && sticks[0] <= '2') {
-            p.sticks = sticks[0] - '0';
-        }
         if (const char* quit = std::getenv("NEBULA_QUIT_COMBO")) {
             p.quit_menu = std::strcmp(quit, "select") != 0;
             p.quit_select = std::strcmp(quit, "select") == 0 || std::strcmp(quit, "both") == 0;
         }
-        std::fprintf(stderr, "[input] profile: face buttons by %s, %d stick(s), quit with %s + Start\n",
-                     p.labels ? "label" : "position", p.sticks,
+        std::fprintf(stderr, "[input] profile: face buttons by %s, quit with %s + Start\n",
+                     p.labels ? "label" : "position",
                      p.quit_menu && p.quit_select ? "MENU or SELECT" : (p.quit_select ? "SELECT" : "MENU"));
         return p;
     }();
@@ -192,22 +187,6 @@ void sample_gamepads() {
         sample.axes[3] = -axis(gamepad, SDL_CONTROLLER_AXIS_RIGHTY);
         sample.axes[4] = std::max(0.0f, axis(gamepad, SDL_CONTROLLER_AXIS_TRIGGERLEFT));
         sample.axes[5] = std::max(0.0f, axis(gamepad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT));
-        if (profile.sticks < 2) {
-            // Fewer sticks: the D-pad takes the missing one (the right stick, the pointer; or the left, Mario).
-            const std::uint32_t dpad = pad::bit(pad::kDpadUpBit) | pad::bit(pad::kDpadDownBit) |
-                                       pad::bit(pad::kDpadLeftBit) | pad::bit(pad::kDpadRightBit);
-            const float x = float((sample.buttons & pad::bit(pad::kDpadRightBit)) != 0) -
-                            float((sample.buttons & pad::bit(pad::kDpadLeftBit)) != 0);
-            const float y = float((sample.buttons & pad::bit(pad::kDpadUpBit)) != 0) -
-                            float((sample.buttons & pad::bit(pad::kDpadDownBit)) != 0);
-            const float scale = x != 0.0f && y != 0.0f ? 0.7071f : 1.0f;
-            const std::size_t ax = profile.sticks == 1 ? 2 : 0;
-            if (x != 0.0f || y != 0.0f) {
-                sample.axes[ax] = x * scale;
-                sample.axes[ax + 1] = y * scale;
-            }
-            sample.buttons &= ~dpad;
-        }
     }
 }
 
