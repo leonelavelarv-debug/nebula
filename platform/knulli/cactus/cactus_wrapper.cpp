@@ -1468,9 +1468,18 @@ int demo(const std::string& out) {
 }
 
 #ifndef CACTUS_NO_SDL
+// PortMaster's controller database too (NEBULA_GAMECONTROLLERDB from the launcher), for firmwares whose own
+// SDL_GAMECONTROLLERCONFIG lacks this pad.
+void add_portmaster_mappings() {
+  if (const char* db = getenv("NEBULA_GAMECONTROLLERDB"); db != nullptr && db[0] != '\0') SDL_GameControllerAddMappingsFromFile(db);
+}
+#endif
+
+#ifndef CACTUS_NO_SDL
 bool select_held() {
   SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
   if (SDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0) return false;
+  add_portmaster_mappings();
   std::vector<SDL_GameController*> pads;
   for (int i = 0; i < SDL_NumJoysticks(); ++i) if (SDL_IsGameController(i)) pads.push_back(SDL_GameControllerOpen(i));
   bool held = false;
@@ -1490,7 +1499,8 @@ bool select_held() {
 
 int run_ui(App& app) {
   SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0) {
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) == 0) add_portmaster_mappings();
+  if (SDL_WasInit(SDL_INIT_VIDEO) == 0) {
     fprintf(stderr, "[cactus] SDL_Init: %s\n", SDL_GetError());
     return 3;
   }
@@ -1509,7 +1519,14 @@ int run_ui(App& app) {
   std::vector<SDL_GameController*> pads;
   for (int i = 0; i < SDL_NumJoysticks(); ++i) if (SDL_IsGameController(i)) pads.push_back(SDL_GameControllerOpen(i));
   // The RG35XX H's SDL mapping is positional: its A (right) is SDL's B, its B (bottom) SDL's A.
-  const bool swap = getenv("CACTUS_SWAP_AB") != nullptr;
+  // ...unless the firmware maps them by label (NEBULA_FACE_LAYOUT=labels, from the launcher's profile).
+  const char* face = getenv("NEBULA_FACE_LAYOUT");
+  const bool swap = getenv("CACTUS_SWAP_AB") != nullptr || (face != nullptr && strcmp(face, "labels") == 0);
+  // The firmware's quit chord with Start: MENU (KNULLI, muOS), SELECT (ArkOS, dArkOS) or both.
+  const char* combo = getenv("NEBULA_QUIT_COMBO");
+  const bool quit_menu = combo == nullptr || strcmp(combo, "select") != 0;
+  const bool quit_select = combo != nullptr && (strcmp(combo, "select") == 0 || strcmp(combo, "both") == 0);
+  bool select = false;
   Scene scene;
   Canvas cv;
   const double start = now_seconds();
@@ -1541,11 +1558,14 @@ int run_ui(App& app) {
         const bool down = e.type == SDL_CONTROLLERBUTTONDOWN;
         const int b = e.cbutton.button;
         if (b == SDL_CONTROLLER_BUTTON_GUIDE) guide = down;
+        if (b == SDL_CONTROLLER_BUTTON_BACK) select = down;
         if (!down) continue;
-        if (b == SDL_CONTROLLER_BUTTON_START && guide) { app.result = 1; app.quit = true; continue; }  // Function + Start: out, no game
+        if (b == SDL_CONTROLLER_BUTTON_START && ((guide && quit_menu) || (select && quit_select))) {
+          app.result = 1; app.quit = true; continue;  // the quit chord: out, no game
+        }
         if (b == (swap ? SDL_CONTROLLER_BUTTON_A : SDL_CONTROLLER_BUTTON_B) || b == SDL_CONTROLLER_BUTTON_START) app.press(App::kConfirm);
         if (b == (swap ? SDL_CONTROLLER_BUTTON_B : SDL_CONTROLLER_BUTTON_A) || b == SDL_CONTROLLER_BUTTON_BACK) app.press(App::kBack);
-        if (b == SDL_CONTROLLER_BUTTON_Y) app.press(App::kToggle);  // the RG35XX H's X (top) is SDL's Y
+        if (b == (swap ? SDL_CONTROLLER_BUTTON_X : SDL_CONTROLLER_BUTTON_Y)) app.press(App::kToggle);  // X (top)
         if (b == SDL_CONTROLLER_BUTTON_DPAD_UP) app.press(App::kUp);
         if (b == SDL_CONTROLLER_BUTTON_DPAD_DOWN) app.press(App::kDown);
         if (b == SDL_CONTROLLER_BUTTON_DPAD_LEFT) app.press(App::kPrev);

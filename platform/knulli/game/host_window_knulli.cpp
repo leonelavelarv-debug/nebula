@@ -98,6 +98,37 @@ galaxy::input::ControlScheme pad_scheme() noexcept {
     return scheme;
 }
 
+// The handheld's control profile, from the launcher (which reads the custom firmware and the device from
+// PortMaster): NEBULA_FACE_LAYOUT=labels when the firmware's SDL mapping names the face buttons by their labels
+// (SDL A = the right button) instead of their positions; NEBULA_STICKS=2|1|0, the analog sticks the device has
+// (1: the D-pad points; 0: the D-pad moves Mario and nothing points); NEBULA_QUIT_COMBO=menu|select|both, the
+// firmware's quit chord with Start (MENU/Function, SELECT).
+struct PadProfile {
+    bool labels = false;
+    int sticks = 2;
+    bool quit_menu = true;
+    bool quit_select = false;
+};
+const PadProfile& pad_profile() noexcept {
+    static const PadProfile profile = [] {
+        PadProfile p;
+        const char* face = std::getenv("NEBULA_FACE_LAYOUT");
+        p.labels = face != nullptr && std::strcmp(face, "labels") == 0;
+        if (const char* sticks = std::getenv("NEBULA_STICKS"); sticks != nullptr && sticks[0] >= '0' && sticks[0] <= '2') {
+            p.sticks = sticks[0] - '0';
+        }
+        if (const char* quit = std::getenv("NEBULA_QUIT_COMBO")) {
+            p.quit_menu = std::strcmp(quit, "select") != 0;
+            p.quit_select = std::strcmp(quit, "select") == 0 || std::strcmp(quit, "both") == 0;
+        }
+        std::fprintf(stderr, "[input] profile: face buttons by %s, %d stick(s), quit with %s + Start\n",
+                     p.labels ? "label" : "position", p.sticks,
+                     p.quit_menu && p.quit_select ? "MENU or SELECT" : (p.quit_select ? "SELECT" : "MENU"));
+        return p;
+    }();
+    return profile;
+}
+
 float axis(SDL_GameController* pad, SDL_GameControllerAxis which) noexcept {
     return std::clamp(static_cast<float>(SDL_GameControllerGetAxis(pad, which)) / 32767.0f, -1.0f, 1.0f);
 }
@@ -135,12 +166,24 @@ void sample_gamepads() {
         if (button(SDL_CONTROLLER_BUTTON_B)) bits |= pad::bit(pad::kEastBit);
         if (button(SDL_CONTROLLER_BUTTON_X)) bits |= pad::bit(pad::kWestBit);
         if (button(SDL_CONTROLLER_BUTTON_Y)) bits |= pad::bit(pad::kNorthBit);
+        const PadProfile& profile = pad_profile();
+        if (profile.labels) {  // to positions: the right button is East, the bottom one South
+            const std::uint32_t face = bits & (pad::bit(pad::kSouthBit) | pad::bit(pad::kEastBit) |
+                                               pad::bit(pad::kWestBit) | pad::bit(pad::kNorthBit));
+            bits &= ~face;
+            if (face & pad::bit(pad::kSouthBit)) bits |= pad::bit(pad::kEastBit);
+            if (face & pad::bit(pad::kEastBit)) bits |= pad::bit(pad::kSouthBit);
+            if (face & pad::bit(pad::kWestBit)) bits |= pad::bit(pad::kNorthBit);
+            if (face & pad::bit(pad::kNorthBit)) bits |= pad::bit(pad::kWestBit);
+        }
         sample.buttons = bits;
-        // KNULLI's quit combination: Function (MENU on the RG35XX H, SDL's guide) + Start ends the game cleanly
-        // (the launcher's gptokeyb kills on the same buttons, HOTKEY=guide, if this does not answer).
-        if (button(SDL_CONTROLLER_BUTTON_GUIDE) && button(SDL_CONTROLLER_BUTTON_START) &&
-            !galaxy::gx::host_window::quit_request.exchange(true, std::memory_order_acq_rel)) {
-            std::fprintf(stderr, "[input] Function + Start: quit\n");
+        // The firmware's quit combination: MENU/Function (SDL's guide; KNULLI, muOS) or SELECT (ArkOS, dArkOS) +
+        // Start ends the game cleanly (the launcher's gptokeyb kills on the same buttons if this does not answer).
+        const bool quit_chord = button(SDL_CONTROLLER_BUTTON_START) &&
+                                ((profile.quit_menu && button(SDL_CONTROLLER_BUTTON_GUIDE)) ||
+                                 (profile.quit_select && button(SDL_CONTROLLER_BUTTON_BACK)));
+        if (quit_chord && !galaxy::gx::host_window::quit_request.exchange(true, std::memory_order_acq_rel)) {
+            std::fprintf(stderr, "[input] %s + Start: quit\n", button(SDL_CONTROLLER_BUTTON_GUIDE) ? "MENU" : "SELECT");
         }
         // SDL's Y axes grow downward; the unified layout's grow upward.
         sample.axes[0] = axis(gamepad, SDL_CONTROLLER_AXIS_LEFTX);
@@ -149,6 +192,22 @@ void sample_gamepads() {
         sample.axes[3] = -axis(gamepad, SDL_CONTROLLER_AXIS_RIGHTY);
         sample.axes[4] = std::max(0.0f, axis(gamepad, SDL_CONTROLLER_AXIS_TRIGGERLEFT));
         sample.axes[5] = std::max(0.0f, axis(gamepad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT));
+        if (profile.sticks < 2) {
+            // Fewer sticks: the D-pad takes the missing one (the right stick, the pointer; or the left, Mario).
+            const std::uint32_t dpad = pad::bit(pad::kDpadUpBit) | pad::bit(pad::kDpadDownBit) |
+                                       pad::bit(pad::kDpadLeftBit) | pad::bit(pad::kDpadRightBit);
+            const float x = float((sample.buttons & pad::bit(pad::kDpadRightBit)) != 0) -
+                            float((sample.buttons & pad::bit(pad::kDpadLeftBit)) != 0);
+            const float y = float((sample.buttons & pad::bit(pad::kDpadUpBit)) != 0) -
+                            float((sample.buttons & pad::bit(pad::kDpadDownBit)) != 0);
+            const float scale = x != 0.0f && y != 0.0f ? 0.7071f : 1.0f;
+            const std::size_t ax = profile.sticks == 1 ? 2 : 0;
+            if (x != 0.0f || y != 0.0f) {
+                sample.axes[ax] = x * scale;
+                sample.axes[ax + 1] = y * scale;
+            }
+            sample.buttons &= ~dpad;
+        }
     }
 }
 
@@ -162,7 +221,13 @@ void open_gamepad(int device_index) {
         if (slot == nullptr) {
             slot = SDL_GameControllerOpen(device_index);
             if (slot != nullptr) {
-                std::fprintf(stderr, "[input] gamepad \"%s\" connected\n", SDL_GameControllerName(slot));
+                char guid[64] = {};
+                SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(device_index), guid, sizeof(guid));
+                char* mapping = SDL_GameControllerMapping(slot);
+                std::fprintf(stderr, "[input] gamepad \"%s\" connected (%s)\n", SDL_GameControllerName(slot),
+                             mapping != nullptr ? mapping : guid);
+                if (mapping != nullptr) SDL_free(mapping);
+                (void)pad_profile();
             }
             return;
         }
@@ -199,6 +264,11 @@ bool start() noexcept {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0) {
         std::fprintf(stderr, "[sdl] SDL_Init failed: %s\n", SDL_GetError());
         return false;
+    }
+    // PortMaster's controller database too (the firmware's own mapping comes in SDL_GAMECONTROLLERCONFIG).
+    if (const char* db = std::getenv("NEBULA_GAMECONTROLLERDB"); db != nullptr && db[0] != '\0') {
+        const int added = SDL_GameControllerAddMappingsFromFile(db);
+        std::fprintf(stderr, "[input] %d mappings from %s\n", added, db);
     }
     // Sound and vibration are optional: the game runs silent without them.
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {

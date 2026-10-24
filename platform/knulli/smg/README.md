@@ -1,4 +1,4 @@
-# Super Mario Galaxy (RG35XX H, KNULLI)
+# Super Mario Galaxy (Anbernic RG H700 con KNULLI/muOS, R36S RK3326 con ArkOS/dArkOS)
 
 Super Mario Galaxy con gráficos en la consola: el código descompilado de Petari compilado nativo para ARM64, el host
 de Nebula y su renderer GX en OpenGL ES 3.2 (Mali-G31). Primera versión de prueba.
@@ -28,6 +28,20 @@ La primera vez cada efecto nuevo compila su shader y el juego se detiene un mome
 Controles (esquema Nintendo): stick izquierdo = Nunchuk, A = saltar, B = saltar/atrás, X/Y/R2 = giro, L1 = Wii B
 (disparar trozos de estrella), L2 = Z (agacharse), stick derecho = puntero, R1 = centrar puntero, cruceta = cámara,
 START = +, SELECT = −. `NEBULA_PAD_SCHEME=xbox` en el lanzador cambia A y B de lado.
+
+El lanzador adapta los controles al firmware y a la consola (lo que dice PortMaster; queda en la primera línea de
+`smg/log.txt`):
+
+| Firmware / consola | Salir | Sticks |
+|---|---|---|
+| KNULLI, muOS (RG35XX H, RG35XX Pro, RG40XX H...: Allwinner H700) | MENU + START | 2: como arriba |
+| ArkOS, dArkOS (R36S y clones: Rockchip RK3326) | SELECT + START | 2: como arriba |
+| ROCKNIX, AmberELEC y otros | MENU + START o SELECT + START | según la consola |
+| Sin sticks (RG35XX Plus/SP/2024, RG28XX, RG34XX) | la del firmware | 0: la cruceta mueve a Mario |
+| Un stick (RG40XX V, RG CubeXX) | la del firmware | 1: la cruceta mueve el puntero |
+
+Si en tu firmware A y B salen cambiados, pon `NEBULA_FACE_LAYOUT=labels` al principio del lanzador. `NEBULA_STICKS`
+y `NEBULA_QUIT_COMBO=menu|select|both` fuerzan lo demás. Cactus Galaxy Wrapper usa el mismo perfil.
 
 Para diagnóstico manda `smg/log.txt`, `smg/crashes/` y alguna captura de `smg/shots/` (cada 30 s, formato PPM).
 
